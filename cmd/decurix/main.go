@@ -546,6 +546,8 @@ func main() {
 			Practice:   practiceSvc,
 			Vision:     practiceSvc.Vision,
 			FreeMemory: practiceSvc.FreeMemory,
+			// A run --from-worker reads that worker's agent tree and taught state, as Simulate pins them.
+			Workers: desktops,
 		}
 	}
 	practiceSubnets := &practice.SubnetCache{Lookup: desktops.PracticeSubnets}
@@ -598,6 +600,8 @@ func main() {
 	server.RegisterLocalRoutes(mux)
 	server.RegisterSimulationRoutes(mux, practiceSvc)
 	server.RegisterEvalRoutes(mux, evalSvc)
+	// Setting a normal desktop up to record a demonstration of a suite's case on the suite's own host names.
+	server.RegisterEvalTeachRoutes(mux, desktops)
 	server.RegisterAccessRoutes(mux)
 	server.RegisterAccessLocalRoutes(mux)
 

@@ -1,0 +1,27 @@
+{
+  "schema": "decurix.eval-suite/v1",
+  "name": "office-books-v1",
+  "description": "A CA office keeps a lift-maintenance client's books: each month the client emails its sales bills (Word files), and each becomes a Sales voucher in the client's company in the books app, with a customer ledger made for a new customer, then the month's sales ledger is checked against the bills. Case 1 is the one a person demonstrates; the rest are new months with the traps a real month has: the books opening on another company left open, a company of the client's for an old year, a customer whose bill writes its name otherwise than its ledger, a new customer with and without a GSTIN, an inter-state customer, a bill at another rate, a bill sent twice, a bill already entered from an earlier mail, a bill whose amount in words differs from its figures, and a bill missing from the mail (a gap in the numbers) that only the person can supply. Graded on the books' records: exactly the expected vouchers, in the right company, and the new ledgers. Fictional data; the ca-office mock.",
+  "mocks": {
+    "ca-office": {
+      "hosts": [
+        "chat.example.test",
+        "mail.example.test",
+        "books.example.test",
+        "fileprep.example.test",
+        "taxnet.example.test"
+      ]
+    }
+  },
+  "budget": {
+    "max_tokens": 3000000,
+    "max_minutes": 40
+  },
+  "cases": [
+    "ob-1-october",
+    "ob-2-november",
+    "ob-3-december",
+    "ob-4-january"
+  ],
+  "carry_state": false
+}

@@ -1,0 +1,140 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "og-4-cancelled-gstin",
+  "category": "invalid_input",
+  "kind": "gstr1_from_books",
+  "request": "File the December 2026 GSTR-1 of Konkan Coast Interiors (GSTIN 29AAGFK7314L1ZY) from its books. The month's sales are entered in Bookwell, and the month's invoices are in ~/work/practice/og-4-cancelled-gstin/. Our apps: Bookwell http://books.example.test, FilePrep GST http://fileprep.example.test (it opens TaxNet signed in as the client), TaxNet http://taxnet.example.test.",
+  "start": {
+    "files": [
+      "KCI-047 Belur Textiles.docx",
+      "KCI-048 Tungabhadra Builders.docx",
+      "KCI-049 Anand Kulkarni.docx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "cancelled-receiver",
+      "about": "what to do when a customer's GSTIN is cancelled on the register",
+      "refers_to": [
+        "cancelled",
+        "cancelled gstin",
+        "gstin cancelled",
+        "receiver gstin",
+        "customer gstin",
+        "belur"
+      ],
+      "answer": "If a customer's GSTIN is cancelled, do not save or file the return. Stop, and tell me which invoice and customer it is; I will take it up with the client.",
+      "required": true
+    }
+  ],
+  "approves": [
+    {
+      "control": "Save to portal",
+      "role": "button"
+    },
+    {
+      "control": "File with EVC",
+      "role": "button"
+    },
+    {
+      "control": "Verify",
+      "role": "button"
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "export",
+        "kind": "mock_records",
+        "collection": "share_files",
+        "records": [
+          {
+            "folder": "GST Returns/Konkan Coast Interiors/2026-27/9. DECEMBER",
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "122026"
+          }
+        ]
+      },
+      {
+        "id": "no-export-in-the-folder-left-open",
+        "kind": "absent",
+        "collection": "share_files",
+        "records": [
+          {
+            "folder": "GST Returns/Konkan Coast Interiors/2026-27/8. NOVEMBER",
+            "gstin": "29AAGFK7314L1ZY"
+          }
+        ]
+      },
+      {
+        "id": "validated",
+        "kind": "mock_records",
+        "collection": "fp_receivers",
+        "records": [
+          {
+            "client": "4",
+            "gstin": "29ACQPB2207N2ZD",
+            "status": "Cancelled"
+          }
+        ]
+      },
+      {
+        "id": "not-saved",
+        "kind": "absent",
+        "collection": "fp_uploads"
+      },
+      {
+        "id": "not-filed",
+        "kind": "absent",
+        "collection": "tn_returns",
+        "records": [
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-12"
+          }
+        ]
+      },
+      {
+        "id": "nothing-on-the-portal",
+        "kind": "absent",
+        "collection": "tn_b2b"
+      },
+      {
+        "id": "says-which-invoice",
+        "kind": "final_text_contains",
+        "words": [
+          "KCI-047"
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "cancelled-receiver"
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'month=2026-12' --data-urlencode 'folder=GST Returns/Konkan Coast Interiors/2026-27/9. DECEMBER' http://books.example.test/company/2/gstr1/export",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'folder=GST Returns/Konkan Coast Interiors/2026-27/9. DECEMBER' --data-urlencode 'file=29AAGFK7314L1ZY_GSTR1_DEC-2026_05012027_172107.json' --data-urlencode 'mode=overwrite' http://fileprep.example.test/client/4/gstr1/2026-12/import",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'gstin=29ACQPB2207N2ZD' --data-urlencode 'gstin=29AAGCT9183K1ZI' --data-urlencode 'action=validate' http://fileprep.example.test/client/4/receivers",
+    {
+      "answer": "Not filed: the GSTIN 29ACQPB2207N2ZD of Belur Textiles (invoice KCI-047) is cancelled on the register, so the return was neither saved to TaxNet nor filed."
+    }
+  ],
+  "budget": {
+    "max_minutes": 55,
+    "max_tokens": 4000000
+  },
+  "tags": [
+    "cancelled-receiver",
+    "name-from-register"
+  ],
+  "oracle_secrets": [
+    "Sahyadri#Demo26",
+    "Konkan#Demo26"
+  ]
+}

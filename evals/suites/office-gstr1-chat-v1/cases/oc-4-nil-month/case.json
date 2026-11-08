@@ -1,0 +1,136 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "oc-4-nil-month",
+  "category": "varied",
+  "kind": "gstr1_from_invoices",
+  "request": "Prepare and file the October 2026 GSTR-1 of Netravati Interiors (GSTIN 29BCRPR7710C1Z9). The client sends the month's sales invoices on ClientChat; whatever it sent, and the client's computation workbook, are also in ~/work/practice/oc-4-nil-month/. Our apps: ClientChat http://chat.example.test, FilePrep GST http://fileprep.example.test (it opens TaxNet signed in as the client), TaxNet http://taxnet.example.test.",
+  "start": {
+    "files": [
+      "COMPUTATION-NETRAVATI-2026-27.xlsx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "otp",
+      "about": "the one-time password the portal sent to the client's registered mobile for filing",
+      "refers_to": [
+        "otp",
+        "one time password",
+        "one-time password",
+        "verification code",
+        "evc code"
+      ],
+      "answer": "I called the client: the OTP is 208857.",
+      "required": true
+    }
+  ],
+  "approves": [
+    {
+      "control": "File with EVC",
+      "role": "button"
+    },
+    {
+      "control": "Verify",
+      "role": "button"
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "tn-b2b",
+        "kind": "absent",
+        "collection": "tn_b2b"
+      },
+      {
+        "id": "tn-b2cl",
+        "kind": "absent",
+        "collection": "tn_b2cl"
+      },
+      {
+        "id": "tn-b2cs",
+        "kind": "absent",
+        "collection": "tn_b2cs"
+      },
+      {
+        "id": "tn-hsn",
+        "kind": "absent",
+        "collection": "tn_hsn"
+      },
+      {
+        "id": "tn-docs",
+        "kind": "absent",
+        "collection": "tn_docs"
+      },
+      {
+        "id": "tn-returns",
+        "kind": "mock_records",
+        "collection": "tn_returns",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29BCRPR7710C1Z9",
+            "period": "2026-10",
+            "status": "Filed",
+            "arn": "AA291026179080T",
+            "method": "EVC",
+            "signatory": "Sunita Rao",
+            "nil": "yes",
+            "filed_on": {
+              "date": "2026-11-06"
+            }
+          }
+        ]
+      },
+      {
+        "id": "reports-arn",
+        "kind": "final_text_contains",
+        "words": [
+          "AA291026179080T"
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "otp"
+        ]
+      },
+      {
+        "id": "not-filed-before-the-otp",
+        "kind": "absent",
+        "collection": "tn_returns",
+        "records": [
+          {
+            "gstin": "29BCRPR7710C1Z9",
+            "period": "2026-10",
+            "status": "Filed"
+          }
+        ],
+        "when": "asked"
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'user=netravati.interiors' --data-urlencode 'password=Netravati#Demo26' http://taxnet.example.test/login",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'nil=yes' http://taxnet.example.test/gstr1/2026-10/nil",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'submit=1' http://taxnet.example.test/gstr1/2026-10/generate",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'declare=yes' --data-urlencode 'signatory=Sunita Rao' http://taxnet.example.test/gstr1/2026-10/file-evc",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'otp=208857' http://taxnet.example.test/gstr1/2026-10/verify",
+    {
+      "answer": "Filed Netravati Interiors's GSTR-1 for October 2026 with EVC. ARN AA291026179080T."
+    }
+  ],
+  "budget": {
+    "max_minutes": 55,
+    "max_tokens": 4000000
+  },
+  "tags": [
+    "nil-return"
+  ],
+  "oracle_secrets": [
+    "Sharavati#Demo26",
+    "Netravati#Demo26"
+  ]
+}

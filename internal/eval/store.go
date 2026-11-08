@@ -74,6 +74,11 @@ var schema = []string{
 	CREATE INDEX eval_rows_task ON eval_rows(task_id);`,
 	// How many model calls a row's case made (the broker counts them), so a learning curve shows calls beside tokens.
 	`ALTER TABLE eval_rows ADD COLUMN calls INTEGER NOT NULL DEFAULT 0;`,
+	// A run started from a taught worker (MatrixRequest.FromWorker): which desktop, and the fingerprints of the state
+	// every case started from and of the agent tree the arms without their own ran, so a curve names what was taught.
+	`ALTER TABLE eval_runs ADD COLUMN from_worker TEXT NOT NULL DEFAULT '';
+	ALTER TABLE eval_runs ADD COLUMN snapshot_sha TEXT NOT NULL DEFAULT '';
+	ALTER TABLE eval_runs ADD COLUMN worker_tree_sha TEXT NOT NULL DEFAULT '';`,
 }
 
 // Blobs keeps a run's suite tar by content (*blobstore.Store), so a run can be read again later.
@@ -99,6 +104,23 @@ type Run struct {
 	// CarryState is a run that cleared nothing between a repeat's cases (the suite's carry_state, asked for by the
 	// run): its cases are a sequence, not independent samples. false: every case started from the snapshot.
 	CarryState bool `json:"carry_state"`
+	// FromWorker is the desktop whose taught state every case started from ("" : an empty state); SnapshotSHA is that
+	// state's fingerprint (desktop.TarFingerprint) and WorkerTreeSHA its agent tree's, which every arm without its own
+	// @rev ran.
+	FromWorker    string `json:"from_worker,omitempty"`
+	SnapshotSHA   string `json:"snapshot_sha,omitempty"`
+	WorkerTreeSHA string `json:"worker_tree_sha,omitempty"`
+
+	// snapshot is the state tar the run's cases start from (FromWorker's, else empty); never stored.
+	snapshot []byte
+}
+
+// startSnapshot is the state every case of the run starts from: the taught worker's, else an empty ~/.decurix.
+func (r Run) startSnapshot() []byte {
+	if len(r.snapshot) > 0 {
+		return r.snapshot
+	}
+	return emptySnapshot
 }
 
 // Row is one case × arm × repeat. Rows are only ever inserted (plan rule 4).
@@ -206,10 +228,11 @@ func (s *Store) Create(r Run) error {
 		return err
 	}
 	cases, _ := json.Marshal(r.Cases)
-	_, err = s.db.Exec(`INSERT INTO eval_runs (id, created_ns, suite_name, suite_sha, suite_blob, arms, cases, repeats, status, note, started_ns, ended_ns, carry_state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+	_, err = s.db.Exec(`INSERT INTO eval_runs (id, created_ns, suite_name, suite_sha, suite_blob, arms, cases, repeats, status, note, started_ns, ended_ns, carry_state,
+		from_worker, snapshot_sha, worker_tree_sha)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
 		r.ID, sqlitedb.ToNS(r.CreatedAt), r.SuiteName, r.SuiteSHA, r.SuiteBlob, string(arms), string(cases), r.Repeats, RunRunning, r.Note,
-		sqlitedb.ToNS(r.StartedAt), r.CarryState)
+		sqlitedb.ToNS(r.StartedAt), r.CarryState, r.FromWorker, r.SnapshotSHA, r.WorkerTreeSHA)
 	return err
 }
 
@@ -286,7 +309,7 @@ func (s *Store) List(limit int) ([]Run, error) {
 
 func (s *Store) query(where string, args ...any) ([]Run, error) {
 	rows, err := s.db.Query(`SELECT id, created_ns, suite_name, suite_sha, suite_blob, arms, cases, repeats, status, note, started_ns, ended_ns,
-		carry_state
+		carry_state, from_worker, snapshot_sha, worker_tree_sha
 		FROM eval_runs `+where, args...)
 	if err != nil {
 		return nil, err
@@ -298,7 +321,7 @@ func (s *Store) query(where string, args ...any) ([]Run, error) {
 		var created, started, ended int64
 		var arms, cases string
 		if err := rows.Scan(&r.ID, &created, &r.SuiteName, &r.SuiteSHA, &r.SuiteBlob, &arms, &cases, &r.Repeats, &r.Status, &r.Note, &started, &ended,
-			&r.CarryState); err != nil {
+			&r.CarryState, &r.FromWorker, &r.SnapshotSHA, &r.WorkerTreeSHA); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.StartedAt = sqlitedb.FromNS(created), sqlitedb.FromNS(started)
@@ -350,12 +373,12 @@ func (s *Store) EvalLabel(execID, taskID string) (runs.EvalLabel, bool, error) {
 	}
 	var l runs.EvalLabel
 	err := s.db.QueryRow(`SELECT r.run_id, u.suite_name, u.suite_sha, u.carry_state, r.case_id, r.arm, r.repeat, r.observed,
-		r.passed, r.false_done, r.invalid, r.infra
+		r.passed, r.false_done, r.invalid, r.infra, u.from_worker, u.snapshot_sha
 		FROM eval_rows r JOIN eval_runs u ON u.id = r.run_id
 		WHERE (? <> '' AND r.trajectory_id = ?) OR (? <> '' AND r.trajectory_id = '' AND r.task_id = ?)
 		ORDER BY CASE WHEN r.trajectory_id = ? THEN 0 ELSE 1 END, r.rowid LIMIT 1`,
 		execID, execID, taskID, taskID, execID).Scan(&l.RunID, &l.Suite, &l.SuiteSHA, &l.CarryState, &l.Case, &l.Arm, &l.Repeat,
-		&l.Observed, &l.Passed, &l.FalseDone, &l.Invalid, &l.Infra)
+		&l.Observed, &l.Passed, &l.FalseDone, &l.Invalid, &l.Infra, &l.FromWorker, &l.SnapshotSHA)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runs.EvalLabel{}, false, nil
 	}

@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
@@ -340,6 +342,13 @@ func offlineOracle(t *testing.T, py string, s Suite, c Case) (Evidence, string) 
 	if c.Start.Mock != "" {
 		base, stateFile = startMock(t, py, s.MockSources[c.Start.Mock], c.Fixture)
 	}
+	// As curl does live: the request names the URL's own host (a mock may serve several apps by host name), and the
+	// solution's cookie jar (-b/-c) keeps a sign-in from one step to the next.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	for i, st := range c.Oracle {
 		switch st.Kind {
 		case StepAnswer:
@@ -358,7 +367,7 @@ func offlineOracle(t *testing.T, py string, s Suite, c Case) (Evidence, string) 
 			for j := 0; j < len(words); j++ {
 				if words[j] == "--data-urlencode" && j+1 < len(words) {
 					k, v, _ := strings.Cut(words[j+1], "=")
-					form.Set(k, v)
+					form.Add(k, v) // curl sends a repeated field once per --data-urlencode
 					j++
 				} else if strings.HasPrefix(words[j], "http://") {
 					target = words[j]
@@ -368,14 +377,24 @@ func offlineOracle(t *testing.T, py string, s Suite, c Case) (Evidence, string) 
 			if err != nil || base == "" {
 				t.Fatalf("%s: oracle step %d posts to %q", c.ID, i+1, target)
 			}
-			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-			resp, err := client.PostForm(base+u.Path, form)
+			endpoint := base + u.Path
+			if u.RawQuery != "" {
+				endpoint += "?" + u.RawQuery
+			}
+			req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 			if err != nil {
 				t.Fatal(err)
 			}
+			req.Host = u.Host
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusSeeOther {
-				t.Fatalf("%s: oracle step %d got %d from the mock", c.ID, i+1, resp.StatusCode)
+				t.Fatalf("%s: oracle step %d got %d from the mock: %s", c.ID, i+1, resp.StatusCode, body)
 			}
 		case strings.Contains(st.Line, "curl $MOCK_ROUTE") || strings.HasPrefix(st.Line, "office read "):
 			// A read the solution makes before it acts; nothing to change.

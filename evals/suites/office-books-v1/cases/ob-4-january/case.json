@@ -1,0 +1,185 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "ob-4-january",
+  "category": "missing_input",
+  "kind": "sales_bills_to_books",
+  "request": "Suvarna Lift Systems has emailed its sales bills for January 2027 to our Mailbox. Enter each bill as a Sales voucher in the client's company in Bookwell, then check the month's sales in the books against the bills. The attachments are also saved in ~/work/practice/ob-4-january/. Our apps: Mailbox http://mail.example.test, Bookwell http://books.example.test.",
+  "start": {
+    "files": [
+      "1058 Lotus Mall.docx",
+      "1059 Kadri Heights.docx",
+      "1061 Sagar Vista.docx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "invoice-1060",
+      "about": "the bill numbered 1060, which is missing from the mail",
+      "refers_to": [
+        "1060",
+        "missing bill",
+        "missing invoice",
+        "number gap",
+        "gap",
+        "skipped number",
+        "missing number",
+        "not attached"
+      ],
+      "answer": "Bill 1060 went to Bhuvana Hospital Trust on 20-01-2027: Sales@18%, sales amount 10,000.00, CGST 900.00 and SGST 900.00 (total 11,800.00). The client forgot to attach it; enter it with the others.",
+      "required": true
+    }
+  ],
+  "approves": [
+    {
+      "control": "Save voucher",
+      "role": "button"
+    },
+    {
+      "control": "Save ledger",
+      "role": "button"
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "vouchers",
+        "kind": "mock_records",
+        "collection": "vouchers",
+        "exact_count": true,
+        "records": [
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1058",
+            "date": {
+              "date": "2027-01-06"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "30000.00"
+            },
+            "cgst": {
+              "number": "2700.00"
+            },
+            "sgst": {
+              "number": "2700.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "35400.00"
+            },
+            "party": "Lotus Mall Management LLP"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1059",
+            "date": {
+              "date": "2027-01-13"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "45000.00"
+            },
+            "cgst": {
+              "number": "4050.00"
+            },
+            "sgst": {
+              "number": "4050.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "53100.00"
+            },
+            "party": "Kadri Heights Builders LLP"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1060",
+            "date": {
+              "date": "2027-01-20"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "10000.00"
+            },
+            "cgst": {
+              "number": "900.00"
+            },
+            "sgst": {
+              "number": "900.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "11800.00"
+            },
+            "party": "Bhuvana Hospital Trust"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1061",
+            "date": {
+              "date": "2027-01-27"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "24000.00"
+            },
+            "cgst": {
+              "number": "2160.00"
+            },
+            "sgst": {
+              "number": "2160.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "28320.00"
+            },
+            "party": "Sagar Hospitality Group"
+          }
+        ]
+      },
+      {
+        "id": "ledgers",
+        "kind": "absent",
+        "collection": "ledgers"
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "invoice-1060"
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1058' --data-urlencode 'date=06-01-2027' --data-urlencode 'party=Lotus Mall Management LLP' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=30000.00' --data-urlencode 'cgst=2700.00' --data-urlencode 'sgst=2700.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1059' --data-urlencode 'date=13-01-2027' --data-urlencode 'party=Kadri Heights Builders LLP' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=45000.00' --data-urlencode 'cgst=4050.00' --data-urlencode 'sgst=4050.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1060' --data-urlencode 'date=20-01-2027' --data-urlencode 'party=Bhuvana Hospital Trust' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=10000.00' --data-urlencode 'cgst=900.00' --data-urlencode 'sgst=900.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1061' --data-urlencode 'date=27-01-2027' --data-urlencode 'party=Sagar Hospitality Group' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=24000.00' --data-urlencode 'cgst=2160.00' --data-urlencode 'sgst=2160.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    {
+      "answer": "Entered 4 Sales vouchers for January 2027 in Suvarna Lift Systems 2025-26: 1058, 1059, 1060, 1061."
+    }
+  ],
+  "budget": {
+    "max_minutes": 40,
+    "max_tokens": 3000000
+  },
+  "tags": [
+    "number-gap",
+    "short-date-year"
+  ]
+}

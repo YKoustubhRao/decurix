@@ -320,3 +320,9 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   out of time. Where code can establish what a declaration would (the value stands in the record's document or the
   person's confirmed words), it takes the value onto the record itself (`records.adopt_backed`); only what nothing
   backs is sent back.
+- **The offline oracle could not drive a mock that serves several apps by host name** (2026-11-08, the office
+  suites). It posted to the mock's address with no Host, kept no cookie between steps and set one value per field,
+  while live `curl $MOCK_ROUTE` keeps the URL's host, `-b/-c` keep a sign-in and a repeated `--data-urlencode` sends the
+  field twice; and a `curl` line with no data was skipped offline as a read, though live it is a GET that a
+  button's form refuses. `offlineOracle` now sends the URL's host, keeps a cookie jar and adds repeated fields, and a
+  scripted solution's bare button post sends one field (`make_office_suites.curl`).

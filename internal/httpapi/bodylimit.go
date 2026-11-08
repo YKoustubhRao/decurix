@@ -29,6 +29,7 @@ var bodyLimits = map[string]int64{
 	"/api/outbox":                     32 << 20,           // a drafted email with its attachments
 	"/api/queue":                      48 << 20,           // a work item with its files (workqueue maxBody)
 	evalRunsPath:                      maxEvalUpload,      // a suite and agent trees (evalFile bounds each, unpacked)
+	evalTeachPath:                     maxEvalTeachUpload, // a suite to teach one of its cases from (evalFile bounds it, unpacked)
 	"/desktop/":                       maxUploadBytes,     // the desktop's own pages, proxied
 	"/agent/":                         maxUploadBytes,
 }

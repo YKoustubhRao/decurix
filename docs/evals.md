@@ -20,8 +20,8 @@ Code: `internal/eval` (format, loader, graders, runner, store, report, expert), 
   text files of `agent/`, `internal/`, `cmd/`, `desktop/` and `docker/` (all but `internal/eval` and
   `internal/httpapi/eval_routes*`) and fails on the path `evals/`, and on any suite name, case id or mock name found
   under `evals/suites`, every fact's answer, and every `id` or `text` value of 6 characters or more in a case's
-  expected records. The tests that read a suite from the repo are `TestCoreSuiteLoads`, `TestCoreV2SuiteLoads` and
-  `TestLearnV1SuiteLoads`. A comment counts too: a test docstring under `agent/` that named `learn-v1` failed it.
+  expected records. The tests that read a suite from the repo are `TestCoreSuiteLoads`, `TestCoreV2SuiteLoads`,
+  `TestLearnV1SuiteLoads` and the three office suites' (`internal/eval/office_suites_test.go`). A comment counts too: a test docstring under `agent/` that named `learn-v1` failed it.
 - **Single runs are not results.** A table with fewer than 5 repeats (`MinRepeats`) opens with "n=<repeats>: not a
   result", and `evals/run.py` says so when `--repeats 1` is asked.
 
@@ -44,12 +44,15 @@ change how the app is drawn, the way real apps differ, never what it stores: `cu
 dropdown the page makes itself: a role=combobox button, role=option entries and a hidden input), `filters` (list
 filters, read from the query string) and `page_size` (pages, a "Rows per page" choice, Previous/Next links).
 
-Suites (all on the one mock, `records-app`): `core-v1` (twelve short cases, the regression yardstick), `core-v2`
+Suites on the `records-app` mock: `core-v1` (twelve short cases, the regression yardstick), `core-v2`
 (six cases that tell code apart by mechanism rather than by a model's luck: a month-first bill whose order only the
 document's other date decides, two accounts sharing their last 10 digits (a payment to one, and a payee to add whose
 row sits beside the other), a dropdown the page draws, a list filter before an edit, and a required choice no source
 gives) and `learn-v1` (the learning curve, below). Their inputs are made by `evals/tools/make_core_v1.py`,
-`make_core_v2.py` and `make_learn_v1.py`; `evals/tests/` tests the runner script and the mock.
+`make_core_v2.py` and `make_learn_v1.py`; `evals/tests/` tests the runner script and the mocks. On the `ca-office` mock,
+three suites of a CA office's monthly GST work, each meant to be taught once by demonstration (below, "The office
+suites" and "Teaching once"): `office-books-v1`, `office-gstr1-books-v1` and `office-gstr1-chat-v1`, made by
+`evals/tools/make_office_suites.py`.
 
 ### suite.json
 
@@ -292,10 +295,14 @@ py -3 evals/run.py run --suite evals/suites/<suite> --arm default+expert@<rev> -
 py -3 evals/run.py run --suite evals/suites/<suite> --arm claude:default --repeats 5 --detach
 py -3 evals/run.py status|table|rows <run-id>
 py -3 evals/run.py curve <run-id> --suite evals/suites/<suite> [--rows evals/results/<run-id>/rows.jsonl]
+py -3 evals/run.py run --suite evals/suites/<suite> --arm default+expert --repeats 5 --from-worker <desktop id>
+py -3 evals/run.py teach --suite evals/suites/<suite> --case <case-id> --desktop <desktop id>
+py -3 evals/run.py teach-stop --desktop <desktop id>
 ```
 
 `run` waits for the table unless `--detach` (then it prints the run id); `--cases a,b` runs only those cases;
-`--carry-state` runs a carry-state suite in its mode (above);
+`--carry-state` runs a carry-state suite in its mode (above); `--from-worker` starts every case from a taught worker's
+state, and `teach` / `teach-stop` set a normal desktop up to demonstrate a case (both below, "Teaching once");
 `--cp` (or `DECURIX_URL`, default `http://127.0.0.1:8080`) is the primary listener. `table` prints the markdown and
 writes `evals/results/<id>/table.md`; `rows` writes `rows.jsonl` there; `curve` writes `curve.md` there (the
 learning curve, below; `--rows` reads a saved `rows.jsonl` instead of the control plane). Each arm is named once. The routes behind it
@@ -518,6 +525,116 @@ confirmed words. The run is to be repeated on a quiet machine.
 **Read:** the lesson does carry across tasks. Later bills mostly asked nothing required, and the rule reached the
 record. The cost and the misses came from how the person's words were kept and shown to the checks. The next run on
 HEAD is the validation.
+
+## The office suites (ca-office)
+
+Three kinds of a CA office's monthly GST work, written from screen recordings of real office work (no name, GSTIN,
+number or amount of those recordings is in the repo), each a suite whose case 1 is the instance a person demonstrates
+once and whose later cases are new months with the traps a real month has. All data is fictional; GSTINs carry the
+mod-36 check character. `evals/tools/make_office_suites.py` writes every case (documents, fixture, case.json, oracle)
+from its instance tables, works the expected records out by its own arithmetic (apart from the mock's code) and checks
+them against hand-written totals; `--check` fails when a committed file differs.
+
+**The mock** (`evals/mocks/ca-office/mock_app.py`, standard library) serves five plain, unbranded apps, chosen by the
+first label of the Host header (`chat.`, `mail.`, `books.`, `fileprep.`, `taxnet.` under `example.test`):
+
+| App | What it has |
+|---|---|
+| ClientChat | a thread per client: messages, PDF attachments to download, a message box (its Send is gated as a send) |
+| Mailbox | an inbox (sender, staff label, subject), a mail with its attachments |
+| Bookwell | companies (it opens on the company used last), ledgers (Ledger creation defaults to Capital Account), Sales vouchers (the form opens on Payment; a short date like `3/10` takes the first such day in the company's period, so a company spanning two years can put it in the wrong one), ledger vouchers by month, a day book, the month's GSTR-1 from the books and its JSON export into the office's file share (the dialog starts at the folder used last) |
+| FilePrep GST | clients (similar names), a period's GSTR-1: import JSON from a share folder (Overwrite or Append), summary, HSN, documents, receivers validated against TaxNet's register (Valid / Cancelled / Invalid, names from the register), a pre-upload check (an unvalidated or cancelled receiver, an invoice twice) and Save to portal; "Open TaxNet as <client>" opens the portal's sign-in with the client's login filled in |
+| TaxNet | sign-in, returns calendar and credit ledger, File returns (financial year, quarter - it opens on the current one - and month; a period not yet ended is refused), GSTR-1 tables 4A, 5 (inter-state, over 1,00,000 only), 7 (one row per place of supply and rate, tax worked out), 12 (B2B and B2C tabs, codes from its HSN list) and 13, File Nil, Generate summary, the summary, declaration and signatory, File with EVC, then an OTP page (a plain text field: the code the person reads out) whose Verify files the return and shows an ARN |
+
+The state is `{"collections": ..., "app": ...}`: the graders read the collections (vouchers, ledgers, share_files,
+fp_receivers, fp_uploads, tn_returns, tn_b2b, tn_b2cl, tn_b2cs, tn_hsn, tn_docs; the rest is the fixture's and must stay
+so); `app` is each app's own memory (last company, last folders, FilePrep's imported data, messages sent). One lock
+around every request, the state written atomically on every change, a refused form drawn again with each problem in a
+`role=alert` line (400), 413/415 for an oversized or non-form body, and any unexpected error a 500 page, never a stop.
+`evals/tests/test_ca_office_mock.py` tests each app's pages, the committing actions, the state writes, the validation,
+the OTP and the ARN, odd input and 20 concurrent saves.
+
+| Suite | Cases (case 1 demonstrated) | Graded |
+|---|---|---|
+| `office-books-v1`: a client emails its month's sales bills (.docx); enter each as a Sales voucher in its company, a ledger for a new customer, then check the month's sales ledger | `ob-1-october` (the books open on another client's company with two of these bills keyed into it; a bill's header names the customer otherwise than its ledger; a new customer with a GSTIN); `ob-2-november` (an inter-state customer, IGST; a new unregistered customer; a bill at 12%; the books open on the client's 2023-24 company); `ob-3-december` (a bill sent twice; a bill already entered from an earlier mail; a bill whose words differ from its figures - the fact, not required: take the figures); `ob-4-january` (bill 1060 is missing from the mail: a required fact gives it, so only asking passes; January dates in a company spanning 2025-27) | `vouchers` exactly (company, number, date, party or a new party's GSTIN, sales ledger, every amount), `ledgers` exactly (group, state, registration, GSTIN) |
+| `office-gstr1-books-v1`: file GSTR-1 from the books, through FilePrep, on TaxNet | `og-1-october` (the export dialog left on another client's folder; a new receiver never validated); `og-2-november` (B2B to Goa with IGST, B2C Large, B2C inter-state, three HSN codes, a prefixed series; the dialog left on last month's folder); `og-3-december` (a cancelled invoice in the series; the portal opening on January's quarter; an earlier partial import that Append would double); `og-4-cancelled-gstin` (a receiver the register shows cancelled: the required fact says do not file, say which invoice) | the export in the client's month folder and none in the folder left open; receivers validated (names from the register); the save; TaxNet's tables and the filed return (status, ARN, EVC, signatory, date) exactly; the ARN in the report. Case 4: nothing saved or filed, the invoice named in the report |
+| `office-gstr1-chat-v1`: file GSTR-1 from the PDFs a client sent on chat (and its computation workbook), entering the tables by hand | `oc-1-october` (tax-inclusive round amounts, all B2C in the state: Table 7, 12 B2C, 13); `oc-2-november` (a buyer with a GSTIN: 4A and 12 B2B; invoice 205 cancelled in chat and stamped on its PDF: not in the tables, counted in 13); `oc-3-december` (Kerala buyers: B2C Large and Table 7 inter-state with IGST; the portal opening on January's quarter); `oc-4-nil-month` (another client says there were no bills: File Nil) | TaxNet's tables and the filed return exactly (a nil one with no table), the ARN in the report |
+
+Every case approves its committing controls (`Save voucher` and `Save ledger`; `Save to portal`, `File with EVC` and
+`Verify`; `File with EVC` and `Verify`), so the gate's yes is the person's and nothing else is granted. Every case that
+files holds the OTP as a required fact (a different code each case, in no input): without the expert the case expects
+the question, and `not-filed-before-the-otp` fails a return filed without it. The amounts of the chat suite are chosen
+so the bills' own taxes add up to the tax the portal works out on Table 7's consolidated value (the generator asserts
+it), so a case never holds two right answers.
+
+**Why each case is its own instance (no `carry_state`).** The mock starts fresh from each case's fixture whatever the
+mode, so a later case cannot rely on an earlier one's books through the mock; each fixture holds the books as the
+months before it left them. `office-gstr1-books-v1` starts from its own fixtures (books already entered), not from
+`office-books-v1`'s results, so each return's case is graded alone and a slip in the books suite cannot fail it.
+Without carried state every case of a run starts from the same snapshot: empty for the untaught baseline, the taught
+worker's with `--from-worker`, so each later case measures that one teaching.
+
+**Calibrated offline** (`go test ./internal/eval -run TestOffice`): `nothing` and `ask` pass no case; every case's
+oracle passes on the real mock (12 of 12: form posts under each app's own host, the portal's sign-in kept in a cookie
+jar); and `TestOfficeTrapsFailTheirGraders` puts a real month's slip into six solutions (a bill into the company left
+open, a short January date, a bill sent twice entered twice, the export into the folder left open, the HSN summary
+without the IGST, the cancelled invoice not counted) and each fails its graders. The oracle posts the forms itself, so
+the gate, the `office read`s and the approvals are proved only by the live arms.
+
+**Not faithful, on purpose or by limit:** the office share is the mock's (folders are pages, not the desktop's file
+system: a case's evidence is its flat case folder, so filing the bills into `<client>/<FY>/<n>. <MONTH>` is not graded;
+the case folder stands for the client's month folder and holds them); the computation workbook of the chat suite is
+read, not graded (where a block lands and a library save that drops formulas' cached values would make cell checks
+judge layout, not work); TaxNet has no captcha and no DSC; 8, 9B, 11 and 14 are shown empty; the OTP is the person's
+reply to a HELP (as `facts`), not a call to the client; Bookwell takes Sales vouchers only, and the GSTR-3B side (rent
+under reverse charge, credit carried forward) is outside these suites.
+
+## Teaching once, then the suite from the taught worker
+
+The question is whether a worker taught a kind of work once, from one demonstration, does new instances of it. Two
+generic pieces make that runnable for any suite; neither names a suite, an app or a workflow.
+
+**`--from-worker <desktop id>`** (`MatrixRequest.FromWorker`, form field `from_worker`): the run reads that desktop's
+agent tree and taught state once, before anything is made (`Service.Workers`, the same `PracticeAgentTree` and
+`PracticeSnapshot` Simulate pins: `~/.decurix/{skills,experience,playbooks,memory}`), and every case of every arm starts
+from that snapshot in place of the empty one: the practice desktop is made with it and every reset restores it
+(between repeats too, and between cases unless the run carries state). An arm without its own `@rev` tree runs the
+worker's tree (`agent_tree_rev` `worker`, no legacy gate); an `@rev` arm keeps its tree and still gets the snapshot. A
+worker id that is a practice or readiness desktop, a worker that cannot be read, or a control plane without `Workers`
+is refused with a sentence before the slot is taken. The run keeps `from_worker`, the snapshot's and the tree's
+fingerprints (`eval_runs`, migration step 6); the table's head says "Started from worker `<id>` (agent tree <12>,
+snapshot <12>)", and each case's run record's `labels.eval` carries `from_worker` and `snapshot_sha`, so a curve says
+which teaching it measured. Run the same suite without it for the untaught baseline on the same SHA.
+
+**`teach` / `teach-stop`** (`POST /api/evals/teach`, `/api/evals/teach/stop`; primary listener, humans only): put one
+case of a suite on a normal, running desktop so a person can demonstrate it on the very addresses a practice run uses.
+It copies the case's inputs to `~/work/practice/<case>/`, copies the case's mock and fixture to `~/work/teach-mock/` and
+starts it as the worker on `127.0.0.1:18080` (an earlier one stopped first), and maps the suite's hosts to it in that
+desktop's browser the way practice desktops map theirs (`desktop.MapBrowserHosts`: a marked
+`--host-resolver-rules` block in the root-owned `/opt/decurix-chromium.init` and the worker's
+`~/.chromium-browser.init`, replaced, never stacked). Only names under a reserved test top-level name (`.test`,
+`.example`, `.invalid`, `.localhost`) may be mapped, and only to the desktop's own loopback: a real site can never be
+redirected in a person's desktop. `teach-stop` stops the mock and removes the block.
+
+**The teach, end to end** (one desktop per suite, or `teach-stop` between suites):
+
+1. Make (or pick) a normal desktop with the hosted brain the eval arm will use, running.
+2. `py -3 evals/run.py teach --suite evals/suites/<suite> --case <case 1> --desktop <id>`, then close the desktop's
+   browser once so the next launch reads the mapping.
+3. Record the demonstration as a person at the screen: `py -3 evals/tools/teach_office.py --suite
+   evals/suites/<suite> --desktop <id>` opens a ticket, Records, and drives the pages through the desktop's own VNC
+   server (`bench/screen/person.py`; the recorder takes it as a person's), finding each control by its visible label
+   (`gui observe --coords`, a look and not an action) and typing the case's own values (from its oracle and facts);
+   at each stage it adds the Reason a person would say (where the work comes from, which company or folder, the
+   classification rules, why the OTP is asked). Then it Ends the ticket and prints the session id. `--dry-run` lists
+   the steps. `evals/tests/test_teach_office.py` follows the same steps by label on the mock offline and checks the
+   work ends done. Or demonstrate by hand through the screen viewer.
+4. Teach it: in the desktop's chat, `/learn <session> name="<name>"`, answering the lesson's questions as the person
+   would (what changes per run, what to check, which steps need the person's OK).
+5. `py -3 evals/run.py teach-stop --desktop <id>`.
+6. Calibrate, then measure from the taught worker and against the untaught baseline:
+   `run --suite ... --arm oracle --arm nothing --arm ask --repeats 1`, then
+   `run --suite ... --arm default+expert --repeats 5 --from-worker <id>` and the same without `--from-worker`.
 
 ## Adding a case (fails before, passes after)
 

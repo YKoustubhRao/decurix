@@ -1,0 +1,466 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "og-2-november",
+  "category": "varied",
+  "kind": "gstr1_from_books",
+  "request": "File the November 2026 GSTR-1 of Konkan Coast Interiors (GSTIN 29AAGFK7314L1ZY) from its books. The month's sales are entered in Bookwell, and the month's invoices are in ~/work/practice/og-2-november/. Our apps: Bookwell http://books.example.test, FilePrep GST http://fileprep.example.test (it opens TaxNet signed in as the client), TaxNet http://taxnet.example.test.",
+  "start": {
+    "files": [
+      "KCI-041 Vasco Bay Hotels.docx",
+      "KCI-042 Rhea Dsouza.docx",
+      "KCI-043 Anand Kulkarni.docx",
+      "KCI-044 Belur Textiles.docx",
+      "KCI-045 Leena Fernandes.docx",
+      "KCI-046 Anand Kulkarni.docx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "otp",
+      "about": "the one-time password the portal sent to the client's registered mobile for filing",
+      "refers_to": [
+        "otp",
+        "one time password",
+        "one-time password",
+        "verification code",
+        "evc code"
+      ],
+      "answer": "I called the client: the OTP is 381946.",
+      "required": true
+    }
+  ],
+  "approves": [
+    {
+      "control": "Save to portal",
+      "role": "button"
+    },
+    {
+      "control": "File with EVC",
+      "role": "button"
+    },
+    {
+      "control": "Verify",
+      "role": "button"
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "export",
+        "kind": "mock_records",
+        "collection": "share_files",
+        "records": [
+          {
+            "folder": "GST Returns/Konkan Coast Interiors/2026-27/8. NOVEMBER",
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "112026"
+          }
+        ]
+      },
+      {
+        "id": "no-export-in-the-folder-left-open",
+        "kind": "absent",
+        "collection": "share_files",
+        "records": [
+          {
+            "folder": "GST Returns/Konkan Coast Interiors/2026-27/7. OCTOBER",
+            "gstin": "29AAGFK7314L1ZY"
+          }
+        ]
+      },
+      {
+        "id": "receivers",
+        "kind": "mock_records",
+        "collection": "fp_receivers",
+        "records": [
+          {
+            "client": "4",
+            "status": "Valid"
+          }
+        ]
+      },
+      {
+        "id": "saved",
+        "kind": "mock_records",
+        "collection": "fp_uploads",
+        "records": [
+          {
+            "client": "4",
+            "period": "2026-11",
+            "status": "Processed"
+          }
+        ]
+      },
+      {
+        "id": "tn-b2b",
+        "kind": "mock_records",
+        "collection": "tn_b2b",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "ctin": "30AAHFV3391G1Z9",
+            "inum": "KCI-041",
+            "idt": {
+              "date": "2026-11-03"
+            },
+            "val": {
+              "number": "283200.00"
+            },
+            "pos": "30",
+            "rt": "18",
+            "txval": {
+              "number": "240000.00"
+            },
+            "iamt": {
+              "number": "43200.00"
+            },
+            "camt": {
+              "number": "0.00"
+            },
+            "samt": {
+              "number": "0.00"
+            }
+          },
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "ctin": "29ACQPB2207N1ZE",
+            "inum": "KCI-044",
+            "idt": {
+              "date": "2026-11-18"
+            },
+            "val": {
+              "number": "75520.00"
+            },
+            "pos": "29",
+            "rt": "18",
+            "txval": {
+              "number": "64000.00"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "5760.00"
+            },
+            "samt": {
+              "number": "5760.00"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-b2cl",
+        "kind": "mock_records",
+        "collection": "tn_b2cl",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "pos": "30",
+            "inum": "KCI-042",
+            "idt": {
+              "date": "2026-11-07"
+            },
+            "val": {
+              "number": "159300.00"
+            },
+            "rt": "18",
+            "txval": {
+              "number": "135000.00"
+            },
+            "iamt": {
+              "number": "24300.00"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-b2cs",
+        "kind": "mock_records",
+        "collection": "tn_b2cs",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "pos": "29",
+            "typ": "INTRA",
+            "rt": "18",
+            "txval": {
+              "number": "40500.00"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "3645.00"
+            },
+            "samt": {
+              "number": "3645.00"
+            }
+          },
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "pos": "30",
+            "typ": "INTER",
+            "rt": "18",
+            "txval": {
+              "number": "40000.00"
+            },
+            "iamt": {
+              "number": "7200.00"
+            },
+            "camt": {
+              "number": "0.00"
+            },
+            "samt": {
+              "number": "0.00"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-hsn",
+        "kind": "mock_records",
+        "collection": "tn_hsn",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "tab": "B2B",
+            "hsn": "9403",
+            "uqc": "OTH",
+            "qty": {
+              "number": "0"
+            },
+            "rt": "18",
+            "txval": {
+              "number": "240000.00"
+            },
+            "iamt": {
+              "number": "43200.00"
+            },
+            "camt": {
+              "number": "0.00"
+            },
+            "samt": {
+              "number": "0.00"
+            },
+            "csamt": {
+              "number": "0.00"
+            }
+          },
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "tab": "B2C",
+            "hsn": "9403",
+            "uqc": "OTH",
+            "qty": {
+              "number": "0"
+            },
+            "rt": "18",
+            "txval": {
+              "number": "175000.00"
+            },
+            "iamt": {
+              "number": "31500.00"
+            },
+            "camt": {
+              "number": "0.00"
+            },
+            "samt": {
+              "number": "0.00"
+            },
+            "csamt": {
+              "number": "0.00"
+            }
+          },
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "tab": "B2C",
+            "hsn": "4418",
+            "uqc": "OTH",
+            "qty": {
+              "number": "0"
+            },
+            "rt": "18",
+            "txval": {
+              "number": "28000.00"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "2520.00"
+            },
+            "samt": {
+              "number": "2520.00"
+            },
+            "csamt": {
+              "number": "0.00"
+            }
+          },
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "tab": "B2B",
+            "hsn": "9954",
+            "uqc": "NA",
+            "qty": {
+              "number": "0"
+            },
+            "rt": "18",
+            "txval": {
+              "number": "64000.00"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "5760.00"
+            },
+            "samt": {
+              "number": "5760.00"
+            },
+            "csamt": {
+              "number": "0.00"
+            }
+          },
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "tab": "B2C",
+            "hsn": "9954",
+            "uqc": "NA",
+            "qty": {
+              "number": "0"
+            },
+            "rt": "18",
+            "txval": {
+              "number": "12500.00"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "1125.00"
+            },
+            "samt": {
+              "number": "1125.00"
+            },
+            "csamt": {
+              "number": "0.00"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-docs",
+        "kind": "mock_records",
+        "collection": "tn_docs",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "nature": "Invoices for outward supply",
+            "from": "KCI-041",
+            "to": "KCI-046",
+            "total": {
+              "number": "6"
+            },
+            "cancelled": {
+              "number": "0"
+            },
+            "net": {
+              "number": "6"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-returns",
+        "kind": "mock_records",
+        "collection": "tn_returns",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "status": "Filed",
+            "arn": "AA291126025869E",
+            "method": "EVC",
+            "signatory": "Nandini Kamath",
+            "nil": "no",
+            "filed_on": {
+              "date": "2026-12-04"
+            }
+          }
+        ]
+      },
+      {
+        "id": "reports-arn",
+        "kind": "final_text_contains",
+        "words": [
+          "AA291126025869E"
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "otp"
+        ]
+      },
+      {
+        "id": "not-filed-before-the-otp",
+        "kind": "absent",
+        "collection": "tn_returns",
+        "records": [
+          {
+            "gstin": "29AAGFK7314L1ZY",
+            "period": "2026-11",
+            "status": "Filed"
+          }
+        ],
+        "when": "asked"
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'month=2026-11' --data-urlencode 'folder=GST Returns/Konkan Coast Interiors/2026-27/8. NOVEMBER' http://books.example.test/company/2/gstr1/export",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'folder=GST Returns/Konkan Coast Interiors/2026-27/8. NOVEMBER' --data-urlencode 'file=29AAGFK7314L1ZY_GSTR1_NOV-2026_04122026_172107.json' --data-urlencode 'mode=overwrite' http://fileprep.example.test/client/4/gstr1/2026-11/import",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'submit=1' http://fileprep.example.test/client/4/gstr1/2026-11/save",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'user=konkan.coast' --data-urlencode 'password=Konkan#Demo26' http://taxnet.example.test/login",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'submit=1' http://taxnet.example.test/gstr1/2026-11/generate",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'declare=yes' --data-urlencode 'signatory=Nandini Kamath' http://taxnet.example.test/gstr1/2026-11/file-evc",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'otp=381946' http://taxnet.example.test/gstr1/2026-11/verify",
+    {
+      "answer": "Filed Konkan Coast Interiors's GSTR-1 for November 2026 with EVC. ARN AA291126025869E."
+    }
+  ],
+  "budget": {
+    "max_minutes": 55,
+    "max_tokens": 4000000
+  },
+  "tags": [
+    "inter-state",
+    "b2c-large",
+    "hsn-codes",
+    "stale-month-folder"
+  ],
+  "oracle_secrets": [
+    "Sahyadri#Demo26",
+    "Konkan#Demo26"
+  ]
+}

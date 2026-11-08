@@ -995,3 +995,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A host app's viewer count could reach its helper out of order
 - [part-6.md](gotchas/part-6.md): A learned method kept the plan's first idea of the output and only the plan question's answer
 - [part-6.md](gotchas/part-6.md): A formality the worker skipped cost the whole case
+- [part-6.md](gotchas/part-6.md): The offline oracle could not drive a mock that serves several apps by host name

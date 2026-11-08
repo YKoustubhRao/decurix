@@ -107,7 +107,8 @@ Paths are under the worker's home:
   "labels": {"run": "done", "person_verdict": "", "eval": null},
              // run: the run's verdict (done | not_done | unchecked | stopped | "" before verdicts), never a step's;
              // eval: {run_id, suite, suite_sha, case, arm, repeat, observed, passed, false_done, invalid, infra,
-             //        carry_state} for a run an eval case made, else null
+             //        carry_state, from_worker, snapshot_sha} for a run an eval case made, else null (the last two
+             //        only for a run started from a taught worker's state, evals.md "Teaching once")
   "integrity": {"bundle_sha256", "parts": {"recording": "sha256:..", ...}, "missing": [...], "worker_written": [...]}
 }
 ```

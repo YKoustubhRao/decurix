@@ -11,6 +11,7 @@ import tempfile
 import threading
 import unittest
 import unittest.mock
+import urllib.parse
 from email.parser import BytesParser
 from email.policy import default as email_policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -115,12 +116,23 @@ class FakeControlPlane(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
-        msg = BytesParser(policy=email_policy).parsebytes(
-            b"Content-Type: " + self.headers["Content-Type"].encode() + b"\r\n\r\n" + raw)
-        parts = {p.get_param("name", header="content-disposition"): p.get_payload(decode=True) for p in msg.iter_parts()}
+        if self.headers["Content-Type"].startswith("application/x-www-form-urlencoded"):
+            parts = {k: v[-1].encode() for k, v in urllib.parse.parse_qs(raw.decode()).items()}
+        else:
+            msg = BytesParser(policy=email_policy).parsebytes(
+                b"Content-Type: " + self.headers["Content-Type"].encode() + b"\r\n\r\n" + raw)
+            parts = {p.get_param("name", header="content-disposition"): p.get_payload(decode=True) for p in msg.iter_parts()}
+        parts["_path"] = self.path
         FakeControlPlane.started.append(parts)
         if self.path == "/api/evals/runs":
-            return self._send(202, {"run": {"id": "e1", "suite_name": "core-v1", "suite_sha": "ab" * 32, "status": "running"}})
+            run_doc = {"id": "e1", "suite_name": "core-v1", "suite_sha": "ab" * 32, "status": "running"}
+            if parts.get("from_worker"):
+                run_doc.update(from_worker=parts["from_worker"].decode(), snapshot_sha="5a" * 32, worker_tree_sha="7e" * 32)
+            return self._send(202, {"run": run_doc})
+        if self.path == "/api/evals/teach":
+            return self._send(200, {"desktop": parts["desktop"].decode(), "say": "The case's app answers at its hosts."})
+        if self.path == "/api/evals/teach/stop":
+            return self._send(200, {"say": "The case's app is stopped."})
         self._send(404, {"error": "not found"})
 
     def do_GET(self):
@@ -133,6 +145,11 @@ class FakeControlPlane(BaseHTTPRequestHandler):
             return self._send(200, b"# Eval e1: core-v1\n", "text/markdown")
         if self.path == "/api/evals/runs/e1/rows":
             return self._send(200, {"rows": [{"case_id": "c1", "passed": True}, {"case_id": "c2", "passed": False}]})
+        if self.path == "/api/evals/runs/e2":
+            return self._send(200, {"run": {"id": "e2", "status": "done", "suite_name": "learn-v1", "repeats": 5, "carry_state": True,
+                                            "from_worker": "desk-7", "snapshot_sha": "5a" * 32, "worker_tree_sha": "7e" * 32}})
+        if self.path == "/api/evals/runs/e2/rows":
+            return self._send(200, {"rows": [{"case_id": "c1", "arm": "default+expert", "passed": True}]})
         if self.path == "/api/evals/runs/e9":
             return self._send(404, {"error": "no such run"})
         self._send(404, {"error": "not found"})
@@ -251,6 +268,43 @@ class CommandTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as err:
             self.main("status", "e9")
         self.assertIn("404", str(err.exception.code))
+
+    def test_from_worker_is_sent_only_with_its_flag_and_named(self):
+        code, said = self.main("run", "--suite", str(EVALS / "suites" / "core-v1"), "--arm", "default+expert",
+                               "--repeats", "5", "--from-worker", " desk-7 ", "--detach")
+        self.assertEqual(code, 0, said)
+        self.assertEqual(FakeControlPlane.started[0]["from_worker"], b"desk-7")
+        self.assertIn("every case starts from worker desk-7 (snapshot 5a5a5a5a5a5a)", said)
+        FakeControlPlane.started = []
+        code, said = self.main("run", "--suite", str(EVALS / "suites" / "core-v1"), "--arm", "default", "--repeats", "5", "--detach")
+        self.assertEqual(code, 0, said)
+        self.assertNotIn("from_worker", FakeControlPlane.started[0])  # never the default
+
+    def test_the_curve_and_status_name_the_worker(self):
+        code, said = self.main("curve", "e2")
+        self.assertEqual(code, 0, said)
+        self.assertIn("Started from worker `desk-7` (agent tree 7e7e7e7e7e7e, snapshot 5a5a5a5a5a5a)", said)
+        code, said = self.main("status", "e2")
+        self.assertIn("started from worker desk-7", said)
+
+    def test_teach_sends_the_suite_case_and_desktop(self):
+        suite = EVALS / "suites" / "core-v1"
+        case = run.suite_kinds(suite)[0][0]
+        code, said = self.main("teach", "--suite", str(suite), "--case", case, "--desktop", "desk-7")
+        self.assertEqual(code, 0, said)
+        sent = FakeControlPlane.started[0]
+        self.assertEqual((sent["_path"], sent["case"], sent["desktop"]), ("/api/evals/teach", case.encode(), b"desk-7"))
+        self.assertEqual(gzip.decompress(sent["suite"]), run.suite_tar(suite))
+        self.assertIn("answers at its hosts", said)
+        code, said = self.main("teach-stop", "--desktop", "desk-7")
+        self.assertEqual(code, 0, said)
+        self.assertEqual((FakeControlPlane.started[1]["_path"], FakeControlPlane.started[1]["desktop"]), ("/api/evals/teach/stop", b"desk-7"))
+        # A case the suite does not have is said before anything is sent.
+        FakeControlPlane.started = []
+        code, said = self.main("teach", "--suite", str(suite), "--case", "no-such-case", "--desktop", "desk-7")
+        self.assertEqual(code, 2)
+        self.assertIn("no case 'no-such-case'", said)
+        self.assertEqual(FakeControlPlane.started, [])
 
     def test_a_bad_arm_is_a_usage_error(self):
         code, said = self.main("run", "--suite", str(EVALS / "suites" / "core-v1"), "--arm", "gpt-5")

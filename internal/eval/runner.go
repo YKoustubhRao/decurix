@@ -117,6 +117,9 @@ type Service struct {
 	// Minute is how long a budget minute lasts (a minute; tests shorten it).
 	Minute      time.Duration
 	BootTimeout time.Duration
+	// Workers reads a taught worker's agent tree and state (*desktop.Manager), for a run that starts every case from
+	// that worker (MatrixRequest.FromWorker); nil refuses such a run.
+	Workers Workers
 
 	mu     sync.Mutex
 	active map[string]*activeRun
@@ -149,6 +152,60 @@ type MatrixRequest struct {
 	// each repeat's first case only. Refused unless the suite says carry_state, and a carry_state suite is refused
 	// without it: the two must agree, so neither mode is ever run by accident.
 	CarryState bool
+	// FromWorker is a desktop whose taught state (desktop.PracticeSnapshotParts) every case of the run starts from, in
+	// place of an empty one, and whose agent tree every arm without its own @rev tree runs: teach a worker once, then
+	// measure it on a suite. "" starts every case empty, as before.
+	FromWorker string
+}
+
+// Workers reads a worker's agent tree and its taught state as tars with their fingerprints (*desktop.Manager), as
+// Simulate pins them (practice.Workers).
+type Workers interface {
+	PracticeAgentTree(ctx context.Context, workerID string) ([]byte, string, error)
+	PracticeSnapshot(ctx context.Context, workerID string) ([]byte, string, error)
+}
+
+// WorkerTreeRev is the AgentTreeRev of an arm that runs the agent tree of the run's FromWorker.
+const WorkerTreeRev = "worker"
+
+// workerIDPattern is what a desktop id given as FromWorker may look like.
+var workerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+
+// ValidWorkerID reports whether id can name a worker to start a run from: a desktop id, never a practice or readiness
+// desktop's (those are the runner's own, made and removed per run).
+func ValidWorkerID(id string) bool {
+	return workerIDPattern.MatchString(id) && !strings.HasPrefix(id, "practice-") && !strings.HasPrefix(id, "readiness-")
+}
+
+// fromWorker is what a run read once from its FromWorker: the snapshot every case starts from and the agent tree arms
+// without their own run.
+type fromWorker struct {
+	snapshot, tree       []byte
+	snapshotSHA, treeSHA string
+}
+
+// readWorker reads the worker's agent tree and state once, for the whole run; it refuses with a sentence.
+func (s *Service) readWorker(ctx context.Context, id string) (fromWorker, error) {
+	var w fromWorker
+	if !ValidWorkerID(id) {
+		return w, BadRequest("The worker to start from must be a desktop's id (not a practice or readiness desktop).")
+	}
+	if s.Workers == nil {
+		return w, BadRequest("This control plane cannot read a worker's state.")
+	}
+	var err error
+	if w.tree, w.treeSHA, err = s.Workers.PracticeAgentTree(ctx, id); err != nil || len(w.tree) == 0 {
+		log.Printf("eval: read the agent tree of %s: %v", id, err)
+		return w, BadRequest("The worker could not be read: its agent tree was not found (is the desktop running?).")
+	}
+	if w.snapshot, w.snapshotSHA, err = s.Workers.PracticeSnapshot(ctx, id); err != nil {
+		log.Printf("eval: read the state of %s: %v", id, err)
+		return w, BadRequest("The worker could not be read: its taught state could not be copied.")
+	}
+	if len(w.snapshot) == 0 {
+		w.snapshot = emptySnapshot
+	}
+	return w, nil
 }
 
 // ErrBusy is a second practice or eval run while one is active.
@@ -183,6 +240,18 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
+	// The taught worker is read before anything is made: a worker that cannot be read refuses the run.
+	worker := fromWorker{snapshot: emptySnapshot}
+	if req.FromWorker = strings.TrimSpace(req.FromWorker); req.FromWorker != "" {
+		if worker, err = s.readWorker(ctx, req.FromWorker); err != nil {
+			return Run{}, err
+		}
+		for i := range arms {
+			if len(arms[i].AgentTree) == 0 {
+				arms[i].AgentTree, arms[i].AgentTreeRev, arms[i].AgentTreeSHA = worker.tree, WorkerTreeRev, worker.treeSHA
+			}
+		}
+	}
 	release, err := s.Practice.Reserve()
 	if err != nil {
 		return Run{}, err
@@ -205,7 +274,8 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	}
 	now := s.Store.now()
 	run := Run{ID: sqlitedb.NewID("e", 8), CreatedAt: now, StartedAt: now, SuiteName: suite.Name, SuiteSHA: suite.SHA, SuiteBlob: blob,
-		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning, Note: graderNote(), CarryState: req.CarryState}
+		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning, Note: graderNote(), CarryState: req.CarryState,
+		FromWorker: req.FromWorker, SnapshotSHA: worker.snapshotSHA, WorkerTreeSHA: worker.treeSHA, snapshot: worker.snapshot}
 	if err := s.Store.Create(run); err != nil {
 		return Run{}, err
 	}
@@ -377,6 +447,10 @@ func (s *Service) checkArms(arms []Arm) ([]Arm, error) {
 				return nil, BadRequest(fmt.Sprintf("Arm %s: the agent tree is not a tar rooted at decurix_agent/.", a.Name))
 			}
 			a.AgentTreeSHA = sum
+			if a.AgentTreeRev == WorkerTreeRev {
+				// The name says "the run's worker's tree", which only the runner gives (FromWorker).
+				return nil, BadRequest(fmt.Sprintf("Arm %s: an uploaded agent tree cannot be named %q.", a.Name, WorkerTreeRev))
+			}
 			if a.AgentTreeRev == "" {
 				a.AgentTreeRev = "upload"
 			}
@@ -581,7 +655,8 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 	armRun := fmt.Sprintf("%s-a%d", run.ID, index+1)
 	desktopID := desktop.PracticeDesktopID(armRun)
 	spec := desktop.PracticeSpec{RunID: armRun, Image: image, Harness: "thebot", Brain: arm.Provider, Model: arm.Model,
-		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: emptySnapshot, LegacyGate: arm.AgentTreeRev != "",
+		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: run.startSnapshot(),
+		LegacyGate:    arm.AgentTreeRev != "" && arm.AgentTreeRev != WorkerTreeRev,
 		SoulDecisions: arm.Soul}
 	if spec.Model == "" {
 		spec.Model = "default"
@@ -653,7 +728,7 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 			if !first {
 				var err error
 				if !run.CarryState || i == 0 {
-					err = s.Sandbox.ResetPractice(ctx, d.ContainerID, emptySnapshot)
+					err = s.Sandbox.ResetPractice(ctx, d.ContainerID, run.startSnapshot())
 					s.Broker.ForgetReplies() // (what an earlier case was told is not the reset desktop's)
 				} else {
 					err = s.Sandbox.SettlePractice(ctx, d.ContainerID)
