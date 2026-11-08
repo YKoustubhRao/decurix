@@ -317,6 +317,11 @@ def curve(rows, order=None, kinds=None):
             missed = []
             if later_rate < first_rate:
                 missed.append(f"later cases pass {later_rate:.0%}, the first {first_rate:.0%}")
+            elif not later_rate:
+                # Cheaper at the same correctness needs some correctness: a kind no case passed is not a curve that
+                # met the bar, however few tokens its failures took (first live run, 2026-11-08: five bills, none
+                # passed, read as "met").
+                missed.append("no later case passed, so being cheaper says nothing")
             if later_tokens >= first["tokens"]:
                 missed.append(f"later cases' median tokens {_tokens(later_tokens)} are not below the first's "
                               f"{_tokens(first['tokens'])}")
@@ -399,6 +404,13 @@ def wait(cp, run_id, poll=POLL_SECONDS, sleep=time.sleep):
 
 
 def main(argv=None):
+    # The tables and the curve quote the worker's own words; a console that cannot write a character (Windows' cp1252
+    # and an arrow) must not end the command after the file was written.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(prog="evals/run.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cp", default=DEFAULT_CP, help="the control plane's primary listener (default %(default)s)")
     sub = parser.add_subparsers(dest="command", required=True)

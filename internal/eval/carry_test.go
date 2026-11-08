@@ -10,10 +10,12 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
@@ -64,8 +66,14 @@ func TestACarryStateRunClearsNothingBetweenARepeatsCases(t *testing.T) {
 	sb.mu.Lock()
 	resets := sb.resets
 	sb.mu.Unlock()
+	settles := sb.settles
 	if resets != 1 {
 		t.Fatalf("resets: %d, want 1 (before the second repeat's first case only)", resets)
+	}
+	// Between a repeat's cases the desktop is settled instead (the earlier case's open question ended, nothing
+	// learned cleared): 2 per repeat of 3 cases.
+	if settles != 4 {
+		t.Fatalf("settles: %d, want 4 (before every case but a repeat's first)", settles)
 	}
 	md := Summarise(run, rows).Markdown()
 	if !strings.Contains(md, "carried from case to case") {
@@ -82,6 +90,9 @@ func TestACarryStateRunClearsNothingBetweenARepeatsCases(t *testing.T) {
 	sb2.mu.Lock()
 	resets2 := sb2.resets
 	sb2.mu.Unlock()
+	if sb2.settles != 0 {
+		t.Fatalf("default mode settled %d times: every case but the arm's first is reset, never only settled", sb2.settles)
+	}
 	if run2.CarryState || resets2 != 5 {
 		t.Fatalf("default mode: carry %v, resets %d (want 5)", run2.CarryState, resets2)
 	}
@@ -178,5 +189,22 @@ func TestARowKeepsItsModelCalls(t *testing.T) {
 	rows, err := store.Rows("e_calls")
 	if err != nil || len(rows) != 1 || rows[0].Calls != 17 || rows[0].TokensIn != 90000 {
 		t.Fatalf("rows: %+v %v", rows, err)
+	}
+}
+
+// What settling clears between a carry-state run's cases is the open task's and the browser's, never what the worker
+// learned: the methods, skills, memory and soul's workspace under ~/.decurix, and the work folder, all stay.
+func TestSettlingKeepsWhatTheWorkerLearned(t *testing.T) {
+	settled := desktop.PracticeSettlePaths()
+	for _, p := range settled {
+		for _, kept := range []string{"/home/headless/.decurix", "/home/headless/.decurix/ai", "/home/headless/.decurix/methods",
+			"/home/headless/.decurix/skills", "/home/headless/work"} {
+			if p == kept || strings.HasPrefix(kept+"/", p+"/") {
+				t.Fatalf("settling clears %s, which holds %s", p, kept)
+			}
+		}
+	}
+	if !slices.Contains(settled, "/home/headless/.decurix/active-task.json") {
+		t.Fatalf("settling keeps the earlier case's task in hand: %q", settled)
 	}
 }

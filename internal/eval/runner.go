@@ -77,6 +77,9 @@ type Sandbox interface {
 	DesktopImageID(ctx context.Context, profile string) (string, error)
 	// VerifyGateQuestion checks that a question was signed by the desktop's own approval gate.
 	VerifyGateQuestion(desktopID, requestID, question, sig string) bool
+	// SettlePractice ends the open task between two cases of a carry-state run and restarts the desktop, keeping
+	// what the worker learned (desktop.PracticeSettlePaths).
+	SettlePractice(ctx context.Context, id string) error
 }
 
 // Bundles pulls a case's run bundle off its practice desktop (*runs.Puller over desktop.PracticeHome), before the
@@ -640,9 +643,16 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 			}
 			s.setProgress(run.ID, func(p *Progress) { p.Arm, p.Repeat, p.Case = arm.Name, rep, c.ID })
 			// Every case starts from the snapshot (its desktop is new for the first), unless the run carries state:
-			// then only a repeat's first case does, and its later cases find what the earlier ones left.
-			if !first && (!run.CarryState || i == 0) {
-				err := s.Sandbox.ResetPractice(ctx, d.ContainerID, emptySnapshot)
+			// then only a repeat's first case does, and its later cases find what the earlier ones left. Between
+			// those, the desktop is settled: the earlier case's open question or unfinished work is ended (it would
+			// hold the next request back, found live 2026-11-08), and nothing it learned is cleared.
+			if !first {
+				var err error
+				if !run.CarryState || i == 0 {
+					err = s.Sandbox.ResetPractice(ctx, d.ContainerID, emptySnapshot)
+				} else {
+					err = s.Sandbox.SettlePractice(ctx, d.ContainerID)
+				}
 				if err == nil {
 					err = s.waitAgent(ctx, d)
 				}

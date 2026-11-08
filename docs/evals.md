@@ -200,7 +200,15 @@ needed to run: identity and agent token are the container's environment and the 
 with `--carry-state` (`carry_state=1` on the route, `MatrixRequest.CarryState`), skips the reset between a repeat's
 cases: the desktop is reset only before each repeat's first case (the first repeat's desktop is new), so a case finds
 the methods, skills and memory the cases before it left, and each repeat is one independent sample of the whole
-sequence. Each case still gets its own inputs and a fresh mock with its fixture. The two must agree: `--carry-state` on
+sequence. Each case still gets its own inputs and a fresh mock with its fixture. Between a repeat's cases the desktop
+is **settled** instead (`desktop.SettlePractice`): the worker's processes are stopped, the open task is cleared (the
+agent's `active-task.json`, every request in `~/.decurix/command` not yet handled, its task files in `/tmp`, soul's job
+log, the browser profiles, and as root the gate's store), and the container is restarted; everything else under
+`~/.decurix` and the work folder stay. Found live in the first run: a case that ended at an approval left its question
+open, and the next case's request, sent a second later, queued behind it (the agent drops a stale question only for a
+request saved more than a second after it) until that case ran out of time. `TestPracticeSettleLive` proves it on the
+image. A restart's start no longer counts its own earlier start's memory reservation (`idlepause` reserves per desktop
+id): settling every few seconds was refused its desktop after a few cases. The two must agree: `--carry-state` on
 a suite without the flag, and a carry-state suite without `--carry-state`, are refused before anything is made
 (`checkCarry`). The run row keeps the mode (`eval_runs.carry_state`), and the table's head says which ran: "State:
 carried from case to case" or "State: reset to the snapshot before every case".
@@ -342,6 +350,31 @@ Offline, `TestLearnV1SuiteLoads` passes the oracle on all ten cases (form posts 
 `python3 -c` writes the expected `recon.csv`); the `office read ... | grep -q` line before each is skipped there and is
 proved only by the live oracle arm, with the carry-state run's own mechanics (nothing cleared between cases, a fresh
 mock per case).
+
+**Calibrated live** (2026-11-08, runs `ee0acbd1dcca561fb` and, after the settle between cases, `e889f624932ab3306`;
+suite SHA `eb82d4819eac`, image `decurix-desktop:next` 5beb149276ff, `--carry-state --repeats 1`; both the same):
+`oracle` 10/10 (every `office read ... | grep -q` line ran and matched),
+`nothing` 0/10 (false done 10/10), `ask` 0/10 (its question names no fact, so `learn-bill-1`, `learn-recon-1` and
+`learn-bill-4` fail their `asked` grader; the rest expect `complete`). No infrastructure rows, no problems on an oracle
+row. Carry state held: in the middle of the oracle arm the practice desktop still had the earlier cases' folders under
+`~/work/practice/` (with their `recon.csv`) and their tasks' files under `~/.decurix`, while each bill case's
+`mock_records` with `exact_count` passed against its own fixture, so its mock did not hold the bill the case before it
+saved. The runner removed the practice desktops, the mocks and the practice network at the end.
+
+**First curve** (2026-11-08, run `ea1b8e583aab3317b`, `default+expert` = azure Kimi-K2.6 on key 2, n=1: not a result):
+
+| kind | case 1 | cases 2-5 | tokens in, case 1 then 2-5 | questions |
+|---|---|---|---|---|
+| reconcile | pass | 4/4 pass | 674k; 111k, 110k, 116k, 101k | recon 1 asked the layout (required), then none |
+| doc_to_record | approval | 0/4 (all at the gate) | 1.36M; 175k, 808k, 238k, 123k | the plan question each time ("other") |
+
+The reconciliation half shows the promise: the lesson taught once was kept across a different task between uses and
+a second client, at a sixth of the first case's tokens, with no question. The bill half measures nothing yet: every
+bill ended at the approval gate on "Save bill", which the plan of the work promised to put to the person first
+(`DECURIX_PLAN_ASK_FIRST`) and which an eval never answers; on bill 1 the worker also picked Logistics without asking,
+and on bill 4 it declared "as per covering letter" as the bill number instead of asking ([follow-ups.md](follow-ups.md),
+"Phase 2: evals"). `curve` now says "not met" for a kind no later case passed (it said "met" for these bills: cheaper
+failures).
 
 ## Adding a case (fails before, passes after)
 

@@ -201,6 +201,8 @@ type fakeSandbox struct {
 	execExit  func(argv []string) (int, []byte)
 	paused    map[string]bool
 	resets    int
+	// settles counts SettlePractice calls (between a carry-state run's cases).
+	settles int
 	// home is the files in the desktop's home that outlive a case unless the reset clears them.
 	home     map[string]bool
 	onCreate func(n int)
@@ -257,6 +259,22 @@ func (f *fakeSandbox) ResetPractice(context.Context, string, []byte) error {
 	f.resets++
 	for file := range f.home {
 		for _, root := range desktop.PracticeResetPaths() {
+			if file == root || strings.HasPrefix(file, root+"/") {
+				delete(f.home, file)
+			}
+		}
+	}
+	return nil
+}
+
+// SettlePractice is a stand-in: it drops from the fake home the paths the real settle is given
+// (desktop.PracticeSettlePaths), which keep what the worker learned.
+func (f *fakeSandbox) SettlePractice(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.settles++
+	for file := range f.home {
+		for _, root := range desktop.PracticeSettlePaths() {
 			if file == root || strings.HasPrefix(file, root+"/") {
 				delete(f.home, file)
 			}

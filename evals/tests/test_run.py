@@ -286,6 +286,16 @@ class CurveTest(unittest.TestCase):
         self.assertFalse(rec["met"])
         self.assertIn("not below", rec["missed"][0])
 
+    def test_a_kind_that_never_passes_does_not_meet_the_bar(self):
+        rows = [_row("b1", tokens_in=1_400_000, passed=False), _row("b2", tokens_in=200_000, passed=False),
+                _row("b3", tokens_in=100_000, passed=False)]
+        v = run.curve(rows, self.ORDER, self.KINDS)[1]["default+expert"]["doc_to_record"]
+        self.assertFalse(v["met"])
+        self.assertIn("no later case passed", v["missed"][0])
+        # A first case that failed and later ones that pass still meet it.
+        rows = [_row("b1", tokens_in=400_000, passed=False), _row("b2", tokens_in=200_000), _row("b3", tokens_in=100_000)]
+        self.assertTrue(run.curve(rows, self.ORDER, self.KINDS)[1]["default+expert"]["doc_to_record"]["met"])
+
     def test_cheaper_by_skipping_a_question_or_a_false_done_does_not(self):
         rows = [_row("b1", tokens_in=400_000), _row("b2", tokens_in=100_000, passed=False),
                 _row("b3", tokens_in=100_000, false_done=True, passed=False)]

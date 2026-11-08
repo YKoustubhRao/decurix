@@ -77,6 +77,24 @@ func PracticeResetPaths() []string { return append([]string{}, practiceResetPath
 // the image).
 const practiceResetScript = `kill -STOP -1 2>/dev/null; rm -rf -- "$@" /tmp/decurix-* /tmp/decurix.* /tmp/thebot-soul.log`
 
+// practiceSettlePaths are what SettlePractice clears between the cases of a carry-state run: the open task's and
+// nothing learned. The agent's record of its task in hand (active-task.json: kept so a restart reports it
+// interrupted, or carries a long request on) and the browser profiles (a killed browser opens on a "restore pages"
+// bar) go; the methods, skills, memory and the work folder stay.
+var practiceSettlePaths = []string{
+	"/home/headless/.config/chromium", "/home/headless/.config/google-chrome", practiceDecurixDir + "/active-task.json",
+}
+
+// PracticeSettlePaths lists what SettlePractice clears between a carry-state run's cases, for runners and their tests.
+func PracticeSettlePaths() []string { return append([]string{}, practiceSettlePaths...) }
+
+// practiceSettleScript, run as the worker, stops every process of the worker (as practiceResetScript does), clears
+// the paths it is given, the agent's task files in /tmp and soul's job log, and every request not yet handled in the
+// agent's command folder (a handled one is renamed *.done): a request queued behind the earlier case's open question
+// would otherwise run as a task of its own after the restart.
+const practiceSettleScript = `kill -STOP -1 2>/dev/null; rm -rf -- "$@" /tmp/decurix-* /tmp/decurix.* /tmp/thebot-soul.log; ` +
+	`find ` + practiceDecurixDir + `/command -maxdepth 1 -type f ! -name '*.done' -exec rm -f -- {} + 2>/dev/null; true`
+
 // practiceGateResetScript, run as root, stops the gate's process too and clears the gate's own store (the pending
 // request, any grant, the last reply), which belongs to the gate's user and is out of the worker's reach. Its key stays.
 const practiceGateResetScript = `kill -STOP -1 2>/dev/null; rm -rf -- /var/lib/decurix-gate/computer`
@@ -686,7 +704,24 @@ func practicePassword() string {
 // profile and the work folder, restarts the container, and restores the pinned
 // snapshot while it is stopped.
 func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte) error {
-	// It deletes a worker's whole state: only a practice desktop the control plane made is reset, never a worker's own
+	return m.restartPractice(ctx, id, practiceResetScript, practiceResetPaths, snapshot)
+}
+
+// SettlePractice ends whatever the worker still has in hand between two cases of a carry-state run (a learning curve),
+// keeping everything it learned: it stops the worker's processes, clears the open task (practiceSettlePaths, requests
+// not yet handled, the agent's task files in /tmp, soul's job log) and, as root, the gate's store (a pending request,
+// a grant, the last reply; its key stays), then restarts the container. Found live (2026-11-08, the first learning-curve
+// run): a case that ended at an approval left the question open, and the next case's request, sent a second later,
+// queued behind it until that case ran out of time. A person who starts other work leaves an unanswered question
+// behind; the restart is that, made certain.
+func (m *Manager) SettlePractice(ctx context.Context, id string) error {
+	return m.restartPractice(ctx, id, practiceSettleScript, practiceSettlePaths, nil)
+}
+
+// restartPractice runs script (as the worker, with paths) and the gate's reset (as root) in a practice desktop, then
+// kills it, restores snapshot when one is given, and starts it again.
+func (m *Manager) restartPractice(ctx context.Context, id, script string, paths []string, snapshot []byte) error {
+	// It deletes a worker's state: only a practice desktop the control plane made is reset, never a worker's own
 	// desktop or a mock (the label is the control plane's, set at creation).
 	inspect, err := m.client.ContainerInspect(ctx, id)
 	if err != nil {
@@ -695,7 +730,7 @@ func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte)
 	if inspect.Config == nil || inspect.Config.Labels[PracticeLabel] != "true" || inspect.Config.Labels["decurix-practice-mock"] == "true" {
 		return ErrNotPractice
 	}
-	cmd := append([]string{"/bin/sh", "-c", practiceResetScript, "reset"}, practiceResetPaths...)
+	cmd := append([]string{"/bin/sh", "-c", script, "reset"}, paths...)
 	if err := m.practiceExec(ctx, id, "headless", cmd); err != nil {
 		return fmt.Errorf("clear the practice desktop: %w", err)
 	}
