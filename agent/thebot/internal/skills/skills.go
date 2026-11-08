@@ -120,6 +120,9 @@ type RunContext struct {
 	// the application's own list, each with the words that searched for it, as the host's skill records them
 	// (Python's skill_task._chosen_for): the record holds the entry's own name, not those words. Data, never prompt.
 	PickedFields []string
+	// CollectOnly is the host's word (a flag, never text) that this job is a phase of a taught task whose rule is to
+	// collect the documents and enter nothing: the review asks no document's figures to be entered (coverageIssues).
+	CollectOnly bool
 }
 
 // Said is one reply of the person's with the question it answered.

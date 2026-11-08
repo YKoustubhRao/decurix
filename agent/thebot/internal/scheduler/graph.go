@@ -499,7 +499,7 @@ func (e *execution) runContext(n *node) skills.RunContext {
 		L1: s.L1, SkillLib: s.SkillLib,
 		System: e.system, WorkDir: e.req.WorkDir, Approved: approvalFor(n),
 		Resume: n.resume, HumanReply: n.reply, HumanReading: n.reading, PlanAgreed: e.req.PlanAgreed,
-		EarlierSaid: e.req.EarlierSaid, PickedFields: e.req.PickedFields,
+		EarlierSaid: e.req.EarlierSaid, PickedFields: e.req.PickedFields, CollectOnly: e.req.CollectOnly,
 	}
 }
 

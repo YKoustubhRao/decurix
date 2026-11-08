@@ -146,6 +146,8 @@ type Request struct {
 	EarlierSaid []skills.Said
 	// PickedFields is the taught task's fields filled by picking an application's entry (skills.RunContext).
 	PickedFields []string
+	// CollectOnly is the host's word that the job collects documents and enters nothing (skills.RunContext).
+	CollectOnly bool
 }
 
 type Scheduler struct {

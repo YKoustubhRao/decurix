@@ -551,6 +551,18 @@ def _picked_fields():
         return []
 
 
+def _collect_only():
+    """Whether this job is the phase of a taught task that collects its documents and enters nothing (skill_task's
+    gather phase), from the guidance's own phase - structure, never the request's words. Soul's review then asks no
+    document's figures to be entered: found live (2026-11-08), it sent such a phase back four times to enter a bill."""
+
+    try:
+        from decurix_agent import skill_task
+        return (guidance.get() or {}).get("phase") == skill_task.GATHER_PHASE
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _plan_agreed():
     """Whether the job about to start is under a plan the person agreed: this process put the plan to them and they
     answered it (plan_context), or the job is a stage of a planned long request (workflow_task points at a stage of a
@@ -713,6 +725,8 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 "earlierSaid": _earlier_said(),
                 # The taught task's fields filled by picking an application's entry, with their search words (_picked_fields).
                 "pickedFields": _picked_fields(),
+                # This job is a taught task's phase that collects documents and enters nothing (_collect_only).
+                "collectOnly": _collect_only(),
                 # The control plane's task this job works for (C2): soul tags every model call it makes for the job
                 # with it, so the proxy's record joins each call to its task.
                 "taskId": task_context.current(),

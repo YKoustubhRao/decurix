@@ -688,6 +688,12 @@ const maxCoverageIssues = 4
 // code. Entered, or said why it is left out, it is settled. Found live (2026-10-24): a phone photo of a sale bill was
 // saved with the others and never entered; the review raised other points, and the month's totals went out 8,750 short.
 func (st *operatorState) coverageIssues(report string) []reviewIssue {
+	// A goal whose rule is to collect the documents and enter nothing (a taught task's first phase) is asked no
+	// document's figures: found live (2026-11-08), the review sent such a phase back four times to "enter what it
+	// holds", the model entered the bill inside the phase, and the next review raised that as breaking the phase.
+	if st.CollectOnly {
+		return nil
+	}
 	said := strings.ToLower(report)
 	var out []reviewIssue
 	for _, gap := range st.coverageGaps() {

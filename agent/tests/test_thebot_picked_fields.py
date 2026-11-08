@@ -58,5 +58,13 @@ class ThePickedFieldsField(unittest.TestCase):
         self.assertEqual(self.sent()["pickedFields"], [])
 
 
+    def test_the_gather_phase_is_sent_as_collect_only(self):
+        from decurix_agent import skill_task
+        run = {"skill": picked_skill(), "values": {}}
+        guidance.begin(skill="enter-bill", task="collect", text="", values={}, run=run, phase=skill_task.GATHER_PHASE)
+        self.assertTrue(self.sent()["collectOnly"])
+        guidance.begin(skill="enter-bill", task="enter", text="", values={}, run=run)
+        self.assertFalse(self.sent()["collectOnly"])
+
 if __name__ == "__main__":
     unittest.main()

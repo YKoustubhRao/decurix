@@ -41,3 +41,16 @@ func TestPickedFieldsAreBounded(t *testing.T) {
 		t.Fatalf("a field of %d bytes kept", n)
 	}
 }
+
+// A goal that only collects documents is asked no document's figures (coverageIssues).
+func TestACollectOnlyGoalIsAskedNoFiguresEntered(t *testing.T) {
+	st := &operatorState{}
+	st.Units = append(st.Units, evidenceUnit{Kind: "document", Source: "/home/w/bill.pdf", Text: "Invoice 4471 total 1,250.00"})
+	if len(st.coverageIssues("collected the bill")) == 0 {
+		t.Fatal("a read document nothing reflects should be a point in an ordinary goal")
+	}
+	st.CollectOnly = true
+	if issues := st.coverageIssues("collected the bill"); len(issues) != 0 {
+		t.Fatalf("a collect-only goal was asked to enter figures: %+v", issues)
+	}
+}
