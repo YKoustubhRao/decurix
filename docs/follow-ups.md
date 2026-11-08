@@ -181,6 +181,14 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
   `parse_number` stays unit-less on purpose (a bare 5 would then stand for "5%"). A bare one-digit figure is still
   never found inside another figure.
 
+## Two control planes on one Docker (found 2026-11-08, dev rig)
+
+A second dev control plane started beside the first on the same Docker took the first's desktop for its own: its idle
+pause (`idlepause`) sees only its own database's activity and paused a desktop mid-task, and each control plane's
+`CleanupPractice` at start removes every practice desktop on the host. Not a product path today (one control plane per
+host), but any rig that runs two (parallel eval lanes) needs both to scope their sweeps to desktops they created (a
+control-plane instance label on the container, checked by idle pause and cleanup). **Open.**
+
 ## Live checks after the next build
 
 The writers could not run these. Run them on the next build, before calling this review done.
