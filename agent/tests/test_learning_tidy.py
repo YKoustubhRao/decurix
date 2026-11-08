@@ -9,6 +9,7 @@ was learned as ten steps and asked about six of them one at a time.
 """
 
 import unittest
+from unittest import mock
 
 # Imported first: it stubs decurix_agent.config on a machine with no desktop.
 from test_recordings import event
@@ -123,6 +124,11 @@ class Tidying(unittest.TestCase):
 class GroupedPositions(unittest.TestCase):
 
     def setUp(self):
+        # Clicks with no desktop launcher behind them: on a real desktop (the image's own launchers) step 1's double
+        # click on the desktop is read as opening the browser's launcher, rightly, and is no longer a position.
+        patcher = mock.patch.object(learning.launchers, "for_window", lambda *a, **k: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.skill = learning.build([brave_demo()])
         while (question := learning.next_question(self.skill))["kind"] != "coordinates":
             learning.answer(self.skill, question, {"goal": "skip", "start": "no"}[question["kind"]])
