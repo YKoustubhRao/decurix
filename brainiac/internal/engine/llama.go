@@ -174,7 +174,7 @@ func (p *LlamaProc) launchLocked() (*exec.Cmd, *backend.OpenAI, chan struct{}, e
 		}
 		if got != p.TemplateSHA {
 			return nil, nil, nil, fmt.Errorf("llama-server: %s no longer carries the chat template it was installed with; not serving it. "+
-				"After `brainiac update approve-template`, `brainiac pull --latest` installs it again", filepath.Base(p.Model))
+				"After `brainiac update approve-template`, `brainiac pull` installs it again", filepath.Base(p.Model))
 		}
 	}
 	var logf *os.File

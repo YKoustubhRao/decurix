@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -90,6 +91,9 @@ func (c *Client) renderNoPrecheck(ctx context.Context, raw string) (Page, error)
 	}
 	defer stop()
 	cmd := browserCommand(ctx, bin, proxy, profile, u.String())
+	if err := confineBrowser(cmd, browserPolicy(bin, profile)); err != nil {
+		return Page{}, fmt.Errorf("web: the headless browser could not be confined: %w", err)
+	}
 	// The page is read through a bounded pipe: a page that builds more than
 	// MaxBytes of DOM is refused, and never held in memory whole.
 	stdout, err := cmd.StdoutPipe()
@@ -146,4 +150,55 @@ func (c *Client) resolvesPublic(ctx context.Context, host string) error {
 		}
 	}
 	return nil
+}
+
+// browserSystemRead is what a headless Chrome needs from the system, read
+// only: its programs and libraries, fonts, certificates, the loader's cache,
+// the few files libc reads, and the machine's own facts. Not /etc as a
+// whole, not /home, not /tmp beyond the profile, and of /proc only what is
+// the browser's own or the machine's: /proc/<pid>/environ of another
+// process would hand over its secrets, Brainiac's first of all. /proc/self
+// is bound when the rule is made, to the process that becomes the browser;
+// Chrome's own child processes do not get theirs.
+var browserSystemRead = []string{"/usr", "/lib", "/lib32", "/lib64", "/bin", "/sbin", "/opt",
+	"/etc/fonts", "/etc/ssl", "/etc/pki", "/etc/ca-certificates", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
+	"/etc/localtime", "/etc/passwd", "/etc/group", "/etc/nsswitch.conf", "/etc/hosts", "/etc/resolv.conf",
+	"/etc/machine-id", "/var/lib/dbus/machine-id", "/var/cache/fontconfig", "/sys",
+	"/proc/self", "/proc/cpuinfo", "/proc/meminfo", "/proc/stat", "/proc/filesystems", "/proc/version", "/proc/sys",
+	"/nix/store", "/run/opengl-driver"}
+
+// browserDevices are the device nodes it reads and writes, and the shared
+// memory its processes talk through.
+var browserDevices = []string{"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/shm"}
+
+// browserPolicy is the Landlock file policy the headless browser runs under
+// on Linux (N-W4-8): its throwaway profile read-write, the devices it needs,
+// the system read set, and the folder its own program lives in (a browser
+// installed outside /usr and /opt). Everything else is refused, the
+// operator's files, Brainiac's store and other processes' /proc entries
+// among them. The network is kept: the browser reaches the web only through
+// the guard proxy, which applies the address rules.
+func browserPolicy(bin, profile string) isolate.Policy {
+	bin, profile = filepath.ToSlash(bin), filepath.ToSlash(profile)
+	read := append([]string(nil), browserSystemRead...)
+	dirs := []string{path.Dir(bin)}
+	if real, err := filepath.EvalSymlinks(bin); err == nil {
+		dirs = append(dirs, path.Dir(filepath.ToSlash(real)))
+	}
+	for _, d := range dirs {
+		if d != "/" && d != "." && !covered(read, d) {
+			read = append(read, d)
+		}
+	}
+	return isolate.Policy{Read: read, Write: append([]string{profile}, browserDevices...)}
+}
+
+// covered reports whether p is one of dirs or beneath one.
+func covered(dirs []string, p string) bool {
+	for _, d := range dirs {
+		if p == d || len(p) > len(d) && p[:len(d)] == d && p[len(d)] == '/' {
+			return true
+		}
+	}
+	return false
 }

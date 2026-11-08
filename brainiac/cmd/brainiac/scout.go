@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"brainiac/internal/catalog"
+	"brainiac/internal/config"
 	"brainiac/internal/hub"
+	"brainiac/internal/install"
 	"brainiac/internal/scout"
 	"brainiac/internal/selector"
 	"brainiac/internal/store"
@@ -27,10 +29,19 @@ import (
 // under the store root.
 const overlayFile = update.OverlayFile
 
-// loadCatalog is the shipped catalog with the operator's overlay merged in.
+// loadCatalog is the shipped catalog with the overlay merged in, when the
+// overlay may be used: on an appliance only a signed one is
+// (catalog.ReadTrustedOverlay). Why an overlay was not used goes to stderr.
 func loadCatalog(st *store.Store) (*catalog.Catalog, error) {
-	return catalog.WithOverlay(st.Path(overlayFile))
+	c, note, err := catalog.WithOverlay(st.Path(overlayFile), config.Appliance())
+	if note != "" {
+		fmt.Fprintln(os.Stderr, "brainiac: "+note)
+	}
+	return c, err
 }
+
+// errApplianceCatalog refuses a local catalog change on an appliance.
+var errApplianceCatalog = errors.New("on an appliance the catalog changes only by a signed release (catalog.local.json with its .sig; `brainiac catalog verify` checks one)")
 
 // runScout looks for open models newer than the catalog, or handles
 // `scout adopt` and `scout pin`.
@@ -185,6 +196,9 @@ func runAdopt(args []string) error {
 		return errors.New("usage: brainiac scout adopt <repo> --roles code=72 [--file x.gguf] [--mmproj y.gguf|none] [--thinks]")
 	}
 	repo := fs.Arg(0)
+	if config.Appliance() {
+		return errApplianceCatalog
+	}
 	st, err := openStore(&common{home: *home})
 	if err != nil {
 		return err
@@ -200,6 +214,8 @@ func runAdopt(args []string) error {
 		}
 	}
 	h := hub.New()
+	pinner := install.NewPinner()
+	pinner.HF = h
 	if cand == nil {
 		d, err := h.Details(ctx, repo)
 		if err != nil {
@@ -208,7 +224,14 @@ func runAdopt(args []string) error {
 		cand = &scout.Candidate{Repo: repo, ParamsB: d.ParamsB, Arch: d.Architecture, License: d.License,
 			LicenseClass: scout.LicenseClass(d.License), Claims: d.Claims}
 	}
-	files, err := h.Files(ctx, repo, "main")
+	// The files are read at the commit "main" points at now, and the entry
+	// is pinned to that commit and to the files' sha256 below: what a person
+	// adopts is what they looked at, not whatever is pushed later.
+	commit, err := h.Revision(ctx, repo, "main")
+	if err != nil {
+		return fmt.Errorf("%s: %w", repo, err)
+	}
+	files, err := h.Files(ctx, repo, commit)
 	if err != nil {
 		return fmt.Errorf("%s: %w", repo, err)
 	}
@@ -258,8 +281,11 @@ func runAdopt(args []string) error {
 			time.Now().Format("2006-01-02"), firstNonEmpty(claims(cand.Claims, 6), "none")),
 		ParamsB: cand.ParamsB, KVPerTokenMB: 0.012 * cand.ParamsB, // unknown: a cautious guess
 		License: cand.License, LicenseClass: firstNonEmpty(cand.LicenseClass, catalog.LicenseRestricted), Thinks: *thinks,
-		Sources: []catalog.Source{{Kind: catalog.SourceHF, Runtime: catalog.RuntimeLlamaCpp, Repo: repo, Quant: quantRe.FindString(model),
+		Sources: []catalog.Source{{Kind: catalog.SourceHF, Runtime: catalog.RuntimeLlamaCpp, Repo: repo, Revision: commit, Quant: quantRe.FindString(model),
 			Files: srcFiles, SizeGB: float64(total) / 1e9, WeightsGB: float64(modelSize) / 1e9}},
+	}
+	if err := pinner.Source(ctx, &m.Sources[0]); err != nil {
+		return fmt.Errorf("%s: cannot pin it to a commit and sha256, so it could not be installed: %w", repo, err)
 	}
 	if *thinks {
 		m.ThinkTokens, m.Ctx = 6000, 16384
@@ -284,7 +310,7 @@ func runAdopt(args []string) error {
 	if _, err := loadCatalog(st); err != nil {
 		return fmt.Errorf("the overlay no longer validates, fix %s: %w", st.Path(overlayFile), err)
 	}
-	fmt.Printf("Adopted %s as %q (%s). `brainiac plan` may now choose it; `brainiac eval` decides whether it takes work.\n", repo, m.ID, *roles)
+	fmt.Printf("Adopted %s as %q (%s), pinned to commit %s. `brainiac plan` may now choose it; `brainiac eval` decides whether it takes work.\n", repo, m.ID, *roles, commit[:12])
 	return nil
 }
 
@@ -298,6 +324,9 @@ func runPin(args []string) error {
 	if fs.NArg() != 1 || !strings.HasPrefix(fs.Arg(0), "b") {
 		return errors.New("usage: brainiac scout pin b11xxx")
 	}
+	if config.Appliance() {
+		return errApplianceCatalog
+	}
 	st, err := openStore(&common{home: *home})
 	if err != nil {
 		return err
@@ -310,7 +339,15 @@ func runPin(args []string) error {
 	if err != nil {
 		return err
 	}
-	o.Runtime = &catalog.Runtime{LlamaCppRepo: cat.Runtime.LlamaCppRepo, LlamaCppTag: fs.Arg(0)}
+	rt := &catalog.Runtime{LlamaCppRepo: cat.Runtime.LlamaCppRepo, LlamaCppTag: fs.Arg(0)}
+	missing, err := install.NewPinner().Runtime(context.Background(), rt)
+	if err != nil {
+		return fmt.Errorf("llama.cpp %s: %w", fs.Arg(0), err)
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "GitHub gives no digest for %d assets of %s (%s); they cannot be installed\n", len(missing), fs.Arg(0), strings.Join(missing, ", "))
+	}
+	o.Runtime = rt
 	o.Updated = time.Now().Format("2006-01-02")
 	if err := catalog.SaveOverlay(st.Path(overlayFile), o); err != nil {
 		return err

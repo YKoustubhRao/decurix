@@ -107,6 +107,10 @@ type Options struct {
 	Check     func(ctx context.Context, lock *install.Lock, cat *catalog.Catalog, roles []string) error
 	WorkerDir string
 	Log       io.Writer
+	// SignedOnly is an appliance: its catalog changes only by a signed
+	// release, so a cycle reports what it found and adopts nothing, and an
+	// unsigned overlay is not used (catalog.ReadTrustedOverlay).
+	SignedOnly bool
 
 	// The rest are replaced by tests.
 	Hub     *hub.Client
@@ -116,6 +120,10 @@ type Options struct {
 	Board   func(ctx context.Context) *bench.Board
 	Cards   func(ctx context.Context, repo string) ([]bench.Score, error)
 	Install func(ctx context.Context, plan *selector.Plan, opt install.Options) (*install.Lock, error)
+	// Pin fills the commit and sha256 of what the cycle adds to the
+	// overlay, from metadata alone (default install.NewPinner().Overlay):
+	// the installer takes nothing unpinned.
+	Pin func(ctx context.Context, o *catalog.Overlay) error
 }
 
 func (o Options) withDefaults() Options {
@@ -134,6 +142,14 @@ func (o Options) withDefaults() Options {
 	w := o.Web
 	if o.Scout == nil {
 		o.Scout = scout.Run
+	}
+	if o.Pin == nil {
+		hf := o.Hub
+		o.Pin = func(ctx context.Context, ov *catalog.Overlay) error {
+			p := install.NewPinner()
+			p.HF = hf
+			return p.Overlay(ctx, ov)
+		}
 	}
 	if o.Board == nil {
 		o.Board = func(ctx context.Context) *bench.Board { return bench.Collect(ctx, w, bench.LiveBenchDate) }
@@ -264,6 +280,8 @@ type cycle struct {
 	logf    func(string, ...any)
 	// pinModels are the adopted models that need the newer llama.cpp.
 	pinModels []string
+	// pinnedRuntime is the newer llama.cpp build with its assets' sha256.
+	pinnedRuntime *catalog.Runtime
 }
 
 // Run is one cycle. It returns an error only when it could not look at all
@@ -278,8 +296,12 @@ func Run(ctx context.Context, opt Options) (*Result, error) {
 	if c.lock, err = install.ReadLock(c.st); err != nil {
 		return nil, err
 	}
-	if c.overlay, err = catalog.ReadOverlay(c.st.Path(OverlayFile)); err != nil {
+	var note string
+	if c.overlay, note, err = catalog.ReadTrustedOverlay(c.st.Path(OverlayFile), opt.SignedOnly); err != nil {
 		return nil, err
+	}
+	if note != "" {
+		c.res.Notes = append(c.res.Notes, note)
 	}
 	if c.cat, err = catalog.Merge(c.overlay); err != nil {
 		return nil, fmt.Errorf("%s: %w", OverlayFile, err)
@@ -306,9 +328,44 @@ func Run(ctx context.Context, opt Options) (*Result, error) {
 // decide plans with the new overlay and, when applying, installs, checks
 // and switches.
 func (c *cycle) decide(ctx context.Context, overlay catalog.Overlay, pin string) {
+	changing := len(c.res.Adopted) > 0 || pin != ""
+	if c.opt.Apply && changing && c.opt.SignedOnly {
+		c.set(OutcomeCurrent, "on an appliance the catalog changes only by a signed release; what this cycle found is in the report, nothing is installed")
+		return
+	}
+	if c.opt.Apply && changing {
+		// The installer takes only pinned sources: pin what is added now,
+		// from the Hub's and GitHub's metadata, before planning with it.
+		adopted := map[string]bool{}
+		for _, a := range c.res.Adopted {
+			adopted[a.Model] = true
+		}
+		var toPin catalog.Overlay
+		var at []int
+		for i, m := range overlay.Models {
+			if adopted[m.ID] {
+				toPin.Models, at = append(toPin.Models, m), append(at, i)
+			}
+		}
+		if pin != "" {
+			toPin.Runtime = &catalog.Runtime{LlamaCppRepo: c.cat.Runtime.LlamaCppRepo, LlamaCppTag: pin}
+		}
+		if err := c.opt.Pin(ctx, &toPin); err != nil {
+			c.set(OutcomeFailed, "could not pin the new models to a commit and sha256 (nothing changed): %v", err)
+			return
+		}
+		overlay.Models = append([]catalog.Model(nil), overlay.Models...)
+		for k, i := range at {
+			overlay.Models[i] = toPin.Models[k]
+		}
+		c.pinnedRuntime = toPin.Runtime
+	}
 	planned := overlay
 	if pin != "" {
 		planned.Runtime = &catalog.Runtime{LlamaCppRepo: c.cat.Runtime.LlamaCppRepo, LlamaCppTag: pin}
+		if c.pinnedRuntime != nil {
+			planned.Runtime = c.pinnedRuntime
+		}
 	}
 	if c.opt.Apply && len(c.res.Adopted) > 0 {
 		// The models are knowledge, kept even if this machine cannot switch

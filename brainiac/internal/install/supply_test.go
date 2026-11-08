@@ -9,15 +9,15 @@ import (
 	"brainiac/internal/hub"
 )
 
-// A GitHub asset is downloaded only when something vouches for its bytes:
-// the catalog's pin, else GitHub's digest; the two must agree.
+// A GitHub asset is downloaded only when the catalog pins its bytes;
+// GitHub's digest, when there is one, must agree, and alone is not enough.
 func TestAnAssetNothingVouchesForIsRefused(t *testing.T) {
 	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	cases := []struct {
 		digest, pin, want string
 		ok                bool
 	}{
-		{a, "", a, true},
+		{a, "", "", false},
 		{"", a, a, true},
 		{a, strings.ToUpper(a), a, true},
 		{a, b, "", false},

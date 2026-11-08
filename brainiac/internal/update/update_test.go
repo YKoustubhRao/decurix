@@ -36,11 +36,11 @@ var policy = selector.Policy{HaveProgram: func(string) bool { return false }}
 
 var now = time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 
-// nova is a new 2B model with a vision projector, from a lab the catalog
-// does not know.
+// nova is a new 2B model with a vision projector, in its maker's own GGUF
+// repo (a first party on the trusted list; the catalog has no model of it).
 func nova() scout.Candidate {
 	fits := true
-	return scout.Candidate{Repo: "unsloth/Nova-2B-GGUF", BaseRepo: "newlab/Nova-2B", Base: "nova-2b", Role: catalog.RoleBrain,
+	return scout.Candidate{Repo: "mistralai/Nova-2B-GGUF", BaseRepo: "mistralai/Nova-2B", Base: "nova-2b", Role: catalog.RoleBrain,
 		Created: now.AddDate(0, 0, -20), ParamsB: 2, Arch: "nova", ArchOK: true, License: "apache-2.0", LicenseClass: catalog.LicensePermissive,
 		File: "Nova-2B-Q4_K_M.gguf", SizeGB: 1.3, MMProj: "mmproj-Nova-2B-f16.gguf", MMProjGB: 0.6, MemGB: 2.2, FitsHere: &fits, Usable: true}
 }
@@ -84,6 +84,7 @@ type fixture struct {
 	opt     Options
 	checked [][]string
 	install int
+	pinned  int
 }
 
 func setup(t *testing.T, card string) *fixture {
@@ -114,7 +115,7 @@ func setup(t *testing.T, card string) *fixture {
 		},
 		Board: func(context.Context) *bench.Board { return novaBoard(true) },
 		Cards: func(_ context.Context, repo string) ([]bench.Score, error) {
-			if repo == "newlab/Nova-2B" {
+			if repo == "mistralai/Nova-2B" {
 				return bench.ParseCard(card, "card "+repo), nil
 			}
 			return nil, errors.New("no card")
@@ -126,6 +127,23 @@ func setup(t *testing.T, card string) *fixture {
 		},
 		Check: func(_ context.Context, l *install.Lock, _ *catalog.Catalog, roles []string) error {
 			f.checked = append(f.checked, roles)
+			return nil
+		},
+		// The Hub's and GitHub's metadata, as install.Pinner would read it.
+		Pin: func(_ context.Context, o *catalog.Overlay) error {
+			f.pinned++
+			for i := range o.Models {
+				for j := range o.Models[i].Sources {
+					s := &o.Models[i].Sources[j]
+					s.Revision = strings.Repeat("c", 40)
+					for k := range s.Files {
+						s.Files[k].SHA256 = strings.Repeat("d", 64)
+					}
+				}
+			}
+			if o.Runtime != nil {
+				o.Runtime.LlamaCppSHA256 = map[string]string{"llama.zip": strings.Repeat("e", 64)}
+			}
 			return nil
 		},
 	}
@@ -205,7 +223,10 @@ func TestApplyStagesAndOnlyAPersonPromotes(t *testing.T) {
 	if err != nil || len(o.Models) != 1 || !o.Models[0].Auto || !strings.Contains(o.Models[0].Basis, "livebench reasoning 50 vs qwen3.5-2b 40 (livebench)") {
 		t.Fatalf("overlay %+v %v", o, err)
 	}
-	if _, err := catalog.WithOverlay(f.st.Path(OverlayFile)); err != nil {
+	if o.Models[0].Sources[0].Unpinned() != "" {
+		t.Fatalf("the adopted model is not pinned: %s", o.Models[0].Sources[0].Unpinned())
+	}
+	if _, _, err := catalog.WithOverlay(f.st.Path(OverlayFile), false); err != nil {
 		t.Fatalf("the overlay does not validate: %v", err)
 	}
 	// The next cycle sees the same plan staged and does not install it again.
@@ -348,7 +369,7 @@ func TestAModelUnderAnotherNameDoesNotInheritItsParentsScores(t *testing.T) {
 	f := setup(t, novaCard)
 	f.opt.Scout = func(context.Context, scout.Options) (*scout.Report, error) {
 		c := nova()
-		c.Repo, c.Base, c.BaseRepo = "unsloth/Starling-2B-GGUF", "starling-2b", "newlab/Nova-2B" // tagged a quantisation of Nova
+		c.Repo, c.Base, c.BaseRepo = "mistralai/Starling-2B-GGUF", "starling-2b", "mistralai/Nova-2B" // tagged a quantisation of Nova
 		return &scout.Report{Candidates: []scout.Candidate{c}}, nil
 	}
 	// The parent's rows are on a leaderboard.
@@ -386,6 +407,56 @@ func TestAStrangerUnderARealModelsNameIsNotAdopted(t *testing.T) {
 	}
 	if b := brainOf(t, f.st, "lock.json"); b != "qwen3.5-2b" {
 		t.Fatalf("now running %s", b)
+	}
+}
+
+// A quantiser's copy, even of a model a leaderboard rates higher, is not
+// adopted on its own since the uploader list holds first parties only
+// (O-3.4); `brainiac scout adopt` is how a person adds it.
+func TestAQuantisersCopyWaitsForAPerson(t *testing.T) {
+	for _, repo := range []string{"unsloth/Nova-2B-GGUF", "ggml-org/Nova-2B-GGUF", "bartowski/Nova-2B-GGUF", "mradermacher/Nova-2B-GGUF"} {
+		f := setup(t, novaCard)
+		f.opt.Apply = true
+		f.opt.Scout = func(context.Context, scout.Options) (*scout.Report, error) {
+			c := nova()
+			c.Repo = repo
+			return &scout.Report{Candidates: []scout.Candidate{c}}, nil
+		}
+		res, err := Run(context.Background(), f.opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Adopted) != 0 || f.install != 0 || !strings.Contains(fmt.Sprint(res.Considered), "scout adopt") {
+			t.Fatalf("%s: adopted %+v installs %d considered %+v", repo, res.Adopted, f.install, res.Considered)
+		}
+	}
+}
+
+// On an appliance the catalog changes only by a signed release: a cycle
+// says what it found and adopts, pins and installs nothing (O-3.3).
+func TestAnApplianceAdoptsNothing(t *testing.T) {
+	f := setup(t, novaCard)
+	f.opt.Apply, f.opt.SignedOnly = true, true
+	res, err := Run(context.Background(), f.opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.install != 0 || f.pinned != 0 || f.st.Exists(OverlayFile) || !strings.Contains(res.Why, "signed release") {
+		t.Fatalf("%s: %s; installs %d pins %d overlay %v", res.Outcome, res.Why, f.install, f.pinned, f.st.Exists(OverlayFile))
+	}
+}
+
+// A model the cycle cannot pin to a commit and sha256 is not installed.
+func TestAModelThatCannotBePinnedIsNotInstalled(t *testing.T) {
+	f := setup(t, novaCard)
+	f.opt.Apply = true
+	f.opt.Pin = func(context.Context, *catalog.Overlay) error { return errors.New("the Hub lists no sha256") }
+	res, err := Run(context.Background(), f.opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomeFailed || f.install != 0 || f.st.Exists(OverlayFile) {
+		t.Fatalf("%s: %s; installs %d", res.Outcome, res.Why, f.install)
 	}
 }
 

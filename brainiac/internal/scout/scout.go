@@ -125,31 +125,35 @@ func queries() []query {
 	return qs
 }
 
-// labs are publishers whose new models are worth a look on sight. A model
-// from anyone else must show adoption and published results (see worthALook).
-// It is a curation list, kept here so it is easy to see and change.
+// labs are first parties: organisations that make the models they publish
+// (they trained or tuned the weights, and their own account uploads them).
+// A new model from one is worth a look on sight, and is the only kind the
+// updater adopts on its own (TrustedUploader). Quantisers, mirrors and
+// individuals who re-upload someone else's model are not on it: their
+// copies, however well known the uploader, wait for a person (`brainiac
+// scout adopt`), because a re-upload carries the uploader's files under the
+// maker's name. It is a curation list, kept here so it is easy to see and
+// change; adding an organisation means checking that it is the maker.
 var labs = map[string]bool{}
 
 func init() {
-	for _, l := range strings.Fields(`qwen google mistralai openai deepseek-ai zai-org thudm nvidia ibm-granite microsoft meta-llama meta-models
+	for _, l := range strings.Fields(`qwen google mistralai openai deepseek-ai zai-org thudm nvidia ibm-granite microsoft meta-llama facebook
 		moonshotai tencent openbmb huggingfacetb allenai ai4bharat sarvamai baidu paddlepaddle internlm opengvlab xiaomimimo inclusionai
 		stepfun-ai minimaxai cohereforai coherelabs snowflake salesforce servicenow-ai jetbrains bigcode bytedance-seed freedomintelligence
 		baichuan-inc hcompany lightonai numind k2-fsa nousresearch apple amazon tiiuae swiss-ai utter-project ai-mo ornith-ai
-		weiboai nanbeige openai-community rednote-hilab datalab-to opendatalab facebook`) {
+		weiboai nanbeige rednote-hilab datalab-to opendatalab`) {
 		labs[l] = true
 	}
 }
 
-// quantisers are uploaders of other labs' models that Brainiac takes files from.
-var quantisers = map[string]bool{"ggml-org": true, "unsloth": true, "bartowski": true, "mradermacher": true, "lmstudio-community": true}
-
-// TrustedUploader reports whether a repo's owner is a lab or quantiser on the
-// lists here. The Hub's tags and a repo's name are the uploader's own words,
+// TrustedUploader reports whether a repo's owner is a first party on the
+// labs list. The Hub's tags and a repo's name are the uploader's own words,
 // so nothing else about a repo can say who made its files. The updater adds
-// only these on its own; anything else takes a person (`scout adopt`).
+// only these on its own; anything else, a quantiser's copy included, takes
+// a person (`scout adopt`).
 func TrustedUploader(repo string) bool {
 	org := strings.ToLower(strings.SplitN(repo, "/", 2)[0])
-	return labs[org] || quantisers[org]
+	return labs[org]
 }
 
 // junkRe marks derivatives that are not better models: safety training taken
@@ -197,9 +201,10 @@ func known(cat *catalog.Catalog) map[string]bool {
 	return k
 }
 
-// uploaderRank prefers the original publisher and well-known quantisers. A
-// stranger's repo comes last whatever it is called, or it would hide a
-// trusted copy of the same model.
+// uploaderRank prefers the original publisher and well-known quantisers
+// when it picks which copy of a model to show. A stranger's repo comes last
+// whatever it is called, or it would hide a better-known copy of the same
+// model. Showing is not trusting: only a first party is adopted on its own.
 func uploaderRank(repo string) int {
 	org := strings.ToLower(strings.SplitN(repo, "/", 2)[0])
 	switch org {

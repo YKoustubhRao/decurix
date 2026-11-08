@@ -3,7 +3,45 @@
   "updated": "2026-10-24",
   "runtime": {
     "llamacpp_repo": "ggml-org/llama.cpp",
-    "llamacpp_tag": "b11541"
+    "llamacpp_tag": "b11541",
+    "llamacpp_sha256": {
+      "cudart-llama-b11541-bin-ubuntu-cuda-12.8-x64.tar.gz": "6c8acf749cb80a5932b8c5ba16476c3626ce72b09bcfe9078c27b1087ae39c4f",
+      "cudart-llama-b11541-bin-ubuntu-cuda-13.4-arm64.tar.gz": "735c30989a66950ec90b6a339a4c38cf0b08c88692a87bfe0ee290fa0d5e2a97",
+      "cudart-llama-b11541-bin-ubuntu-cuda-13.4-x64.tar.gz": "4d6dba50d1d16b3987b6a8cff73a58338ea1eba7ded1d3295ea174b4f515a746",
+      "cudart-llama-bin-win-cuda-12.4-x64.zip": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+      "cudart-llama-bin-win-cuda-13.4-arm64.zip": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774",
+      "cudart-llama-bin-win-cuda-13.4-x64.zip": "738f8c251ac22b70c3ae6f83a10cf222725df0395246a2cf58f32bdb85fbe668",
+      "llama-b11541-bin-android-arm64-snapdragon.tar.gz": "0ce0a3742ba5b4fbed2f18ad18bc9dd1d4292bc290c5aa9a30c5456716c8bc18",
+      "llama-b11541-bin-android-arm64.tar.gz": "af3e6d1fec872911c5d33036ea64dc1d78926ca074991979cf0d10b18c0b405d",
+      "llama-b11541-bin-linux-arm64-snapdragon.tar.gz": "673a323f7df4e4f20bb364bf7a9d3d79fea37e2229c90ec765ead6cdd6b04cc3",
+      "llama-b11541-bin-macos-arm64.tar.gz": "226929037cfcb956f50ae1d54bac13d3d9446d8d819c439580e1e2c00197da5e",
+      "llama-b11541-bin-macos-x64.tar.gz": "f74c3e79f68e9d0099bd2adc45c72208ec9748cd39e4098eeef7e49011445565",
+      "llama-b11541-bin-ubuntu-arm64.tar.gz": "fcd44afd8ecdd2068d0c8505c0f96fa32014b4814d0dc74947a471deddcb9998",
+      "llama-b11541-bin-ubuntu-cuda-12.8-x64.tar.gz": "551ee13d02dd42599861c8ffbd71c7a110f379a51cb9c5947cb799cdbbc610b2",
+      "llama-b11541-bin-ubuntu-cuda-13.4-arm64.tar.gz": "cc9795af6195f360c6595ea17797035a26f878c60dfb49539e4b087689468ab9",
+      "llama-b11541-bin-ubuntu-cuda-13.4-x64.tar.gz": "2d6f7589eb46f80905cd8fadcc41c67a0a5f5d6fe96ddd4fb37fd7a73a0872d5",
+      "llama-b11541-bin-ubuntu-openvino-2026.4.1-x64.tar.gz": "6d6688e456c736602c6d025c13a988acbd85976d86c4d28de20df518aa2f1f13",
+      "llama-b11541-bin-ubuntu-rocm-10.0-x64.tar.gz": "22d3c8165192f88bbf9c77e2a72d44dede698faf5679a738b610291e3d0755ee",
+      "llama-b11541-bin-ubuntu-s390x.tar.gz": "41f007793c747261cd30c7dd56479fdcbcbcd7a1d5caee78392d7f81df47a48b",
+      "llama-b11541-bin-ubuntu-sycl-fp16-x64.tar.gz": "33d2b28fff500e8129e17a92142ff7a9ed0bad6f59b1bd6a0d59883ba6320944",
+      "llama-b11541-bin-ubuntu-sycl-fp32-x64.tar.gz": "21a1ad0145967181570dbac553568b74930eac86cdac678b497d3dc6dec564f6",
+      "llama-b11541-bin-ubuntu-vulkan-arm64.tar.gz": "cfc991be4e09135ab00870582cbb0f403b48683b9f5d33d547ee327a2a604c78",
+      "llama-b11541-bin-ubuntu-vulkan-x64.tar.gz": "bf91ce14ddfda55c01c8b8846aa7d6093a07b0213913b6216ed4a2d6ea78b1f8",
+      "llama-b11541-bin-ubuntu-x64.tar.gz": "36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b",
+      "llama-b11541-bin-win-cpu-arm64.zip": "8f112d39c0bde44451ae5878709fdf2196e8d680cb8cb9354ca5332337f0942b",
+      "llama-b11541-bin-win-cpu-x64.zip": "cdc0535d11038bb337dfba3c15682050eaa9c07aedd0f915b4c09e8a8e8c0a5c",
+      "llama-b11541-bin-win-cuda-12.4-x64.zip": "c5ccdd22e6b11c013efd6a931f93c3707e6fa5ab2f90df5c7d1838785540ece3",
+      "llama-b11541-bin-win-cuda-13.4-arm64.zip": "192f64a3516dfac9f872c535f5f4335f399a0009e5a51bc1299c5a5b57fcf40d",
+      "llama-b11541-bin-win-cuda-13.4-x64.zip": "927672eae5bb9cf4dde89a00a764c33e69e98db4b3d8be42f8990bf383cfdf61",
+      "llama-b11541-bin-win-opencl-adreno-arm64.zip": "0ed2d450453b52505a9340f17ab2b88fcbe15f173281dc5b123c2256ad9a7b24",
+      "llama-b11541-bin-win-openvino-2026.4.1-x64.zip": "f06d01c12b011b2b15ab251549115d18b6e95ae2f21698f50633dda0788f9aaf",
+      "llama-b11541-bin-win-rocm-10.0-x64.zip": "cdcb0b4482fe80ede8c561e9e52406a8ea7d3b6a6586b77f5a9564882ec32ce5",
+      "llama-b11541-bin-win-sycl-x64.zip": "abc9b144abd8e869edaa06d9ef79ff8f2c1bb3471405fc8189220851fb14e21e",
+      "llama-b11541-bin-win-vulkan-arm64.zip": "c31124767a0c61dc78e021f574dfb2d0b5a8a0837525a72bf0a0dfacc1ffcade",
+      "llama-b11541-bin-win-vulkan-x64.zip": "37bba511d120222f13c3d520dd875f739a530cc124e78f7cbce0026de0173d8a",
+      "llama-b11541-ui.tar.gz": "e2da5841a74bda189fe22165ca0a243141b99df85a82484173adbcf152e0c073",
+      "llama-b11541-xcframework.zip": "c6635419d2527e2a2fd052b6756f14c3e0e84c346e3638a43b305434e6753dc4"
+    }
   },
   "roles": [
     {
@@ -301,15 +339,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "unsloth/Qwen3.5-2B-GGUF",
+          "revision": "f6d5376be1edb4d416d56da11e5397a961aca8ae",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3.5-2B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
             },
             {
               "path": "mmproj-F16.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "7035e9cb8d7c6a9681d07eef9a364783e86ea4cd73faab2eabb4f43a101830c7"
             }
           ],
           "size_gb": 1.949,
@@ -348,15 +389,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "unsloth/Qwen3.5-4B-GGUF",
+          "revision": "e87f176479d0855a907a41277aca2f8ee7a09523",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3.5-4B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
             },
             {
               "path": "mmproj-F16.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864"
             }
           ],
           "size_gb": 3.413,
@@ -422,15 +466,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "ggml-org/gemma-4-E2B-it-GGUF",
+          "revision": "6938c58e698502037401a5f19f6905f2fb2f7dee",
           "quant": "Q4_0",
           "files": [
             {
               "path": "gemma-4-E2B-it-Q4_0.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "8e30dff3ac4c8434c49a7036fa15564bdbb6044e42bf04550bf1a096ad7e6a52"
             },
             {
               "path": "mmproj-gemma-4-E2B-it-Q8_0.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "9406f99c16d68cda4f1f0552192dcc99021ea1fc6d2fd50b1dc3ccf30d04b292"
             }
           ],
           "size_gb": 3.398,
@@ -468,15 +515,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "ggml-org/gemma-4-E4B-it-GGUF",
+          "revision": "a69f018d7678a2b9f5e705f8903d6fb29b9b25dc",
           "quant": "Q4_0",
           "files": [
             {
               "path": "gemma-4-E4B-it-Q4_0.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2"
             },
             {
               "path": "mmproj-gemma-4-E4B-it-Q8_0.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "197f49a93027f9843772bd24a6a9e0be2a32a788de5a3def330e9c585d86edd1"
             }
           ],
           "size_gb": 5.151,
@@ -516,15 +566,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "ggml-org/Qwen3.6-35B-A3B-GGUF",
+          "revision": "7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3.6-35B-A3B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "671e47e0ec53c665d048b98c3ecbfd5236b5ca9c3e02ed19fc8f81f7b85140c7"
             },
             {
               "path": "mmproj-Qwen3.6-35B-A3B-Q8_0.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "904cbf8c8e876220066ab3bf676c7efa40f3da372276fdaf8b01d2fb2a37a51d"
             }
           ],
           "size_gb": 21.034,
@@ -564,15 +617,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "ggml-org/Qwen3.8-27B-GGUF",
+          "revision": "a316ea527fde32c12487be7574e2db5ac2ad2a7e",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3.8-27B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "c600de0300ae8a0eb3a6c0b8b5561b8b96f16bd2c863c2a66c42de29d391a747"
             },
             {
               "path": "mmproj-Qwen3.8-27B-Q8_0.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "2e968a6af97ce35d8971890b257b9b7edabf20ad91450501fa53162a19ee33eb"
             }
           ],
           "size_gb": 19.603,
@@ -628,15 +684,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "Qwen/Qwen3-VL-2B-Instruct-GGUF",
+          "revision": "52d6c8ffea26cc873ac5ad116f8631268d7eb503",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "089d75c52f4b7ffc56ba998ffc50aae89fcafc755f9e7208aacca281dca6c2ae"
             },
             {
               "path": "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "f9a68fabba69c3b81e153367b2c7521030b0fa8bb0de400c9599c8e6725f9c82"
             }
           ],
           "size_gb": 1.552,
@@ -673,15 +732,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "Qwen/Qwen3-VL-4B-Instruct-GGUF",
+          "revision": "1cd86afb9a95c410a6038ab3b40d8b578c892266",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a"
             },
             {
               "path": "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "30ba2c7dd3127a4561b6cba9d13d0f711c91bdb38742e2f56d73c8cb596bd06d"
             }
           ],
           "size_gb": 2.951,
@@ -718,15 +780,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
+          "revision": "f982a07559d4a2f6c8744d840bf6fccab30eea96",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2"
             },
             {
               "path": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd"
             }
           ],
           "size_gb": 5.78,
@@ -764,15 +829,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "Qwen/Qwen3-VL-30B-A3B-Instruct-GGUF",
+          "revision": "f54435e6cc31258f04b0969105c3f6badb197931",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3VL-30B-A3B-Instruct-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "87bb374d849f80ebdfabb304189fac9e0bd35a0f74506e6a59c51b206cbe863b"
             },
             {
               "path": "mmproj-Qwen3VL-30B-A3B-Instruct-Q8_0.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "82a9966edfdbc1b18a27fd90af96d50cbf111a51484f6290e946dccf461c8150"
             }
           ],
           "size_gb": 19.269,
@@ -807,11 +875,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+          "revision": "a06e946bb6b655725eafa393f4a9745d460374c9",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
             }
           ],
           "size_gb": 2.497
@@ -869,11 +939,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+          "revision": "eea7b2be5805a5f151f8847ede8e5f9a9284bf77",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "6c997b8af17debdfb01d890214400ccbab00db6acc0ba8da5de1cc906c4774d0"
             }
           ],
           "size_gb": 18.557
@@ -907,11 +979,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "ggml-org/gpt-oss-20b-GGUF",
+          "revision": "15dcfc7e7c608c6161507211ed43c5b590801b4b",
           "quant": "MXFP4",
           "files": [
             {
               "path": "gpt-oss-20b-MXFP4.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
             }
           ],
           "size_gb": 12.11
@@ -945,11 +1019,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "ggml-org/gpt-oss-120b-GGUF",
+          "revision": "7200b74bea78b0a2964ef9f3897eefa401e890ff",
           "quant": "MXFP4",
           "files": [
             {
               "path": "gpt-oss-120b-MXFP4.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
             }
           ],
           "size_gb": 63.387
@@ -983,15 +1059,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "unsloth/GLM-4.5-Air-GGUF",
+          "revision": "506d64aa8c5cfe9dbbf00bc7a15739438f83204d",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "3e7e5d25a6db33b7c90f8c5203d6f490d6c0a4f04a46f228af0e33727db5df5e"
             },
             {
               "path": "Q4_K_M/GLM-4.5-Air-Q4_K_M-00002-of-00002.gguf",
-              "role": "model-part"
+              "role": "model-part",
+              "sha256": "ac6e50523d45c53faf3bf72d8fe109f3dd54bc6abe98a7773a3636112ead82a6"
             }
           ],
           "size_gb": 72.976
@@ -1043,11 +1122,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "Qwen/Qwen3-Embedding-0.6B-GGUF",
+          "revision": "370f27d7550e0def9b39c1f16d3fbaa13aa67728",
           "quant": "Q8_0",
           "files": [
             {
               "path": "Qwen3-Embedding-0.6B-Q8_0.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
             }
           ],
           "size_gb": 0.639
@@ -1171,6 +1252,7 @@
           "repo": "k2-fsa/sherpa-onnx",
           "tag": "asr-models",
           "asset": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
+          "sha256": "1495e91b59d7fc53ddca91f3431758ec99f8fa253fdb0e1e851be0f72b14b0f9",
           "unpack": true,
           "pip": [
             "asr"
@@ -1316,6 +1398,7 @@
           "repo": "k2-fsa/sherpa-onnx",
           "tag": "asr-models",
           "asset": "sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2",
+          "sha256": "43232c1d13013d37317163baec3135bd771a186a4356f28c889bab453bb0e891",
           "unpack": true,
           "pip": [
             "asr"
@@ -1363,6 +1446,7 @@
           "repo": "k2-fsa/sherpa-onnx",
           "tag": "asr-models",
           "asset": "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2",
+          "sha256": "9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d",
           "unpack": true,
           "pip": [
             "asr"
@@ -1454,6 +1538,7 @@
           "repo": "k2-fsa/sherpa-onnx",
           "tag": "asr-models",
           "asset": "silero_vad.onnx",
+          "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
           "pip": [
             "asr"
           ],
@@ -1486,11 +1571,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "mradermacher/VibeThinker-1.5B-GGUF",
+          "revision": "d0d66139a78030a92a582f966b0f7cbbb3b19406",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "VibeThinker-1.5B.Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "59fa32aaaf5c4512452a9bff8bb6d08f1e39a75acee226b5e01372f7509e3458"
             }
           ],
           "size_gb": 1.117,
@@ -1518,11 +1605,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "bartowski/Nanbeige_Nanbeige4.2-3B-GGUF",
+          "revision": "17562eefe9752007209148d5f7a6e275fc8d8077",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Nanbeige_Nanbeige4.2-3B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "b92d2e35c9876b0c4bc671996360204f4149d0546c23d5954d5eb3b106c81f24"
             }
           ],
           "size_gb": 2.684,
@@ -1550,11 +1639,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "mradermacher/flash-sqlite-GGUF",
+          "revision": "b19e30ca37868fd90b8c683d9f61d01e21661d1c",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "flash-sqlite.Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "37ea3903a6050eb32381c4cfeb7f9d2baa836df90f6002dff13dc4beb26abee3"
             }
           ],
           "size_gb": 1.274,
@@ -1579,11 +1670,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "mradermacher/SLM-SQL-1.5B-GGUF",
+          "revision": "147e845906b1d7a9086b5f2ca69c6e34144ec708",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "SLM-SQL-1.5B.Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "0512be17d0a119d004781b4bfe7a7aae5cb9d037223f1b2d5af231b2eb6470ff"
             }
           ],
           "size_gb": 1.117,
@@ -1608,11 +1701,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "mradermacher/Arctic-Text2SQL-R1-7B-GGUF",
+          "revision": "8e1a51188952afa8021bce6c8b3e5b495b3e85cd",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Arctic-Text2SQL-R1-7B.Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "9c005244e3ab7fada2c53a9511999f4d22fbbd4f76a4416416a6d41d82702255"
             }
           ],
           "size_gb": 4.683,
@@ -1637,11 +1732,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "mradermacher/OmniSQL-32B-GGUF",
+          "revision": "e8e2d7a416c1eeac50f5d483f2f60358e3becd95",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "OmniSQL-32B.Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "ad53fa71b747636bc0e7a6c7df90ac5899a4c02268f9c0b17ace0bf428e47acf"
             }
           ],
           "size_gb": 19.851,
@@ -1666,11 +1763,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "ornith-ai/Ornith-1.5-9B-GGUF",
+          "revision": "abdd624b12ebf020b767fff532ff44fe552b28c3",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Ornith-1.5-9B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "70c112196e0b7023803c9762752e46d29e612a92c83f995bc3ba1ceb07e8fab6"
             }
           ],
           "size_gb": 5.78,
@@ -1698,11 +1797,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+          "revision": "12393612fd4f730ff5aadc23e9b8f9648aa49ceb",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Ornith-1.5-35B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
             }
           ],
           "size_gb": 21.713,
@@ -1731,15 +1832,18 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "mradermacher/Hulu-Med-Flash-Preview-27B-GGUF",
+          "revision": "72c4076c6fe799e2c4ba69323ac1ce04fe40a19c",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Hulu-Med-Flash-Preview-27B.Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "f00581b6829a89e3bd632a31e7223b61020674c79b618f89452e0d1ac69ec8ba"
             },
             {
               "path": "Hulu-Med-Flash-Preview-27B.mmproj-Q8_0.gguf",
-              "role": "mmproj"
+              "role": "mmproj",
+              "sha256": "6371bc6f3e1241067f6d9a5d57cd2446bd7098e3b05e8266601bb393de5dfc69"
             }
           ],
           "size_gb": 17.177,
@@ -1764,11 +1868,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "tencent/Hy-MT2-1.8B-GGUF",
+          "revision": "a0c709d9fac510f2c807aa3af52872340dc37a4a",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Hy-MT2-1.8B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699"
             }
           ],
           "size_gb": 1.133,
@@ -1807,11 +1913,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "tencent/Hy-MT2-7B-GGUF",
+          "revision": "ab8472660ac61fac25f1af43fac2599d52a8a775",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Hy-MT2-7B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b"
             }
           ],
           "size_gb": 4.625,
@@ -1850,11 +1958,13 @@
           "kind": "hf",
           "runtime": "llamacpp",
           "repo": "tencent/Hy-MT2-30B-A3B-GGUF",
+          "revision": "fd3dcbb6b31e9e03923ef4f9f42500f74c3851c3",
           "quant": "Q4_K_M",
           "files": [
             {
               "path": "Hy-MT2-30B-A3B-Q4_K_M.gguf",
-              "role": "model"
+              "role": "model",
+              "sha256": "bb44b11bb0f7cd3d1321645b41e911cd3de2e473731227fc6bf37aa18b543f88"
             }
           ],
           "size_gb": 18.237,

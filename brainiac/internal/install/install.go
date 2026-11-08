@@ -73,10 +73,6 @@ type Options struct {
 	// LockName is the lock file written (default lock.json). The updater
 	// installs into lock.next.json and promotes it only after checking it.
 	LockName string
-	// Latest moves models already installed to their repo's newest commit.
-	// Without it a model stays at the commit it was installed from: what runs
-	// here does not change because someone pushed to a repo.
-	Latest bool
 }
 
 // installedCommit is the commit the current lock has for a unit, or "".
@@ -96,6 +92,9 @@ func Run(ctx context.Context, plan *selector.Plan, opt Options) (*Lock, error) {
 		opt.Log = io.Discard
 	}
 	st := opt.Store
+	if err := CheckPins(plan); err != nil {
+		return nil, err
+	}
 	lock := &Lock{Schema: LockSchema, MadeAt: time.Now().UTC(), Plan: plan, Units: map[string]Unit{}}
 	hf := hub.New()
 	gh := &http.Client{}
@@ -116,17 +115,9 @@ func Run(ctx context.Context, plan *selector.Plan, opt Options) (*Lock, error) {
 		fmt.Fprintf(opt.Log, "== %s (%s)\n", p.Model, src.Label())
 		switch src.Kind {
 		case catalog.SourceHF:
-			rev := src.Revision
-			if rev == "" && !opt.Latest {
-				rev = installedCommit(st, UnitKey(p.Model, src))
-			}
-			if rev == "" {
-				rev = "main"
-			}
-			commit, err := hf.Revision(ctx, src.Repo, rev)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", p.Model, err)
-			}
+			// CheckPins made sure of a 40-hex commit: the files are the
+			// ones the catalog names, whatever "main" says today.
+			commit := src.Revision
 			files, err := hf.Files(ctx, src.Repo, commit)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", p.Model, err)
@@ -142,6 +133,11 @@ func Run(ctx context.Context, plan *selector.Plan, opt Options) (*Lock, error) {
 				if !ok {
 					return nil, fmt.Errorf("%s: %s has no file %s at %s", p.Model, src.Repo, want.Path, commit[:12])
 				}
+				if f.SHA256 != "" && f.SHA256 != want.SHA256 {
+					return nil, fmt.Errorf("%s: the Hub says %s at %s has sha256 %s, the catalog pins %s; not downloading it",
+						p.Model, want.Path, commit[:12], f.SHA256, want.SHA256)
+				}
+				f.SHA256 = want.SHA256 // the download is checked against the catalog's pin
 				dest := st.HFFile(src.Repo, want.Path)
 				if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 					return nil, err
@@ -301,20 +297,52 @@ func ensureVenv(ctx context.Context, groups []string, opt Options) (string, erro
 	return python, nil
 }
 
-// assetSHA is the sha256 a GitHub asset must have: the catalog's pin when it
-// has one (GitHub's digest, if any, must agree), else GitHub's digest. With
-// neither, nothing vouches for the bytes, and the asset is refused.
+// assetSHA is the sha256 a GitHub asset must have: the catalog's pin.
+// GitHub's digest, when it gives one, must agree. GitHub's digest alone is
+// not enough: it says what the release holds today, and a release asset can
+// be replaced; the catalog says what was chosen.
 func assetSHA(a hub.Asset, pinned string) (string, error) {
 	pinned = strings.ToLower(strings.TrimSpace(pinned))
 	switch {
-	case pinned != "" && a.SHA256 != "" && a.SHA256 != pinned:
+	case !catalog.IsSHA256(pinned):
+		return "", fmt.Errorf("%s: the catalog pins no sha256 for it, so nothing vouches for its bytes; not downloading it (`brainiac catalog pin` fills it from GitHub's digest, or a signed catalog carries it)", a.Name)
+	case a.SHA256 != "" && a.SHA256 != pinned:
 		return "", fmt.Errorf("%s: GitHub's digest %s differs from the catalog's %s; not downloading it", a.Name, a.SHA256, pinned)
-	case pinned != "":
-		return pinned, nil
-	case a.SHA256 != "":
-		return a.SHA256, nil
 	}
-	return "", fmt.Errorf("%s: GitHub gives no digest for it and the catalog pins none, so nothing vouches for its bytes; add its \"sha256\" to the catalog to install it", a.Name)
+	return pinned, nil
+}
+
+// CheckPins refuses a plan that names anything Brainiac would download
+// without a pin: a Hugging Face source without its commit and every file's
+// sha256, a GitHub asset or llama.cpp build without its sha256. It fails
+// closed and names every gap at once, before anything is fetched.
+func CheckPins(plan *selector.Plan) error {
+	var gaps []string
+	seen := map[string]bool{}
+	for _, p := range plan.Picks {
+		k := UnitKey(p.Model, p.Source)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if why := p.Source.Unpinned(); why != "" {
+			gaps = append(gaps, fmt.Sprintf("%s (%s): %s", p.Model, p.Source.Label(), why))
+		}
+	}
+	if l := plan.LlamaCpp; l != nil {
+		rt := catalog.Runtime{LlamaCppTag: l.Tag, LlamaCppSHA256: l.SHA256}
+		for _, name := range append([]string{l.Asset}, l.Extra...) {
+			if why := rt.UnpinnedAsset(name); why != "" {
+				gaps = append(gaps, why)
+			}
+		}
+	}
+	if len(gaps) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the catalog does not pin what this plan would download, so it is not installed (a name says where, only a hash says what):\n  %s\n"+
+		"A signed catalog carries the pins; on a development machine `brainiac catalog pin <file>` fills them from the Hub's and GitHub's metadata",
+		strings.Join(gaps, "\n  "))
 }
 
 // llamaManifest is where the sha256 of every file of an unpacked llama.cpp

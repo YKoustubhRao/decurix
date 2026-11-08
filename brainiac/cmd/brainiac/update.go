@@ -116,7 +116,7 @@ func runApproveTemplate(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Accepted the chat template of %s from %s at %s. If that model is installed, `brainiac pull --latest` moves it there.\n", fs.Arg(0), rec.Repo, rec.Commit)
+	fmt.Printf("Accepted the chat template of %s from %s at %s. If the catalog pins that commit, `brainiac pull` installs it.\n", fs.Arg(0), rec.Repo, rec.Commit)
 	return nil
 }
 
@@ -124,11 +124,12 @@ func runApproveTemplate(args []string) error {
 // running server.
 func updateOptions(st *store.Store, cfg config.Config, lg *log.Logger, apply bool, srv *api.Server) update.Options {
 	o := update.Options{
-		Store:     st,
-		Policy:    selector.Policy{ReserveGB: cfg.ReserveGB, PlannedLoadGB: cfg.PlannedLoadGB, Licenses: cfg.Licenses},
-		Apply:     apply,
-		WorkerDir: workerDir(),
-		Log:       lg.Writer(),
+		Store:      st,
+		Policy:     selector.Policy{ReserveGB: cfg.ReserveGB, PlannedLoadGB: cfg.PlannedLoadGB, Licenses: cfg.Licenses},
+		Apply:      apply,
+		SignedOnly: config.Appliance(),
+		WorkerDir:  workerDir(),
+		Log:        lg.Writer(),
 		Census: func(ctx context.Context) (census.Census, error) {
 			return census.Take(ctx, census.Options{StoreDir: st.Path("models"), OllamaURL: cfg.OllamaURL, Network: true})
 		},

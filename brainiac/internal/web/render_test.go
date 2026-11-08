@@ -2,10 +2,14 @@ package web
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -14,6 +18,10 @@ import (
 // "n" asks for. The URL carries it because the browser gets a minimal
 // environment (browserCommand), which a test variable would not pass.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == landlockProbeArg {
+		landlockProbe(os.Args[2:])
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--headless=new" {
 		var n int
 		if u, err := url.Parse(os.Args[len(os.Args)-1]); err == nil {
@@ -59,5 +67,68 @@ func TestTheBrowserGetsAMinimalEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(env, "brainiac-test") {
 		t.Fatalf("PATH did not reach the browser: %q", cmd.Env)
+	}
+}
+
+// landlockProbeArg makes the test binary a stand-in browser that tries the
+// paths it is given and prints, one line each, "ok" or "denied" and the
+// path. Write paths start with "w:".
+const landlockProbeArg = "--landlock-probe"
+
+func landlockProbe(paths []string) {
+	for _, p := range paths {
+		var err error
+		if w, ok := strings.CutPrefix(p, "w:"); ok {
+			p = "w:" + w
+			err = os.WriteFile(w, []byte("x"), 0o600)
+		} else {
+			var f *os.File
+			if f, err = os.Open(p); err == nil {
+				_, err = f.Read(make([]byte, 1))
+				f.Close()
+			}
+		}
+		switch {
+		case err == nil || errors.Is(err, io.EOF):
+			fmt.Println("ok", p)
+		case errors.Is(err, syscall.EACCES):
+			fmt.Println("denied", p) // EACCES: what Landlock answers
+		case errors.Is(err, os.ErrPermission):
+			fmt.Println("refused", p, err)
+		default:
+			fmt.Println("error", p, err)
+		}
+	}
+}
+
+// The browser's file policy, built on every platform (applied on Linux):
+// its profile read-write, the system read set, nothing of the operator's,
+// nothing of /proc beyond its own entry and the machine's facts (N-W4-8).
+func TestTheBrowsersFilePolicy(t *testing.T) {
+	p := browserPolicy("/home/op/.cache/ms-playwright/chromium-1/chrome-linux/chrome", "/tmp/brainiac-browser-123")
+	if len(p.Write) == 0 || p.Write[0] != "/tmp/brainiac-browser-123" {
+		t.Fatalf("the profile is not the first writable folder: %v", p.Write)
+	}
+	for _, w := range p.Write[1:] {
+		if !strings.HasPrefix(w, "/dev/") {
+			t.Errorf("writable beyond the profile and devices: %s", w)
+		}
+	}
+	for _, want := range []string{"/usr", "/etc/fonts", "/etc/ssl", "/proc/self", "/home/op/.cache/ms-playwright/chromium-1/chrome-linux"} {
+		if !covered(p.Read, want) {
+			t.Errorf("%s is not readable: %v", want, p.Read)
+		}
+	}
+	for _, never := range []string{"/", "/etc", "/home", "/home/op", "/root", "/tmp", "/proc", "/proc/1", "/var", "/run", "/home/op/.brainiac"} {
+		if covered(p.Read, never) || covered(p.Write, never) {
+			t.Errorf("%s is reachable", never)
+		}
+	}
+	if p.BlockTCP || p.Mount {
+		t.Errorf("the network must be kept and no mount view asked: %+v", p)
+	}
+	// A browser under /usr or /opt adds nothing: its folder is covered.
+	if q := browserPolicy("/opt/google/chrome/chrome", "/tmp/p"); len(q.Read) != len(browserSystemRead) {
+		t.Errorf("a browser in /opt added %v", q.Read[len(browserSystemRead):])
 	}
 }

@@ -16,6 +16,7 @@
 //	brainiac update approve-template <model>   accept a model's changed chat template, after reading it
 //	brainiac scout [--days n]    open models newer than the catalog, checked
 //	brainiac scout adopt|pin     add a scouted model to the local catalog; move to a newer llama.cpp build
+//	brainiac catalog pin|sign|verify|keygen   pin a catalog file's commits and sha256; sign and check it
 //	brainiac version             this build's version
 package main
 
@@ -83,6 +84,8 @@ func main() {
 		err = runScout(args)
 	case "update":
 		err = runUpdate(args)
+	case "catalog":
+		err = runCatalog(args)
 	case "version":
 		fmt.Println("brainiac", version)
 	case "help", "-h", "--help":
@@ -103,7 +106,7 @@ func usage() {
 
   census [--json] [--no-bench] [--no-network]   measure this machine
   plan   [--json] [--verbose] [plan flags]       choose models, and say why
-  pull   [--yes] [--latest] [plan flags]         install the plan; --latest moves installed models to the newest commit
+  pull   [--yes] [plan flags]                    install the plan (only what the catalog pins: a commit and sha256)
   serve                                          serve what is installed
   up     [--yes] [plan flags]                    census, plan, pull, serve
   ask    "question" [--image file] [--audio file] [--model m] [--url u]
@@ -117,6 +120,9 @@ func usage() {
   scout  [--days 120]                              find open models newer than the catalog, checked
   scout adopt <repo> --roles code=72               add a scouted model to the local catalog
   scout pin b11xxx                                 move to a newer llama.cpp build
+  catalog pin <file> [--dry-run]                   fill a catalog file's commits and sha256 from metadata (no downloads)
+  catalog sign <file> --key k | verify <file>      sign a catalog file (the owner's key) / check it against this build's key
+  catalog keygen --out <file>                      make the owner's signing key pair
 
 plan flags: --offline  --licenses permissive,restricted  --reserve GB  --planned-load GB  --domains math,law|none
 home: BRAINIAC_HOME (default ~/.brainiac)
@@ -134,7 +140,6 @@ type common struct {
 	json        bool
 	verbose     bool
 	yes         bool
-	latest      bool
 	noBench     bool
 	noNetwork   bool
 }
@@ -149,7 +154,6 @@ func flags(name string, args []string, plan bool) (*common, *flag.FlagSet, error
 	fs.BoolVar(&c.noBench, "no-bench", false, "skip the memory-bandwidth test")
 	fs.BoolVar(&c.noNetwork, "no-network", false, "skip the network checks")
 	if plan {
-		fs.BoolVar(&c.latest, "latest", false, "move installed models to their repo's newest commit")
 		fs.BoolVar(&c.offline, "offline", false, "choose only what is installed")
 		fs.StringVar(&c.licenses, "licenses", "", "licence classes to allow (permissive,restricted,noncommercial)")
 		fs.Float64Var(&c.reserve, "reserve", 0, "GB to keep free in every memory pool")
@@ -302,7 +306,7 @@ func pull(ctx context.Context, c *common, st *store.Store, cfg config.Config) (*
 			return nil, errors.New("not installed")
 		}
 	}
-	lock, err := install.Run(ctx, plan, install.Options{Store: st, Census: cs, WorkerDir: workerDir(), Log: os.Stdout, Latest: c.latest})
+	lock, err := install.Run(ctx, plan, install.Options{Store: st, Census: cs, WorkerDir: workerDir(), Log: os.Stdout})
 	if err != nil {
 		return nil, err
 	}
