@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -17,13 +18,15 @@ import (
 )
 
 // callProxy stands in for the control plane's model proxy behind soul's OpenAI provider: it keeps each call's headers
-// and body and answers with answer (or status and its error message).
+// and body (decoded, and as sent) and answers with answer (`{"ok": true}` when "") or status and its error message.
 type callProxy struct {
 	mu      sync.Mutex
 	headers []http.Header
 	bodies  []map[string]any
+	raws    [][]byte
 	status  int
 	message string
+	answer  string
 }
 
 func (p *callProxy) start(t *testing.T) string {
@@ -35,7 +38,8 @@ func (p *callProxy) start(t *testing.T) string {
 		p.mu.Lock()
 		p.headers = append(p.headers, r.Header.Clone())
 		p.bodies = append(p.bodies, body)
-		status, message := p.status, p.message
+		p.raws = append(p.raws, raw)
+		status, message, answer := p.status, p.message, p.answer
 		p.mu.Unlock()
 		if status != 0 {
 			w.WriteHeader(status)
@@ -43,7 +47,7 @@ func (p *callProxy) start(t *testing.T) string {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{{"message": map[string]any{"content": "{\"ok\": true}"}, "finish_reason": "stop"}},
+			"choices": []map[string]any{{"message": map[string]any{"content": cmp.Or(answer, "{\"ok\": true}")}, "finish_reason": "stop"}},
 			"usage":   map[string]any{"prompt_tokens": 120, "completion_tokens": 7, "prompt_tokens_details": map[string]any{"cached_tokens": 100}},
 		})
 	}))

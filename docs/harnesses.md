@@ -84,3 +84,15 @@ The operator's guards read a command line as the shell runs it (`shellSegments`)
   approval gate never asks soul** (`soul_call.in_gate`: `approval.IN_GATE` or `DECURIX_CALLER=gate`): it is another
   user's process and must not depend on, or believe an answer from, a process of the worker's user, so
   `py.approval.read`/`py.approval.choice` in the gate go straight to the proxy as `caller: gate`.
+- **Decisions in soul (plan rule 3, phase 2), first `py.judge`, behind `DECURIX_SOUL_JUDGE=1` (off by default).**
+  The final check's prompt and its reading of the answer live in `internal/judge` (`System`, `Messages`, `Decide`);
+  `POST /api/llm/judge` (`cmd/soul/judge.go`) takes a call's fields with `evidence` (as `verify.judge_evidence` makes
+  it: data only, pictures as `data:` URLs), and for a second look `look` and `closer`, in place of messages; makes the
+  call as `/api/llm/call` does (`makeCall`); and answers with `decision` - the verdict, or `{error, cut_off}` for an
+  answer it could not read, which `verify.judge` maps to unsure as it maps its own. Only `py.judge` and `py.judge.*`
+  purposes, the agent token only (the call key opens `/api/llm/call` alone). Python calls it through
+  `llm_client.chat_decided` (retries and the cut-off retry as `chat`) and takes today's path - its own prompt and
+  `_parse` through `/api/llm/call` - when soul cannot (down, a 404 from an older image: not asked again that process,
+  a refusal). Until the switch defaults on, both copies exist and one recorded corpus holds them byte for byte
+  (`internal/judge/testdata/parity.json`; `agent/tests/test_judge_parity.py --write` regenerates it after a deliberate
+  change to both). The gate is untouched.

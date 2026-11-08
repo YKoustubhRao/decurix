@@ -115,6 +115,23 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
     nothing fails in its tests instead of reaching the proxy untagged (agent/tests/test_purpose_tags.py).
     """
 
+    return _chat(messages, tools, model, max_tokens, temperature, response_format, purpose, None)
+
+
+def chat_decided(via_soul, messages, *, max_tokens, purpose):
+    """
+    chat() for a decision soul makes itself (plan rule 3, phase 2): `via_soul(max_tokens)` is a soul route that makes
+    the call from its evidence and reads the answer (soul_call.judge), answering as soul_call.call does plus its
+    "decision", which comes back in the message (message["decision"]). Retries, the cut-off retry and the usage count
+    are chat()'s. When soul is not up, or that route cannot make the call (soul_call.Unusable), `messages` - today's
+    prompt - go the way chat() sends them: through /api/llm/call, else straight to the proxy, with no decision.
+    """
+
+    return _chat(messages, None, "default", max_tokens, None, None, purpose, via_soul)
+
+
+def _chat(messages, tools, model, max_tokens, temperature, response_format, purpose, via_soul):
+
     body = {
         "model": model,
         "messages": messages,
@@ -146,6 +163,12 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
         try:
             if through_soul:
                 try:
+                    if via_soul is not None:
+                        try:
+                            answer = _shaped(via_soul(max_tokens))
+                            break
+                        except soul_call.Unusable:
+                            via_soul = None  # this call, from here on, is today's: its messages through soul's call
                     answer = _soul_answer(messages, model, max_tokens, temperature, response_format, purpose)
                     break
                 except soul_call.Unusable:
@@ -216,8 +239,7 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
         # second bill. An answer cut off at the limit is no answer: once more, with room to answer.
         cut = "answered nothing" if not (message.get("content") or "").strip() else "was cut off"
         log(f"llm: the model used all {max_tokens} tokens and {cut} - asking again with {EMPTY_RETRY_TOKENS}")
-        return chat(messages, tools=tools, model=model, max_tokens=EMPTY_RETRY_TOKENS, temperature=temperature,
-                    response_format=response_format, purpose=purpose)
+        return _chat(messages, tools, model, EMPTY_RETRY_TOKENS, temperature, response_format, purpose, via_soul)
     return message, spent
 
 
@@ -225,12 +247,20 @@ def _soul_answer(messages, model, max_tokens, temperature, response_format, purp
     """One call through soul (soul_call), as the proxy's OpenAI-shaped answer: the rest of chat() reads it unchanged.
     Counted once, by chat() (usage.add): soul counts a call it makes for the agent in no job of its own."""
 
-    got = soul_call.call("hosted", messages, purpose=purpose, max_tokens=max_tokens, timeout=TIMEOUT_SECONDS,
-                         temperature=temperature, response_format=response_format, model=model)
+    return _shaped(soul_call.call("hosted", messages, purpose=purpose, max_tokens=max_tokens, timeout=TIMEOUT_SECONDS,
+                                  temperature=temperature, response_format=response_format, model=model))
+
+
+def _shaped(got):
+    """Soul's answer {text, truncated, usage[, decision]} as the proxy's OpenAI-shaped one; a decision soul made of the
+    answer (a decision route's) rides in the message."""
+
     spent = got.get("usage") or {}
+    message = {"role": "assistant", "content": got.get("text") or ""}
+    if "decision" in got:
+        message["decision"] = got["decision"]
     return {
-        "choices": [{"message": {"role": "assistant", "content": got.get("text") or ""},
-                     "finish_reason": "length" if got.get("truncated") else "stop"}],
+        "choices": [{"message": message, "finish_reason": "length" if got.get("truncated") else "stop"}],
         "usage": {"prompt_tokens": spent.get("prompt_tokens"), "completion_tokens": spent.get("completion_tokens"),
                   "prompt_tokens_details": {"cached_tokens": spent.get("cached_tokens")}},
     }

@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 
@@ -452,6 +453,18 @@ def program_numbers(text):
     return list(dict.fromkeys(found))[:6]
 
 
+def soul_judges():
+    """
+    Whether soul makes the final check's prompt and reads its answer (plan rule 3, phase 2: DECURIX_SOUL_JUDGE=1, read
+    per call; off by default). Then verify.judge hands soul the evidence as data (judge_evidence) at /api/llm/judge
+    (agent/thebot internal/judge: the same prompt, byte for byte, and the same reading of the answer), and Python keeps
+    the tools: reading the files, the pictures and the closer look. When soul cannot (not running, an older image, a
+    refusal), the check is today's: this module's prompt and _parse, through /api/llm/call or the proxy.
+    """
+
+    return os.environ.get("DECURIX_SOUL_JUDGE", "").strip() == "1"
+
+
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
           screen_text="", chosen=(), produced="", screen=True, deliverables=(), look_up=None, found="",
           purpose="py.judge"):
@@ -471,102 +484,35 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     if not available():
         return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": "there is no model here to check the screen with"}
 
-    # The task is the stage's instruction AND what the caller adds after it - the person's binding answers, the
-    # system's own read-back, the code checks' evidence, the other stages' context. Found (2026-10-21): cut at 1,500
-    # characters, everything after a long instruction and its inputs list never reached the judge.
-    body = task.strip()
-    if len(body) > MAX_TASK_CHARS:
-        body = body[:MAX_TASK_CHARS] + f"\n[cut here: {len(body) - MAX_TASK_CHARS} more characters not shown]"
-    lines = [f"The task as asked: {body}"]
-    if values:
-        typed = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] not in chosen}
-        looked_up = {k: v for k, v in values.items() if v not in (None, "") and k.split("__")[0] in chosen}
-        if typed:
-            lines.append("This run's values: " + "; ".join(f"{k} = {v}" for k, v in typed.items())[:3000])
-        if looked_up:
-            # Apart from the values to compare, and never as "k = v". Found
-            # live after the note beside each was added: with "item = Office
-            # Mesh Chairs" among the run's values, the check still refused a
-            # correct record "Ergonomic Office Chair" as not the value.
-            lines.append("Things this run had to find in the application's own lists and choose (NOT values to "
-                         "compare by name - the worker searched and took the existing record of each thing, and a "
-                         "record has its own name; judge only whether the record taken is that kind of thing): "
-                         + "; ".join(f"for {k}, the document says: {v}" for k, v in looked_up.items())[:2000])
-    if criteria:
-        lines.append(f"What the person who taught this task said about it (and what done looks like): {criteria.strip()[:6000]}")
-    if steps:
-        # Not "what the worker did". Found live: these are the demonstration's
-        # steps, whose clicks on list entries name the demonstration's own
-        # choices; under that label the check kept reporting that a correct
-        # run had "selected the wrong company and the wrong products".
-        lines.append("The steps of the person's demonstration, which this run followed with its own values (a click "
-                     "on a list entry here names the DEMONSTRATION's choice, not this run's - what this run chose "
-                     f"is in the tools' record below): {steps.strip()[:2000]}")
-    if observed:
-        lines.append("What the worker's tools did and read off the screen during this task, as it happened (observed, "
-                     "not claimed - a report that matches these is backed by them; a look at the screen listed here "
-                     "shows what was on it at that moment, a page since closed included):\n" + "\n".join(observed)[-24000:])
-    if found:
-        # Found live (2026-11-02): handed over inside the person's words ("what the person who taught this task said"),
-        # the code's file check read as one more claim, and the check still answered "the observations do not show
-        # the files saved in the folder".
-        lines.append("Facts the harness checked in code on this desktop just now (exact; not the worker's claim and not "
-                     "the person's words - a part of the result these settle IS settled, judge it from them):\n"
-                     + found.strip()[:4000])
-    if screen_text:
-        lines.append("The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "
-                     "the picture's small print disagree, this is right; a report that says a text was changed is "
-                     "backed only if this shows it):\n" + screen_text)
-    lines.append(f"What the worker reports: {(claim or '(nothing)').strip()[:4000]}")
-    if produced:
-        lines.append("The files the worker wrote during this task, as they read NOW (the result itself - the report "
-                     "must agree with them):\n" + produced)
-    # Where the person's shared folder is on this desktop, in plain words: a path under it is that folder, never "the
-    # wrong folder" (found live, 2026-10-19). Whether a file is where the request said is decided in code
-    # (produced.missing_on_host / misplaced); this keeps the model from contradicting it.
-    from decurix_agent import shared
-    note = shared.mapping_note()
-    if note:
-        lines.append(note + " Do not judge a file's location by how its path is spelled: a file the request asks to be "
-                     "saved in that folder and found under that path IS saved where asked.")
-    if deliverables:
-        # Found live (2026-10-19): a correct, cleanly saved register was refused because the screen still showed a
-        # range the worker had filled by mistake and cleared, and the action log showed the mistake.
-        lines.append("The file(s) the request asks for - " + ", ".join(os.path.basename(str(d)) for d in deliverables)
-                     + " - are saved, and as they read above they ARE that part of the result. Decide that part from "
-                     "the saved file(s) alone. A mistake the action log shows and the saved file no longer has, or an "
-                     "unsaved change still on the screen, is not a reason for not_done: mention it in 'seen'. Judge "
-                     "not_done for what is wrong or missing in the saved file(s), for another part of the request "
-                     "not done, or for a report the files contradict.")
-    doc_text, doc_pictures = _documents(task)
-    if doc_text:
-        lines.append("The documents the task names, as they read (the values must come from these):\n" + doc_text)
+    evidence = judge_evidence(task, claim=claim, criteria=criteria, values=values, steps=steps, live_png=live_png,
+                              reference_png=reference_png, observed=observed, screen_text=screen_text, chosen=chosen,
+                              produced=produced, screen=screen, deliverables=deliverables, found=found)
+    content = judge_content(evidence)
+    on_soul = soul_judges()
 
-    content = [{"type": "text", "text": "\n".join(lines)}]
-    for picture in doc_pictures:
-        content += [{"type": "text", "text": "A page of a document the task names:"}, llm_client.image_part(path=picture)]
-    if live_png:
-        content += [{"type": "text", "text": "The screen NOW:"}, llm_client.image_part(live_png)]
-    elif not screen:
-        content.append({"type": "text", "text": "(This task did not work on the screen: judge it on the files and on "
-                                                "what the tools read.)"})
-    else:
-        content.append({"type": "text", "text": "(The screen now could not be read.)"})
-    if reference_png:
-        content += [{"type": "text", "text": "The screen at the end of the person's own demonstration (other values):"},
-                    llm_client.image_part(reference_png)]
-
-    def ask(parts):
+    def ask(parts, look=(), closer=""):
+        messages = [{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": parts}]
+        decided = None
         try:
-            message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
-                                              {"role": "user", "content": parts}], max_tokens=JUDGE_TOKENS,
-                                             purpose=purpose)
-            found = _parse(message.get("content") or "")
+            if on_soul:
+                # Soul words these same messages from the evidence and reads the answer itself; the messages here are
+                # today's path, taken when soul cannot make the call.
+                from decurix_agent import soul_call
+
+                def via_soul(max_tokens):
+                    return soul_call.judge(evidence, purpose=purpose, max_tokens=max_tokens,
+                                           timeout=llm_client.TIMEOUT_SECONDS, look=look, closer=closer)
+                message, spent = llm_client.chat_decided(via_soul, messages, max_tokens=JUDGE_TOKENS, purpose=purpose)
+            else:
+                message, spent = llm_client.chat(messages, max_tokens=JUDGE_TOKENS, purpose=purpose)
+            decided = message.get("decision")
+            found = _parse(message.get("content") or "") if decided is None else _decided(decided)
         except (llm_client.LLMError, ValueError) as exc:
             log(f"verify: could not judge: {exc}")
             return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": f"the check could not be made ({exc})",
                     "look": []}
-        if found["verdict"] == DONE and found["confidence"] < DONE_CONFIDENCE:
+        if decided is None and found["verdict"] == DONE and found["confidence"] < DONE_CONFIDENCE:
+            # Soul's decision comes with this applied (internal/judge Decide).
             found["why"] = f"not sure enough ({found['confidence']:.2f}): {found['why']}"
             found["verdict"] = UNSURE
         return found
@@ -580,11 +526,175 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
             closer = ""
         if closer:
             log(f"verify: unsure, looking closer at {found['look']}")
-            found = ask(content + [{"type": "text", "text": (
-                "You were unsure and asked to see: " + "; ".join(found["look"]) + ". The lines of the files that hold "
-                "them, looked up for you (exact):\n" + closer + "\nJudge again with these. Do not ask to look again.")}])
+            found = ask(content + [judge_closer(found["look"], closer)], look=list(found["look"]), closer=closer)
     found.pop("look", None)
     log(f"verify: {found}")
+    return found
+
+
+def judge_evidence(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None,
+                   observed=None, screen_text="", chosen=(), produced="", screen=True, deliverables=(), found=""):
+    """
+    What the final check is shown, as data - judge's arguments read, nothing worded: the texts as given, the values
+    that hold something as text, the deliverables' names, the shared folder's note, the documents the task names
+    (_documents) and every picture as a data: URL. judge_content makes today's prompt of it, and soul the same one
+    (DECURIX_SOUL_JUDGE; agent/thebot internal/judge Messages). Plan rule 3: Python reads, soul words.
+    """
+
+    from decurix_agent import shared
+
+    doc_text, doc_pictures = _documents(task)
+    return {
+        "task": task or "",
+        "claim": claim or "",
+        "criteria": criteria or "",
+        # A value as the prompt writes it (f"{v}"); None and "" are no value.
+        "values": [[str(k), f"{v}"] for k, v in (values or {}).items() if v not in (None, "")],
+        "chosen": [str(c) for c in chosen or ()],
+        "steps": steps or "",
+        "observed": [str(o) for o in observed or ()],
+        "found": found or "",
+        "screen_text": screen_text or "",
+        "produced": produced or "",
+        "mapping_note": shared.mapping_note() or "",
+        "deliverables": [os.path.basename(str(d)) for d in deliverables or ()],
+        "doc_text": doc_text or "",
+        "doc_pictures": [llm_client.image_part(path=p)["image_url"]["url"] for p in doc_pictures],
+        "live_png": llm_client.image_part(live_png)["image_url"]["url"] if live_png else "",
+        "screen": bool(screen),
+        "reference_png": llm_client.image_part(reference_png)["image_url"]["url"] if reference_png else "",
+    }
+
+
+def judge_content(evidence):
+    """The final check's user message (its parts, in order) from judge_evidence's data: today's prompt. Soul's copy
+    (agent/thebot internal/judge Messages) stays byte for byte the same (agent/tests/test_judge_parity.py)."""
+
+    ev = evidence
+    # The task is the stage's instruction AND what the caller adds after it - the person's binding answers, the
+    # system's own read-back, the code checks' evidence, the other stages' context. Found (2026-10-21): cut at 1,500
+    # characters, everything after a long instruction and its inputs list never reached the judge.
+    body = ev["task"].strip()
+    if len(body) > MAX_TASK_CHARS:
+        body = body[:MAX_TASK_CHARS] + f"\n[cut here: {len(body) - MAX_TASK_CHARS} more characters not shown]"
+    lines = [f"The task as asked: {body}"]
+    if ev["values"]:
+        chosen = set(ev["chosen"])
+        typed = [(k, v) for k, v in ev["values"] if k.split("__")[0] not in chosen]
+        looked_up = [(k, v) for k, v in ev["values"] if k.split("__")[0] in chosen]
+        if typed:
+            lines.append("This run's values: " + "; ".join(f"{k} = {v}" for k, v in typed)[:3000])
+        if looked_up:
+            # Apart from the values to compare, and never as "k = v". Found
+            # live after the note beside each was added: with "item = Office
+            # Mesh Chairs" among the run's values, the check still refused a
+            # correct record "Ergonomic Office Chair" as not the value.
+            lines.append("Things this run had to find in the application's own lists and choose (NOT values to "
+                         "compare by name - the worker searched and took the existing record of each thing, and a "
+                         "record has its own name; judge only whether the record taken is that kind of thing): "
+                         + "; ".join(f"for {k}, the document says: {v}" for k, v in looked_up)[:2000])
+    if ev["criteria"]:
+        lines.append("What the person who taught this task said about it (and what done looks like): "
+                     + ev["criteria"].strip()[:6000])
+    if ev["steps"]:
+        # Not "what the worker did". Found live: these are the demonstration's
+        # steps, whose clicks on list entries name the demonstration's own
+        # choices; under that label the check kept reporting that a correct
+        # run had "selected the wrong company and the wrong products".
+        lines.append("The steps of the person's demonstration, which this run followed with its own values (a click "
+                     "on a list entry here names the DEMONSTRATION's choice, not this run's - what this run chose "
+                     "is in the tools' record below): " + ev["steps"].strip()[:2000])
+    if ev["observed"]:
+        lines.append("What the worker's tools did and read off the screen during this task, as it happened (observed, "
+                     "not claimed - a report that matches these is backed by them; a look at the screen listed here "
+                     "shows what was on it at that moment, a page since closed included):\n"
+                     + "\n".join(ev["observed"])[-24000:])
+    if ev["found"]:
+        # Found live (2026-11-02): handed over inside the person's words ("what the person who taught this task said"),
+        # the code's file check read as one more claim, and the check still answered "the observations do not show
+        # the files saved in the folder".
+        lines.append("Facts the harness checked in code on this desktop just now (exact; not the worker's claim and not "
+                     "the person's words - a part of the result these settle IS settled, judge it from them):\n"
+                     + ev["found"].strip()[:4000])
+    if ev["screen_text"]:
+        lines.append("The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "
+                     "the picture's small print disagree, this is right; a report that says a text was changed is "
+                     "backed only if this shows it):\n" + ev["screen_text"])
+    lines.append("What the worker reports: " + (ev["claim"] or "(nothing)").strip()[:4000])
+    if ev["produced"]:
+        lines.append("The files the worker wrote during this task, as they read NOW (the result itself - the report "
+                     "must agree with them):\n" + ev["produced"])
+    # Where the person's shared folder is on this desktop, in plain words: a path under it is that folder, never "the
+    # wrong folder" (found live, 2026-10-19). Whether a file is where the request said is decided in code
+    # (produced.missing_on_host / misplaced); this keeps the model from contradicting it.
+    if ev["mapping_note"]:
+        lines.append(ev["mapping_note"] + " Do not judge a file's location by how its path is spelled: a file the "
+                     "request asks to be saved in that folder and found under that path IS saved where asked.")
+    if ev["deliverables"]:
+        # Found live (2026-10-19): a correct, cleanly saved register was refused because the screen still showed a
+        # range the worker had filled by mistake and cleared, and the action log showed the mistake.
+        lines.append("The file(s) the request asks for - " + ", ".join(ev["deliverables"])
+                     + " - are saved, and as they read above they ARE that part of the result. Decide that part from "
+                     "the saved file(s) alone. A mistake the action log shows and the saved file no longer has, or an "
+                     "unsaved change still on the screen, is not a reason for not_done: mention it in 'seen'. Judge "
+                     "not_done for what is wrong or missing in the saved file(s), for another part of the request "
+                     "not done, or for a report the files contradict.")
+    if ev["doc_text"]:
+        lines.append("The documents the task names, as they read (the values must come from these):\n" + ev["doc_text"])
+
+    content = [{"type": "text", "text": "\n".join(lines)}]
+    for picture in ev["doc_pictures"]:
+        content += [{"type": "text", "text": "A page of a document the task names:"}, _picture(picture)]
+    if ev["live_png"]:
+        content += [{"type": "text", "text": "The screen NOW:"}, _picture(ev["live_png"])]
+    elif not ev["screen"]:
+        content.append({"type": "text", "text": "(This task did not work on the screen: judge it on the files and on "
+                                                "what the tools read.)"})
+    else:
+        content.append({"type": "text", "text": "(The screen now could not be read.)"})
+    if ev["reference_png"]:
+        content += [{"type": "text", "text": "The screen at the end of the person's own demonstration (other values):"},
+                    _picture(ev["reference_png"])]
+    return content
+
+
+def judge_closer(look, lines):
+    """The part a second judgement adds: the lines of the files that hold what the judge asked to see."""
+
+    return {"type": "text", "text": (
+        "You were unsure and asked to see: " + "; ".join(look) + ". The lines of the files that hold "
+        "them, looked up for you (exact):\n" + lines + "\nJudge again with these. Do not ask to look again.")}
+
+
+def _picture(url):
+    """A picture of judge_evidence (a data: URL) as a chat content part, as llm_client.image_part makes one."""
+
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def _decided(decision):
+    """
+    Soul's reading of the judge's answer (internal/judge Decide) in _parse's shape, the not-sure-enough rule already
+    applied. An answer soul could not read raises as _parse raises (CutOff, ValueError), so the error mapping stays
+    judge's own; a decision that is not a verdict raises ValueError too - fail closed (unsure), nothing made up here.
+    """
+
+    if not isinstance(decision, dict):
+        raise ValueError("soul's decision is not an object")
+    if "error" in decision:
+        raise (CutOff if decision.get("cut_off") is True else ValueError)(str(decision.get("error") or ""))
+    verdict, confidence = decision.get("verdict"), decision.get("confidence")
+    look, back = decision.get("look", []), decision.get("put_back", [])
+    if (verdict not in (DONE, NOT_DONE, UNSURE, CANNOT) or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float)) or not 0.0 <= confidence <= 1.0
+            or not isinstance(decision.get("seen"), str) or not isinstance(decision.get("why"), str)
+            or not isinstance(look, list) or not all(isinstance(t, str) for t in look)
+            or not isinstance(back, list) or not all(isinstance(t, str) for t in back)):
+        raise ValueError(f"soul's decision is not a verdict: {json.dumps(decision)[:200]}")
+    found = {"verdict": verdict, "confidence": float(confidence), "seen": decision["seen"], "why": decision["why"],
+             "look": look[:MAX_LOOK]}
+    if back:
+        found["put_back"] = back[:MAX_PUT_BACK]
     return found
 
 
@@ -681,9 +791,12 @@ def _parse(text):
     if verdict not in (DONE, NOT_DONE, UNSURE, CANNOT):
         verdict = UNSURE
     try:
-        confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))
+        confidence = float(data.get("confidence", 0))
     except (TypeError, ValueError):
         confidence = 0.0
+    # A confidence that is no finite number ("nan", "inf") is none: max/min would read NaN as 1.0, a done "sure"
+    # on a nonsense answer (found 2026-11-08 while moving the judge into soul).
+    confidence = max(0.0, min(1.0, confidence)) if math.isfinite(confidence) else 0.0
     look = data.get("look") if isinstance(data.get("look"), list) else []
     found = {"verdict": verdict, "confidence": confidence,
              "seen": " ".join(str(data.get("seen") or "").split())[:400],

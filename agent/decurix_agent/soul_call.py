@@ -14,6 +14,9 @@ route and nothing else.
 When soul cannot make a call - it is not running (an old desktop, a test), its image has no such route, it refuses
 this call, there is no token or key - the caller goes the way it always went, and that is logged once per process.
 
+Phase 2 moves decisions, purpose by purpose: judge() hands soul the final check's evidence as data at /api/llm/judge,
+and soul words the prompt and reads the answer (agent/thebot internal/judge; verify.soul_judges, DECURIX_SOUL_JUDGE).
+
 The approval gate never asks soul (in_gate): it is another user's process, and it must not depend on, or believe an
 answer from, a process of the worker's user. Its calls (approval.read_choice under IN_GATE) go straight to the proxy
 as DECURIX_CALLER=gate.
@@ -30,6 +33,8 @@ from decurix_agent import config
 from decurix_agent.logging_utils import log
 
 CALL_PATH = "/api/llm/call"
+# The final check, decided by soul from its evidence (cmd/soul judge.go).
+JUDGE_PATH = "/api/llm/judge"
 # Soul writes its call key here at start (agent/thebot cmd/soul llmcall.go: callKeyPath), 0600, the worker's own.
 KEY_FILE = "soul-call.key"
 # After soul was found not running, how long calls go their own way before soul is tried again (it may start later).
@@ -56,7 +61,7 @@ class Failed(Exception):
         self.headers = headers
 
 
-_state = {"down_until": 0.0, "absent": False, "noted": False}
+_state = {"down_until": 0.0, "absent": False, "noted": False, "judge_absent": False}
 
 
 def in_gate():
@@ -121,12 +126,16 @@ def _secrets():
     return values
 
 
-def _refused(exc):
-    """Unusable for soul's own refusal of a call (an HTTPError whose body does not say the provider failed)."""
+def _refused(exc, absent="absent"):
+    """Unusable for soul's own refusal of a call (an HTTPError whose body does not say the provider failed). `absent`
+    is the flag that keeps an older soul with no such route from being asked again this process."""
 
     if exc.code in (404, 405):
-        _state["absent"] = True  # an older soul with no call route: not asked again this process
-    _note(f"soul refused the call with HTTP {exc.code}")
+        _state[absent] = True
+    if absent == "absent":
+        _note(f"soul refused the call with HTTP {exc.code}")
+    else:
+        log(f"soul_call: soul refused {absent.replace('_absent', '')} with HTTP {exc.code}; today's path is taken")
     return Unusable(f"soul refused the call ({exc.code})")
 
 
@@ -145,23 +154,59 @@ def call(brain, messages, *, purpose, max_tokens, timeout, temperature=None, res
     URLError/TimeoutError/OSError when soul could not be reached mid-call.
     """
 
+    payload = _base(brain, purpose, max_tokens, timeout, model)
+    payload.update({"messages": messages, "temperature": temperature, "response_format": response_format,
+                    "stop": list(stop or [])})
+    return _post(CALL_PATH, payload, timeout, "absent")
+
+
+def judge(evidence, *, purpose, max_tokens, timeout, look=(), closer="", model=None):
+    """
+    The final check made by soul (plan rule 3, phase 2): soul words the prompt from `evidence` (verify.judge_evidence)
+    - with, for a second look, the terms the judge asked for (`look`) and the lines found (`closer`) - makes the call
+    as /api/llm/call does, and reads the answer (internal/judge Decide). Answers as call() does plus "decision": the
+    verdict ({"verdict", "confidence", "seen", "why", "look"[, "put_back"]}) or {"error", "cut_off"} for an answer it
+    could not read. Raises as call() does; Unusable when soul has no such route (asked again only by a new process).
+    """
+
+    if _state["judge_absent"]:
+        raise Unusable("soul has no judge route")
+    payload = _base("hosted", purpose, max_tokens, timeout, model)
+    # The call's own fields as verify.judge's chat() sends them (no temperature, format or stop), so the provider is
+    # sent the same request as through /api/llm/call (cmd/soul judge_test.go compares the bytes).
+    payload.update({"temperature": None, "response_format": None, "stop": [],
+                    "evidence": evidence, "look": list(look or []), "closer": closer or ""})
+    answer = _post(JUDGE_PATH, payload, timeout, "judge_absent")
+    if not isinstance(answer.get("decision"), dict):
+        raise Failed(502, f"soul answered no decision: {json.dumps(answer)[:200]}")
+    return answer
+
+
+def _base(brain, purpose, max_tokens, timeout, model):
+    """What every call to soul carries: the brain, purpose, task, turn, model, limits and the task's secret values.
+    Unusable in the gate (never, by design: the gate does not depend on, or believe, a process of the worker's user)."""
+
     if in_gate():
-        # Never, by design: the gate does not depend on, or believe, a process of the worker's user.
         raise Unusable("the approval gate never asks soul")
-    key = credential()
-    if not key:
+    if not credential():
         raise Unusable("no agent token or soul call key")
     from decurix_agent import task_context
 
-    payload = {
+    return {
         "brain": brain, "purpose": purpose, "task": task_context.current() or "",
         "turn": os.environ.get("DECURIX_TURN_ID", "").strip(), "model": model or "",
-        "messages": messages, "max_tokens": int(max_tokens), "temperature": temperature,
-        "response_format": response_format, "stop": list(stop or []), "timeout_ms": int(timeout * 1000),
-        "secrets": _secrets(),
+        "max_tokens": int(max_tokens), "timeout_ms": int(timeout * 1000), "secrets": _secrets(),
     }
+
+
+def _post(path, payload, timeout, absent):
+    """POST one call to soul and read its answer (see call())."""
+
+    key = credential()
+    if not key:
+        raise Unusable("no agent token or soul call key")
     request = urllib.request.Request(
-        config.THEBOT_URL.rstrip("/") + CALL_PATH, data=json.dumps(payload).encode("utf-8"), method="POST",
+        config.THEBOT_URL.rstrip("/") + path, data=json.dumps(payload).encode("utf-8"), method="POST",
         headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
     )
     try:
@@ -174,7 +219,7 @@ def call(brain, messages, *, purpose, max_tokens, timeout, temperature=None, res
         except ValueError:
             body = {}
         if not isinstance(body, dict) or body.get("where") != "provider":
-            raise _refused(exc) from exc
+            raise _refused(exc, absent) from exc
         raise Failed(exc.code, str(body.get("error") or "")[:600], exc.headers) from exc
     except urllib.error.URLError as exc:
         if _connection_refused(exc):

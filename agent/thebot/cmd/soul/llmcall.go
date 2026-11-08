@@ -103,21 +103,35 @@ func (e callRefusal) Error() string { return e.why }
 
 // handleLLMCall makes one model call for the agent and answers {text, truncated, usage, model, provider}.
 func (s *server) handleLLMCall(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed", "where": "soul"})
+	var req llmCallRequest
+	if !decodeCall(w, r, &req) {
 		return
 	}
+	s.makeCall(w, r, req, nil)
+}
+
+// decodeCall reads a call's JSON body into req, or answers the refusal and says false.
+func decodeCall(w http.ResponseWriter, r *http.Request, req any) bool {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed", "where": "soul"})
+		return false
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxLLMCallBody)
-	var req llmCallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
 			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": fmt.Sprintf("a call is at most %d bytes", maxLLMCallBody), "where": "soul"})
-			return
+			return false
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the call is not JSON of the expected shape", "where": "soul"})
-		return
+		return false
 	}
+	return true
+}
+
+// makeCall makes the call req asks for through soul's provider and answers it. decide, when not nil, is soul's own
+// reading of the answer (a decision route's, judge.go): it is added to the answer as "decision".
+func (s *server) makeCall(w http.ResponseWriter, r *http.Request, req llmCallRequest, decide func(text string) any) {
 	model, messages, opts, timeout, err := s.callOf(req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "where": "soul"})
@@ -148,11 +162,15 @@ func (s *server) handleLLMCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]any{"error": why, "where": "provider"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"text": res.Text, "truncated": res.Truncated, "model": model, "provider": s.provider.Name(),
 		"usage": map[string]int{"prompt_tokens": res.PromptTokens, "completion_tokens": res.ResponseTokens,
 			"cached_tokens": res.CachedTokens},
-	})
+	}
+	if decide != nil {
+		out["decision"] = decide(res.Text)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // callOf is the call a request asks for - the model, soul's messages, the options and the deadline - or a
