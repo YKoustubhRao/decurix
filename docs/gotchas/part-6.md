@@ -96,6 +96,12 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   way: a loop types into the same field once per item. So only field presses and keys may come between the two (a
   button, link, commit or page change makes it a repetition), the later entry must overwrite (select-all) or repeat
   the value, and another field re-entered with another value in between marks a register's next line.
+- **A demonstration's empty row, added and deleted, would delete a real line** (2026-11-08, the same demo). A Tab
+  out of the last line made an empty third row; the save refused it and the person ticked row 3 and deleted it. On a
+  three-line bill the replay writes out row 3 and those steps then tick it and delete it, and the ledger reads back
+  header fields only. A `row N` no entry went into, selected and then followed by a non-field press, is taken out
+  with the step that made it (`learning._drop_empty_rows`). Still left: the save that failed while the row was there,
+  the press that closed its notice, and the save again.
 
 ## TheBot
 

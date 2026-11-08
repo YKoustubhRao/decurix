@@ -998,3 +998,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): The offline oracle could not drive a mock that serves several apps by host name
 - [part-6.md](gotchas/part-6.md): A demonstration's corrections were learned as part of the procedure
 - [part-6.md](gotchas/part-6.md): A taught task could never be trusted, so it never got cheaper
+- [part-6.md](gotchas/part-6.md): A demonstration's empty row, added and deleted, would delete a real line

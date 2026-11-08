@@ -117,7 +117,7 @@ def build(sources, name=None):
     tidied = []
     for meta, events in sources:
         program = replay.compile_program(meta, events)
-        for note in _tidy(program, events) + _drop_corrections(program):
+        for note in _tidy(program, events) + _drop_corrections(program) + _drop_empty_rows(program):
             if note not in tidied:
                 tidied.append(note)
         if program["steps"]:
@@ -541,6 +541,100 @@ def _drop_corrections(program):
             step["expect"] = [c for c in step["expect"] if c.get("param") not in gone]
     program["steps"] = kept
     program["params"] = [p for p in program["params"] if p["name"] not in gone]
+    return notes
+
+
+def _row_of(step):
+    """The table row a step's control is in (its path's `row N`), or None."""
+
+    rows = [s for s in _path_segments(step.get("target")) if ROW_SEGMENT.match(s)]
+    return rows[-1] if rows else None
+
+
+def _next_act(steps, i):
+    """The index of the first step after `i` that is not a scroll, or None."""
+
+    for k in range(i + 1, len(steps)):
+        if steps[k]["kind"] != "scroll":
+            return k
+    return None
+
+
+def _drop_empty_rows(program):
+    """
+    Take out, in place, a table row the person added by the way and deleted again with nothing entered into it;
+    returns what was changed, in words. Such a row is a path's `row N` that no entry ever went into, which the person
+    selected (a press on a control of that row that is not a field, its checkbox) and then, straight after, pressed a
+    control outside the table's fields on (the delete). Left in, a run of more lines than the demonstration writes out
+    that row and the steps then select it and delete it: a real line.
+
+    What goes: that selection and that press; every other step aimed at the row (a key pressed with the cursor in it),
+    except a commit, which keeps its keys and loses the row as its target; and the press that made the row, when the
+    recording shows it: the step straight before the row's first step, which saw controls appear. Decided from where
+    each step's control is, never from its words.
+
+    Found live (2026-11-08): a Tab out of a bill's last line made an empty third line; the save refused it (a
+    "missing fields" notice), and the person ticked the line and deleted it.
+    """
+
+    steps = program["steps"]
+    entered = {_row_of(s) for s in steps if _entry(s)} - {None}
+    drop, untarget, notes = set(), set(), []
+
+    for row in sorted({_row_of(s) for s in steps} - entered - {None}):
+        pairs = []
+        for i, step in enumerate(steps):
+            role = ((step.get("target") or {}).get("role") or "").lower()
+            if step["kind"] not in ("click", "double_click") or _row_of(step) != row or role in FIELD_ROLES:
+                continue
+            k = _next_act(steps, i)
+            if k is None:
+                continue
+            after = steps[k]
+            role_after = ((after.get("target") or {}).get("role") or "").lower()
+            if after["kind"] in ("click", "double_click") and after.get("target") and role_after not in FIELD_ROLES \
+                    and _row_of(after) in (None, row):
+                pairs.append((i, k))
+        if not pairs:
+            continue  # never selected and deleted: not known to be thrown away
+        for i, k in pairs:
+            drop.update((i, k))
+        in_row = [i for i, s in enumerate(steps) if _row_of(s) == row]
+        for i in in_row:
+            if i in drop:
+                continue
+            if replay._step_commits(steps[i]):
+                untarget.add(i)
+            else:
+                drop.add(i)
+        first = in_row[0]
+        maker = first - 1 if first > 0 else None
+        if maker is not None and steps[maker]["kind"] in ("click", "double_click", "key") and not _entry(steps[maker]) \
+                and _row_of(steps[maker]) != row and not replay._step_commits(steps[maker]) \
+                and any(c.get("type") == "element" for c in steps[maker].get("expect") or []):
+            drop.add(maker)
+        notes.append(f"you added a table row ({row}) and deleted it again with nothing entered into it; "
+                     "the steps that made, selected and deleted it are left out")
+
+    if not notes:
+        return []
+
+    params = {p["name"]: p for p in program["params"]}
+    kept = []
+    for i, step in enumerate(steps):
+        if i in drop:
+            continue
+        if i in untarget:
+            # The keys went to whatever had focus; the row they were pressed in is gone.
+            for key in ("target", "locate"):
+                step.pop(key, None)
+            step["summary"] = replay._summary(step)
+        kept.append(step)
+    for n, step in enumerate(kept, 1):
+        step["n"] = n
+        if step.get("param") in params:
+            params[step["param"]]["step"] = n
+    program["steps"] = kept
     return notes
 
 

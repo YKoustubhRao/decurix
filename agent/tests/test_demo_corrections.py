@@ -194,5 +194,85 @@ class NotCorrections(unittest.TestCase):
         self.assertEqual(len(skill["steps"]), 2, "a secret entry is a step of its own, kept (made manual)")
 
 
+ITEM_3, CHECK_3 = [390, 337, 216, 43], [319, 350, 14, 14]
+
+
+def empty_row_demo(entered_in_row_3=False, delete=True):
+    """Two lines entered; a Tab out of the last field makes a third, empty row (controls appear); Escape in it; a save;
+    then the person ticks row 3 and deletes it, and saves again. The live shape of 2026-11-08."""
+
+    events, i = [], 0
+
+    def add(kind, element=None, **extra):
+        nonlocal i
+        events.append(on_form(i, kind, element, **extra))
+        i += 1
+
+    add("type", at("combobox", "Item", ITEM_1), text="Pens")
+    add("type", at("textbox", "Rate", RATE_1), text="10")
+    add("click", at("button", "Add row", [310, 320, 71, 26]),
+        expect={"appeared": [{"role": "combobox", "name": "Item"}]})
+    add("type", at("combobox", "Item", ITEM_2, row=2), text="Ink")
+    add("type", at("textbox", "Rate", RATE_2, row=2), text="20")
+    add("key", at("textbox", "Rate", RATE_2, row=2), keys=["Tab"],
+        expect={"appeared": [{"role": "textbox", "name": "Rate"}]})
+    add("key", at("combobox", "Item", ITEM_3, row=3), keys=["Escape"])
+    if entered_in_row_3:
+        add("type", at("combobox", "Item", ITEM_3, row=3), text="Paper")
+    add("key", at("combobox", "Item", ITEM_3, row=3), keys=["ctrl+s"])
+    if delete:
+        add("click", at("checkbox", "", CHECK_3, row=3), expect={"appeared": [{"role": "button", "name": "Delete row"}]})
+        add("click", at("button", "Delete row", [310, 395, 87, 26]))
+    add("key", None, keys=["ctrl+s"])
+    return META, events
+
+
+def rows_in(skill):
+    return [(s["kind"], (s.get("target") or {}).get("name"), _row(s)) for s in skill["steps"]]
+
+
+def _row(step):
+    path = str((step.get("target") or {}).get("path") or "")
+    return next((seg for seg in path.split(" > ") if seg.startswith("row ")), None)
+
+
+class EmptyRows(unittest.TestCase):
+
+    def test_a_row_added_by_the_way_and_deleted_is_left_out(self):
+        skill = learning.build([empty_row_demo()])
+        steps = rows_in(skill)
+        self.assertFalse([s for s in steps if s[2] == "row 3"], steps)
+        self.assertNotIn(("click", "Delete row", None), steps)
+        self.assertNotIn(("key", "Rate", "row 2"), steps, "the Tab that made the row goes too")
+        self.assertEqual([s[0] for s in steps].count("key"), 2, "both saves stay")
+        self.assertTrue(any("deleted it again with nothing entered" in n for n in skill["tidied"]), skill["tidied"])
+
+    def test_the_save_pressed_in_that_row_keeps_its_keys(self):
+        skill = learning.build([empty_row_demo()])
+        saves = [s for s in skill["steps"] if s["kind"] == "key"]
+        self.assertEqual([s["keys"] for s in saves], [["ctrl+s"], ["ctrl+s"]])
+        self.assertTrue(all("target" not in s for s in saves))
+
+    def test_a_row_something_was_entered_into_stays(self):
+        skill = learning.build([empty_row_demo(entered_in_row_3=True)])
+        steps = rows_in(skill)
+        self.assertIn(("click", "Delete row", None), steps)
+        self.assertTrue([s for s in steps if s[2] == "row 3"])
+
+    def test_an_empty_row_never_deleted_is_not_touched(self):
+        """Not selected and deleted: nothing says the person threw it away."""
+
+        skill = learning.build([empty_row_demo(delete=False)])
+        self.assertTrue([s for s in rows_in(skill) if s[2] == "row 3"])
+        self.assertFalse(any("deleted it again" in n for n in skill["tidied"]))
+
+    def test_the_rows_of_the_lines_are_still_found(self):
+        skill = learning.build([empty_row_demo()])
+        for param in skill["params"]:
+            param["varies"] = True
+        group = skills.repeated_rows(skill)
+        self.assertEqual(len(group["rows"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
