@@ -10,21 +10,21 @@ import (
 func TestAGoalStartsWithThePersonsEarlierReplies(t *testing.T) {
 	st := &operatorState{Request: "Enter the bill"}
 	st.seedEarlierSaid([]Said{
-		{Asked: "Which cost centre should I select for this bill?", Said: "Use the cost centre of the supplier's state: CC-27 for Maharashtra."},
+		{Asked: "Which fund does this invoice go to?", Said: "Every invoice from region 07 goes to fund FND-3."},
 		{Asked: "", Said: "   "},
 	})
 	if len(st.PersonSaid) != 1 {
 		t.Fatalf("PersonSaid = %q", st.PersonSaid)
 	}
 	facts := st.reviewFacts("DONE: entered", nil, "")
-	if !strings.Contains(facts, "WHAT THE PERSON SAID IN THIS GOAL") || !strings.Contains(facts, "Asked: Which cost centre") ||
-		!strings.Contains(facts, "They said: Use the cost centre of the supplier's state: CC-27") {
+	if !strings.Contains(facts, "WHAT THE PERSON SAID IN THIS GOAL") || !strings.Contains(facts, "Asked: Which fund") ||
+		!strings.Contains(facts, "They said: Every invoice from region 07 goes to fund FND-3") {
 		t.Fatalf("the review is not shown the reply with its question:\n%s", facts)
 	}
-	if !strings.Contains(st.Seen, "CC-27 for Maharashtra") {
+	if !strings.Contains(st.Seen, "goes to fund FND-3") {
 		t.Fatalf("the reply is not a source: %q", st.Seen)
 	}
-	if strings.Contains(st.Seen, "Which cost centre should I select") {
+	if strings.Contains(st.Seen, "Which fund does this invoice") {
 		t.Fatalf("the worker's own question became a source: %q", st.Seen)
 	}
 }

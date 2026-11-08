@@ -93,7 +93,7 @@ func (st *operatorState) personWords() []string {
 // kept as a reply in the goal is: with what it answered (PersonSaid, the review's "what the person said"), and its
 // words a source a typed value may come from (the reply alone, never the question, which is the worker's). Found live
 // (2026-11-08): a bill the final check sent back started a new goal, and its review, shown no reply of the person's,
-// judged the cost centre they gave as backed by nothing.
+// judged a value they gave as backed by nothing.
 func (st *operatorState) seedEarlierSaid(said []Said) {
 	for i, s := range said {
 		if i == MaxEarlierSaid {

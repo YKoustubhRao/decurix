@@ -1118,8 +1118,8 @@ def _elsewhere_text(task_id=None):
     """What else a value may legitimately come from: the request, the person's words and what the task read. The
     person's words are the control plane's record of them (_free_text: their replies on this task, what they taught and
     answered on this worker's earlier tasks, the organisation's knowledge), never a file the worker wrote them into.
-    Found live (2026-11-08): a cost centre the person's reply gave, typed rather than picked from a list, stood in
-    nothing read here, so the worker wrote the reply into a file of its own to declare from."""
+    Found live (2026-11-08): a code the person's reply gave, typed rather than picked from a list, stood in nothing
+    read here, so the worker wrote the reply into a file of its own to declare from."""
 
     parts = [_free_text(task_id)]
     try:
@@ -1138,9 +1138,9 @@ def _elsewhere_text(task_id=None):
 def _backings(kept, task_id, order):
     """Note on each field not taken from the record's source which given place its value stands in - the person's
     words (this task's replies, what they taught, their answers on the worker's earlier tasks), the organisation's
-    knowledge, or the request - as `backed_by`, for the ledger to show. Found live (2026-11-08, a bill in an eval run): the
-    ledger said only "from bill.pdf", and three reviews in a row held a cost centre the person's rule gave as cited
-    from the PDF, until the case ran out of time. A value standing in none of them (a page read, an entry of the
+    knowledge, or the request - as `backed_by`, for the ledger to show. Found live (2026-11-08): the ledger named only the
+    record's document, and three reviews in a row held a value the person's rule gave as cited from that document,
+    until the task ran out of time. A value standing in none of them (a page read, an entry of the
     application's list) gets none."""
 
     texts = None
@@ -1738,9 +1738,9 @@ def adopt_backed(task_id=None):
     is the application itself), or in what was given - the request, the person's words the control plane keeps, the
     organisation's knowledge (_free_text). Each is kept as declared would keep it ("source", or "seen" with what backs
     it) and marked `adopted`; read back where the page looked at last shows it, absent otherwise. A value standing in
-    none of them stays undeclared, for the final check to hold (gate_faults). Found live (2026-11-08, bills in an eval
-    run, twice): the cost centre the person's answer gave was typed and saved without being declared, the final check
-    sent the task back, and the attempt sent back ran out of time - for a formality code can settle itself. Returns
+    none of them stays undeclared, for the final check to hold (gate_faults). Found live (2026-11-08, twice): a value the
+    person's answer gave was typed and saved without being declared, the final check sent the task back, and the
+    attempt sent back ran out of time - for a formality code can settle itself. Returns
     the "KEY: Label=value" lines adopted.
     """
 

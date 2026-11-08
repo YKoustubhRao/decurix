@@ -189,9 +189,8 @@ def worker_said(task_id=None, limit=WORKER_SAID_LIMIT):
     [{"asked", "text", "task_id"}]: the person's answers on this worker's EARLIER tasks (never this one's: the task's
     own are said_this_task's), each with the question it answered, newest first, at most `limit`. For the final check:
     a rule the person taught on an earlier task holds on this one, and an answer is read with its question. Found
-    live (2026-11-08): the check, shown none of them, failed a reconciliation laid out as the person had taught ("one
-    row per statement line") for lacking a row they never asked for; the worker added it, and the second check passed
-    the wrong file.
+    live (2026-11-08): the check, shown none of them, failed a file laid out as the person had taught for lacking a
+    row they never asked for; the worker added it, and the second check passed the wrong file.
     """
 
     task = task_id or task_context.current() or ""
