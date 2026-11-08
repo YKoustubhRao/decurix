@@ -2,7 +2,10 @@ package desktop
 
 // Tests for which control plane a container belongs to (OwnerLabel).
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 // A container is this control plane's only when its owner label names it; one naming another is foreign; one naming
 // none (made before the label) is neither - listed, and left to no sweep.
@@ -35,5 +38,20 @@ func TestALegacyDesktopIsAdoptedByItsAgentToken(t *testing.T) {
 	env := []string{"PATH=/usr/bin", AgentTokenEnv + "=" + mine}
 	if !tokenIn(env, mine) || tokenIn(env, theirs) || tokenIn([]string{"PATH=/usr/bin"}, mine) {
 		t.Fatal("adoption by agent token is wrong")
+	}
+}
+
+// Two tars are joined entry by entry (joinTars): the worker's soul travels with its agent tree into practice.
+func TestTwoTarsAreJoined(t *testing.T) {
+	a := tarBody(map[string]string{"decurix_agent/core.py": "x"})
+	b := tarBody(map[string]string{"soul": "binary"})
+	joined, err := joinTars(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sumJoined, _ := TarFingerprint(joined)
+	sumA, _ := TarFingerprint(a)
+	if sumJoined == sumA || !bytes.Contains(joined, []byte("soul")) || !bytes.Contains(joined, []byte("decurix_agent/core.py")) {
+		t.Fatal("the joined tar does not hold both")
 	}
 }

@@ -339,8 +339,45 @@ func (m *Manager) PracticeAgentTree(ctx context.Context, workerID string) ([]byt
 	if err != nil {
 		return nil, "", err
 	}
+	// The worker's soul goes with its agent tree: the agent and soul are one harness, and a practice desktop running
+	// the image's soul under the worker's agent tested neither. Found live (2026-11-08): soul fixes deployed to the
+	// taught worker never reached an eval's practice desktops, and a case failed on what one of them had fixed.
+	// A worker with no /opt/soul (or one that cannot be read) keeps the image's.
+	if soul, serr := m.copyOut(ctx, found.ContainerID, "/opt/soul", practiceMaxTar); serr == nil {
+		if joined, jerr := joinTars(b, soul); jerr == nil {
+			b = joined
+		}
+	}
 	sum, err := TarFingerprint(b)
 	return b, sum, err
+}
+
+// joinTars is one tar holding every entry of a, then every entry of b.
+func joinTars(a, b []byte) ([]byte, error) {
+	var out bytes.Buffer
+	tw := tar.NewWriter(&out)
+	for _, part := range [][]byte{a, b} {
+		tr := tar.NewReader(bytes.NewReader(part))
+		for {
+			h, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if err := tw.WriteHeader(h); err != nil {
+				return nil, err
+			}
+			if _, err := io.Copy(tw, tr); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 // PracticeSnapshot copies the worker's agent state folders (PracticeSnapshotParts)
