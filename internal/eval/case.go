@@ -54,6 +54,10 @@ const (
 	MaxOracleSteps  = 200
 	MaxRequestBytes = 8000
 	MaxCaseMinutes  = 60
+	MaxApproves     = 10
+	// MaxControlName is the longest control name an approval may list: the gate cuts a name it quotes at 80
+	// characters, the last of them an ellipsis, so a longer one could never be matched whole.
+	MaxControlName = 79
 )
 
 // Suite is a loaded, validated suite: its own document plus every case, file and mock it names.
@@ -96,6 +100,7 @@ type Case struct {
 	Request       string       `json:"request"`
 	Start         Start        `json:"start"`
 	Facts         []Fact       `json:"facts"`
+	Approves      []Approval   `json:"approves,omitempty"`
 	Expected      Expected     `json:"expected"`
 	Oracle        []OracleStep `json:"oracle"`
 	OracleSecrets []string     `json:"oracle_secrets,omitempty"`
@@ -124,6 +129,14 @@ type Fact struct {
 	// whatever the expert says, so which question is the right one rests on the case's data, not on a model.
 	RefersTo []string `json:"refers_to"`
 	Required *bool    `json:"required"`
+}
+
+// Approval is one action the person approves for a case (Case.Approves), answered by the expert's yes when the
+// approval gate stops it (docs/evals.md): a click on the control named Control (and, when Role is
+// given, of that role), as the approval gate words the action in its signed question.
+type Approval struct {
+	Control string `json:"control"`
+	Role    string `json:"role,omitempty"`
 }
 
 // words splits text into its lower-cased words (letters and digits).

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,8 @@ import (
 
 // The scripted expert (D9) only chooses: shown a worker's question and the facts the person knows, it names one fact
 // or none. What the worker is sent is that fact's own bytes from the case, or DontKnow. It never sees a grader, an
-// expected record or the oracle, and it never answers an approval.
+// expected record or the oracle. It answers an approval only with a yes the case lists (Case.Approves), decided in
+// code from the gate's own signed question, never by its model; every other approval ends the case unanswered.
 
 // Hub is the hosted-model hub as the eval uses it (*llm.Hub).
 type Hub interface {
@@ -210,4 +212,43 @@ func clipText(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// ApprovalYes is the expert's reply to an approval its case lists: a plain yes, which the gate settles in code, with
+// no model reading it.
+const ApprovalYes = "Yes, go ahead."
+
+// gateClick is how the approval gate words a click it stops (approval.request_text over describe_action and
+// elements.describe): `Approval needed before I click <role> "<name>"`, then the ref, the window and the reason. The
+// gate quotes a name with its own double quotes turned to single ones, so the name holds none.
+var gateClick = regexp.MustCompile(`^Approval needed before I click ([a-z][a-z ]{0,39}?) "([^"]*)"`)
+
+// GateControl reads the control a click acts on from the gate's signed question: its role and name. ok is false for
+// any other action the gate stops (typing, a key, a command whose control was not resolved).
+func GateControl(question string) (role, name string, ok bool) {
+	m := gateClick.FindStringSubmatch(strings.TrimSpace(question))
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
+
+// sameName compares two control names as the gate quotes them: whitespace collapsed, case folded.
+func sameName(a, b string) bool {
+	return strings.EqualFold(strings.Join(strings.Fields(a), " "), strings.Join(strings.Fields(b), " "))
+}
+
+// ApprovalFor is the case's approval that the gate's signed question names, by structure: the click's control, by its
+// whole name (and its role, when the approval gives one). Words anywhere else in the question never match.
+func (c Case) ApprovalFor(gateQuestion string) (Approval, bool) {
+	role, name, ok := GateControl(gateQuestion)
+	if !ok {
+		return Approval{}, false
+	}
+	for _, a := range c.Approves {
+		if sameName(a.Control, name) && (a.Role == "" || sameName(a.Role, role)) {
+			return a, true
+		}
+	}
+	return Approval{}, false
 }

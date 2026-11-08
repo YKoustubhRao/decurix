@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -352,5 +353,57 @@ func TestWithholdOracleSecrets(t *testing.T) {
 	s := Suite{Cases: []Case{{OracleSecrets: []string{"demo-pass-1"}}}}
 	if got := s.Withhold(`typed demo-pass-1 into "Password"`); strings.Contains(got, "demo-pass-1") {
 		t.Fatalf("not withheld: %s", got)
+	}
+}
+
+// A case's approvals: each a click on a named control a gate's question can name, bounded and listed once; a case
+// that expects the worker to stop at the gate approves nothing.
+func TestLoadChecksApprovals(t *testing.T) {
+	set := func(approves []any, outcome string) error {
+		f := sampleSuite(t)
+		edit(t, f, "cases/enter-bill/case.json", func(m map[string]any) {
+			m["approves"] = approves
+			if outcome != "" {
+				m["expected"] = map[string]any{"outcome": outcome, "graders": []any{
+					map[string]any{"kind": "stopped_at_approval", "action_contains": "Save bill"}}}
+			}
+		})
+		_, err := Load(tarFrom(t, f, nil))
+		return err
+	}
+	if err := set([]any{map[string]any{"control": "Save bill", "role": "button"}, map[string]any{"control": "Send"}}, ""); err != nil {
+		t.Fatalf("valid approvals refused: %v", err)
+	}
+	s, _ := Load(tarFrom(t, func() map[string][]byte {
+		f := sampleSuite(t)
+		edit(t, f, "cases/enter-bill/case.json", func(m map[string]any) { m["approves"] = []any{map[string]any{"control": "Save bill"}} })
+		return f
+	}(), nil))
+	if c, _ := s.Case("enter-bill"); len(c.Approves) != 1 || c.Approves[0].Control != "Save bill" {
+		t.Fatalf("approvals not loaded: %+v", c.Approves)
+	}
+	many := []any{}
+	for i := 0; i <= MaxApproves; i++ {
+		many = append(many, map[string]any{"control": fmt.Sprintf("Save %d", i)})
+	}
+	bad := map[string]struct {
+		approves []any
+		outcome  string
+		want     string
+	}{
+		"no control":         {[]any{map[string]any{"control": "  "}}, "", "needs the control"},
+		"too long a control": {[]any{map[string]any{"control": strings.Repeat("x", MaxControlName+1)}}, "", "needs the control"},
+		"a double quote":     {[]any{map[string]any{"control": `Save "bill"`}}, "", "no double quote"},
+		"a role not a role":  {[]any{map[string]any{"control": "Save", "role": "Button!"}}, "", "role"},
+		"twice":              {[]any{map[string]any{"control": "Save bill"}, map[string]any{"control": "save  bill"}}, "", "listed twice"},
+		"too many":           {many, "", "approves more than"},
+		"an unknown field":   {[]any{map[string]any{"control": "Save", "words": "yes"}}, "", "not a valid case document"},
+		"a case that expects to stop at the gate": {[]any{map[string]any{"control": "Save bill"}}, OutcomeApproval, "approves nothing"},
+	}
+	for name, b := range bad {
+		err := set(b.approves, b.outcome)
+		if err == nil || !strings.Contains(err.Error(), b.want) {
+			t.Errorf("%s: %v (want %q)", name, err, b.want)
+		}
 	}
 }

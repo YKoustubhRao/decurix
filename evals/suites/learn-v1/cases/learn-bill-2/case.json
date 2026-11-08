@@ -28,13 +28,19 @@
         "allocation",
         "cost code",
         "department",
-        "logistics",
+        "cc",
         "ledger",
         "expense head",
         "account head"
       ],
-      "answer": "From now on, for every bill you enter: courier and freight bills are charged to the cost centre Logistics, and every other bill to General.",
+      "answer": "From now on, for every bill you enter, the cost centre is set by the first two digits of the supplier's GSTIN (its state code): 29 goes to CC-14, 30 to CC-27, 33 to CC-52, and every other state code to CC-90.",
       "required": false
+    }
+  ],
+  "approves": [
+    {
+      "control": "Save bill",
+      "role": "button"
     }
   ],
   "expected": {
@@ -61,7 +67,7 @@
             "total": {
               "number": "5074.00"
             },
-            "cost_centre": "General"
+            "cost_centre": "CC-27"
           }
         ]
       },
@@ -73,7 +79,7 @@
   },
   "oracle": [
     "office read bill.pdf | grep -q IP-0782",
-    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=IP-0782 --data-urlencode 'vendor=Inkhaven Printers' --data-urlencode date=2026-04-09 --data-urlencode due=2026-05-09 --data-urlencode total=5,074.00 --data-urlencode cost_centre=General --data-urlencode notes= http://records.example.test/bills/new"
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=IP-0782 --data-urlencode 'vendor=Inkhaven Printers' --data-urlencode date=2026-04-09 --data-urlencode due=2026-05-09 --data-urlencode total=5,074.00 --data-urlencode cost_centre=CC-27 --data-urlencode notes= http://records.example.test/bills/new"
   ],
   "tags": [
     "recall"

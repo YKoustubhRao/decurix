@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 // ---- the expert in the runner's loop ----
@@ -116,5 +118,90 @@ func TestWithoutTheExpertAQuestionEndsTheCase(t *testing.T) {
 	}
 	if !row.Passed || row.Observed != OutcomeAsked || row.QRequired != 1 {
 		t.Fatalf("row: %+v", row)
+	}
+}
+
+// approveCase is a case whose person approves the form's save (and nothing else).
+func approveCase() map[string]any {
+	return map[string]any{"schema": CaseSchema, "id": "approve-save", "category": "approval", "kind": "web_form",
+		"request": "Save bill B-3.", "start": map[string]any{"files": []string{}, "mock": "app"}, "facts": []any{},
+		"approves": []any{map[string]any{"control": "Save bill", "role": "button"}},
+		"expected": map[string]any{"outcome": "complete", "graders": []any{map[string]any{"kind": "mock_records", "collection": "bills",
+			"exact_count": true, "records": []any{map[string]any{"number": map[string]string{"id": "B-3"}}}}}},
+		"oracle": []any{"curl -d number=B-3 x"}}
+}
+
+// approvingWorker asks the gate's approval for the click it is given; once told yes it saves B-3 and finishes.
+func approvingWorker(gate map[string]string) worker {
+	return func(fs *fakeSandbox, caseID, content string, n int) {
+		if n == 1 {
+			fs.callback("/api/querytext", map[string]any{"kind": "approval", "reply": "May I save it?", "gate": gate})
+			return
+		}
+		if content == ApprovalYes {
+			fs.addRecord("bills", map[string]any{"number": "B-3"})
+			fs.final("Saved B-3.", true)
+			return
+		}
+		fs.final("I was not allowed to save B-3.", false)
+	}
+}
+
+func approvalRun(t *testing.T, gate map[string]string, expert bool) (Row, *noticeSandbox) {
+	t.Helper()
+	s, sb, _, _, _ := newService(t, approvingWorker(gate))
+	ns := &noticeSandbox{fakeSandbox: sb}
+	s.Sandbox = ns
+	run, err := s.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t, approveCase()), Repeats: 1, Cases: []string{"approve-save"},
+		Arms: []Arm{{Name: "arm", Kind: ArmModel, Expert: expert}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, s, run.ID)
+	rows, _ := s.Store.Rows(run.ID)
+	if len(rows) != 1 {
+		t.Fatalf("rows: %+v", rows)
+	}
+	return rows[0], ns
+}
+
+// A listed approval is answered yes the way a person's is: the reply goes to the gate bound to the gate's request and
+// its own words (kind approval), then to the worker; the case goes on to its end. Anything else ends the case at the
+// gate with nothing granted.
+func TestTheExpertSaysYesToAListedApprovalThroughTheGate(t *testing.T) {
+	gate := map[string]string{"id": "g7", "question": saveBillGate, "sig": "gate-signed"}
+	row, ns := approvalRun(t, gate, true)
+	if !row.Passed || row.Observed != OutcomeComplete || row.QRequired != 1 {
+		t.Fatalf("row: %+v %s", row, row.Checks)
+	}
+	if got := requestsAfterFirst(ns.fakeSandbox); len(got) != 1 || got[0] != ApprovalYes {
+		t.Fatalf("replies: %q", got)
+	}
+	ns.mu.Lock()
+	notices := append([]desktop.GateNotice(nil), ns.notices...)
+	ns.mu.Unlock()
+	if len(notices) != 2 || notices[1].Reply == nil {
+		t.Fatalf("notices: %+v", notices)
+	}
+	if r := notices[1].Reply; r.Kind != "approval" || r.RequestID != "g7" || r.Asked != saveBillGate || r.Text != ApprovalYes {
+		t.Fatalf("the gate was not given the person's yes for its own request: %+v", r)
+	}
+
+	refusals := map[string]struct {
+		gate   map[string]string
+		expert bool
+	}{
+		"an unlisted control":              {map[string]string{"id": "g7", "question": strings.Replace(saveBillGate, "Save bill", "Delete bill", 1), "sig": "gate-signed"}, true},
+		"a question the gate never signed": {map[string]string{"id": "g7", "question": saveBillGate, "sig": "made-up"}, true},
+		"an arm without the expert":        {gate, false},
+	}
+	for name, r := range refusals {
+		row, ns := approvalRun(t, r.gate, r.expert)
+		if got := requestsAfterFirst(ns.fakeSandbox); len(got) != 0 {
+			t.Errorf("%s: answered %q", name, got)
+		}
+		if row.Passed || row.Observed != OutcomeApproval {
+			t.Errorf("%s: row %+v", name, row)
+		}
 	}
 }

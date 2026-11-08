@@ -13,11 +13,11 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
 endobj
 5 0 obj
-<< /Length 975 >>
+<< /Length 933 >>
 stream
 BT /F1 16 Tf 64 756 Td (Inkhaven Printers) Tj ET
-BT /F1 11 Tf 64 739 Td (22 Market Lane, Dharwad) Tj ET
-BT /F1 11 Tf 64 722 Td (GSTIN: 29AAGFI2287D1ZB) Tj ET
+BT /F1 11 Tf 64 739 Td (22 Market Lane, Margao, Goa) Tj ET
+BT /F1 11 Tf 64 722 Td (GSTIN: 30AAGFI2287D1ZS) Tj ET
 BT /F1 11 Tf 64 688 Td (TAX INVOICE) Tj ET
 BT /F1 11 Tf 64 654 Td (Invoice number: IP-0782) Tj ET
 BT /F1 11 Tf 64 637 Td (Invoice date: 2026-04-09) Tj ET
@@ -29,10 +29,9 @@ BT /F1 11 Tf 64 518 Td (Menu cards, 500: 2,750.00) Tj ET
 BT /F1 11 Tf 64 501 Td (Price labels, 2,000: 1,100.00) Tj ET
 BT /F1 11 Tf 64 484 Td (Design changes: 450.00) Tj ET
 BT /F1 11 Tf 64 450 Td (Taxable value: 4,300.00) Tj ET
-BT /F1 11 Tf 64 433 Td (CGST 9%: 387.00) Tj ET
-BT /F1 11 Tf 64 416 Td (SGST 9%: 387.00) Tj ET
-BT /F1 11 Tf 64 399 Td (Total due: 5,074.00) Tj ET
-BT /F1 11 Tf 64 348 Td (Thank you for your business.) Tj ET
+BT /F1 11 Tf 64 433 Td (IGST 18%: 774.00) Tj ET
+BT /F1 11 Tf 64 416 Td (Total due: 5,074.00) Tj ET
+BT /F1 11 Tf 64 365 Td (Thank you for your business.) Tj ET
 endstream
 endobj
 xref
@@ -46,5 +45,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-1370
+1328
 %%EOF

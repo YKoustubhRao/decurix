@@ -25,3 +25,12 @@ func ReplyGateNotice(taskID, text, question string, askedSecret bool) desktop.Ga
 	return desktop.ReplyNotice(taskID, withheld, withhold.HeldValues(text, stored),
 		&desktop.GateReply{Text: text, Asked: question, Kind: "query"})
 }
+
+// ApprovalGateNotice is what a practice desktop's gate is told before its agent has a yes to the gate's own approval
+// question on taskID: bound to the gate's request id with the gate's words, as a person's reply typed under that
+// approval's card is (httpapi.replyBinding), so the gate settles that one request and nothing else.
+func ApprovalGateNotice(taskID, text, question, requestID string) desktop.GateNotice {
+	stored, withheld := tasks.ReplyForm(text, false, question, false)
+	return desktop.ReplyNotice(taskID, withheld, withhold.HeldValues(text, stored),
+		&desktop.GateReply{Text: text, Asked: question, Kind: "approval", RequestID: requestID})
+}

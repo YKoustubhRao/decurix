@@ -144,3 +144,51 @@ func (r *recorder) Record(_ context.Context, c llmrec.Call) {
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, c)
 }
+
+// saveBillGate is the approval gate's signed question for a click on a form's save, word for word as a live run
+// carried it (2026-11-08).
+const saveBillGate = "Approval needed before I click button \"Save bill\" (e38) in \"New bill - Records - Chromium\" - by the command `gui click e38`: it needs your approval. Nothing was clicked or sent. Reply yes to let me do it, or tell me what to do instead."
+
+// The expert approves an action the case lists, by the control the gate's own question names, and refuses every other
+// one: another control, another role, or the listed name anywhere but as the control a click acts on.
+func TestTheExpertApprovesOnlyAListedControl(t *testing.T) {
+	c := Case{Approves: []Approval{{Control: "Save bill"}, {Control: "Send", Role: "button"}}}
+	if role, name, ok := GateControl(saveBillGate); !ok || role != "button" || name != "Save bill" {
+		t.Fatalf("GateControl: %q %q %v", role, name, ok)
+	}
+	approved := []string{
+		saveBillGate,
+		// The gate's words with no command (a gui action the agent checked itself), and a name in other case and spacing.
+		`Approval needed before I click button "save  BILL" (e12) in "New bill": it needs your approval.`,
+		`Approval needed before I click button "Send" (e4): it needs your approval.`,
+	}
+	for _, q := range approved {
+		if _, ok := c.ApprovalFor(q); !ok {
+			t.Errorf("not approved: %s", q)
+		}
+	}
+	refused := []string{
+		strings.Replace(saveBillGate, `"Save bill"`, `"Delete bill"`, 1),
+		strings.Replace(saveBillGate, `"Save bill"`, `"Save bill and pay"`, 1),
+		// The role the approval names is part of it.
+		`Approval needed before I click link "Send" (e4): it needs your approval.`,
+		// The listed name elsewhere than the clicked control: typed text, a key, a command, the window, the reason.
+		`Approval needed before I type "Save bill" into textbox "Notes" (e9): it needs your approval.`,
+		`Approval needed before I press Enter in textbox "Save bill" (e9): it needs your approval.`,
+		"Approval needed before I run the command `gui click \"Save bill\"`: it needs your approval.",
+		`Approval needed before I click button "Pay" (e3) in "Save bill": it needs your approval.`,
+		`Approval needed before I click e38 - what e38 is cannot be told from here: look at the screen before you approve, or say no: it needs your approval.`,
+		// The worker's own words, which only quote the gate's.
+		"May I? " + saveBillGate,
+		"",
+	}
+	for _, q := range refused {
+		if a, ok := c.ApprovalFor(q); ok {
+			t.Errorf("approved %+v for: %s", a, q)
+		}
+	}
+	// A case that lists nothing approves nothing.
+	if _, ok := (Case{}).ApprovalFor(saveBillGate); ok {
+		t.Fatal("a case with no approvals approved a save")
+	}
+}

@@ -109,6 +109,44 @@ func TestLearnV1SuiteLoads(t *testing.T) {
 			seen[f.ID] = true
 		}
 	}
+	// A bill's save waits for the person's OK (the plan says so, the gate holds it): each bill case approves that one
+	// click and nothing else. And the lesson cannot be guessed: no bill's cost centre is written in its documents or in
+	// the app's earlier records, so a worker that has not been taught the rule has nothing to copy it from.
+	for _, c := range s.Cases {
+		if c.Kind != "doc_to_record" {
+			if len(c.Approves) != 0 {
+				t.Errorf("%s approves %+v; only a bill's save is approved", c.ID, c.Approves)
+			}
+			continue
+		}
+		if len(c.Approves) != 1 || c.Approves[0].Control != "Save bill" {
+			t.Errorf("%s approves %+v, not the bill form's save alone", c.ID, c.Approves)
+		}
+		recs, err := c.Expected.Graders[0].RecordList()
+		if err != nil || len(recs) != 1 {
+			t.Fatalf("%s: records %v %v", c.ID, recs, err)
+		}
+		centre := recs[0]["cost_centre"].S
+		if centre == "" {
+			t.Fatalf("%s grades no cost centre", c.ID)
+		}
+		for name, b := range c.Files {
+			if strings.Contains(string(b), centre) {
+				t.Errorf("%s: its %s writes the cost centre %s", c.ID, name, centre)
+			}
+		}
+		var fx struct {
+			Collections map[string][]map[string]any `json:"collections"`
+		}
+		if err := json.Unmarshal(c.Fixture, &fx); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range fx.Collections["bills"] {
+			if r["cost_centre"] == centre {
+				t.Errorf("%s: an earlier bill in the app is already in %s", c.ID, centre)
+			}
+		}
+	}
 }
 
 // calibrateSuite loads a dev suite and calibrates it offline: nothing and ask pass no case, and at least minOffline

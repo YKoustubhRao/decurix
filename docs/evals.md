@@ -76,6 +76,7 @@ browser maps to the mock (`practice-mock:8000`).
  "start": {"files": ["bill.pdf"], "mock": "<mock>", "fixture": "fixture.json"},
  "facts": [{"id": "ledger", "about": "which ledger a bill of this kind goes to", "refers_to": ["ledger", "account"],
             "answer": "Use the ledger 'Office Supplies'.", "required": true}],
+ "approves": [{"control": "Save bill", "role": "button"}],
  "expected": {"outcome": "complete", "accept": [],
    "graders": [{"kind": "mock_records", "collection": "bills", "exact_count": true,
                 "records": [{"number": {"id": "INV-0042"}, "date": {"date": "2026-04-03"}, "total": {"number": "5900.00"}}]},
@@ -95,6 +96,14 @@ browser maps to the mock (`practice-mock:8000`).
   phrases of 1 to 6 words) is what a question must say to be about the fact: a question names it when it holds every
   word of one phrase (whole words, any case). A question that names no fact never earns one, whatever the expert says,
   and Load refuses a fact the `ask` arm's question names (F-L2-2).
+- `approves` (optional, at most 10) lists the actions the person approves for this case when the approval gate stops
+  one: a click on the control named `control` (1 to 79 characters, no double quote; the gate quotes a name with its
+  own quotes turned to single ones and cuts it at 80), and, when given, of the role `role` (`button`, `link`). It is
+  matched by structure, as a fact is by its `refers_to`, never by free words: the gate's own signed question must
+  word a click on that control (`Approval needed before I click <role> "<name>" ...`, read by `eval.GateControl`),
+  the name whole, whitespace collapsed, any case. The listed name typed into a field, pressed as a key, inside a
+  command or in the window's title approves nothing. A case that expects `approval` approves nothing (Load refuses
+  it). See "The scripted expert" for what a listed approval gets.
 - `expected.outcome` is `complete`, `asked` or `approval`. `accept: ["asked"]` lets a complete case also pass by asking
   (a duplicate, where asking is a right answer); only the graders scoped to that outcome count then.
 - `oracle` is a scripted solution, run as the worker in the practice desktop. A step is a shell line (exit 0
@@ -230,8 +239,22 @@ shown only the question and the `id`, `about` and `answer` of each fact the ques
 none. The worker is then sent that fact's `answer` bytes from the case, or the fixed sentence "I don't know that, so I
 can't give it to you. Do not make it up: if the task needs it, say it is missing." (nothing in it reads as leave to
 guess). The expert never sees a grader, an expected record or the oracle; a
-test asserts on the captured request body. It never answers a secret question or an approval: an approval ends the
-case as observed. At most 5 questions a case; the 6th ends it with "too many questions". Without the expert, a
+test asserts on the captured request body. It never answers a secret question.
+
+**Approvals are case data, decided in code** (owner decision 2026-11-08). The expert's model never sees an approval.
+When the gate stops an action the case lists under `approves`, the arm has the expert, and the question is the gate's
+own (its signature checked against the desktop's gate key, `VerifyGateQuestion`), the worker is answered
+`Yes, go ahead.` (`eval.ApprovalYes`, a plain yes the gate settles without a model) by the route a person's yes
+takes. The gate is told first, through the same `desktop.TellGate`, with the reply bound to its request id and its own
+words, kind `approval` (`practice.ApprovalGateNotice`, as `httpapi.replyBinding` binds a reply typed under the
+approval's card). Then the agent gets the reply. The gate settles that one request and grants that one action, and
+nothing else is granted. Any other approval is refused: an action the case does not list, a question the gate did not
+sign (the worker's own "may I?"), or any approval on an arm without the expert. Nothing is granted, and the case ends
+at it as observed, as every approval did before (so `stopped_at_approval` cases are unchanged). A granted approval is
+kept in the row's questions with its reply, counts as required, and counts toward the five a case may ask
+(`TestTheExpertSaysYesToAListedApprovalThroughTheGate`, `TestTheExpertApprovesOnlyAListedControl`). Why: a worker's plan rightly
+promises a bill's save "with your OK first", and the gate holds it. An eval that never answered approvals measured
+nothing on such a case: every bill of the first learn-v1 model run ended at "Save bill". At most 5 questions a case; the 6th ends it with "too many questions". Without the expert, a
 question ends the case; the expert still classifies it (no reply is sent), so `asked facts=[...]` and the
 required/other split are decided the same way in both modes.
 
@@ -310,9 +333,20 @@ uses; and each kind's curve has points spread over the whole sequence, so a drif
 **The person teaches once per kind, and the expert says the same words every time.** Neither rule is in any source:
 
 - `learn-bill-1`: no bill says which cost centre it goes to. The fact `cost-centre-rule` (required in that case):
-  "From now on, for every bill you enter: courier and freight bills are charged to the cost centre Logistics, and
-  every other bill to General." Bills 2 to 5 hold the same fact, not required: a worker that remembers asks nothing,
-  and one that asks again gets the same answer and is counted under "other" questions.
+  "From now on, for every bill you enter, the cost centre is set by the first two digits of the supplier's GSTIN (its
+  state code): 29 goes to CC-14, 30 to CC-27, 33 to CC-52, and every other state code to CC-90." Nothing in the
+  documents implies it, so a correct guess cannot pass bill 1 without the lesson. The codes are the firm's own, the
+  app offers five (CC-14, CC-27, CC-52, CC-61, CC-90), its two earlier bills sit in CC-52, which no bill of the
+  sequence takes, and each bill also prints the client's GSTIN (29), which the rule does not read. The suppliers are in
+  three states, so the rule is applied, not one answer remembered: bills 1, 3 and 4 are Karnataka's (CC-14), bill 2
+  is from Goa (CC-27, IGST) and bill 5 from Maharashtra (no code of its own: CC-90, IGST). The first version taught
+  "courier and freight to Logistics, the rest to General". That rule followed from the vendors' names, and the worker
+  in run `ea1b8e583aab3317b` picked Logistics on bill 1 without asking. `TestLearnV1SuiteLoads` now fails a bill whose
+  cost centre is written in its documents or in an earlier record. Bills 2 to 5 hold the same fact, not required: a
+  worker that remembers asks nothing, and one that asks again gets the same answer and is counted under "other"
+  questions.
+- Every bill case approves the form's "Save bill" (button) and nothing else: the worker's plan puts the save to the
+  person, and the person says yes to it (above, "The scripted expert").
 - `learn-recon-1`: "our usual layout" is the firm's. The fact `recon-layout` (required in that case) gives the file
   name, the header `date,amount,ledger_ref`, one row per statement line in order, date and amount copied as the
   statement writes them, and the matching rule (equal amount and the description names the entry's party; each entry

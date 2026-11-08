@@ -41,7 +41,11 @@ CLIENT = ("Corvel Bakehouse LLP", "14 Tannery Road, Hubballi", gstin("29AAMFC771
 
 
 def bill(vendor, address, vendor_gstin, number, dated, due, lines, rate_pct, extra=()):
-    """A tax invoice to the client: its lines, the taxable value, CGST and SGST at rate_pct each, and the total."""
+    """
+    A tax invoice to the client: its lines, the taxable value, the tax and the total. A supplier in the client's state
+    (the GSTIN's first two digits) charges CGST and SGST at rate_pct each; one in another state charges IGST at twice
+    that, the same amount in one line, so the total is the same either way.
+    """
 
     taxable = sum(cents for _, cents in lines)
     tax = round(taxable * rate_pct / 100)
@@ -51,8 +55,11 @@ def bill(vendor, address, vendor_gstin, number, dated, due, lines, rate_pct, ext
            f"Bill to: {CLIENT[0]}, {CLIENT[1]}", f"GSTIN: {CLIENT[2]}", "", "Items:"]
     for desc, cents in lines:
         out.append(f"{desc}: {money(cents)}")
-    out += ["", f"Taxable value: {money(taxable)}", f"CGST {rate_pct}%: {money(tax)}", f"SGST {rate_pct}%: {money(tax)}",
-            f"Total due: {money(total)}", ""]
+    if vendor_gstin[:2] == CLIENT[2][:2]:
+        taxes = [f"CGST {rate_pct}%: {money(tax)}", f"SGST {rate_pct}%: {money(tax)}"]
+    else:
+        taxes = [f"IGST {2 * rate_pct}%: {money(2 * tax)}"]
+    out += ["", f"Taxable value: {money(taxable)}"] + taxes + [f"Total due: {money(total)}", ""]
     out += list(extra)
     out += ["", "Thank you for your business."]
     return pdf_bytes(out), money(total)
@@ -64,14 +71,20 @@ def money(cents):
     return f"{cents // 100:,}.{cents % 100:02d}"
 
 
-# The five bills, in suite order. The cost centre is on none of them: the person teaches the rule in the first case.
+# The five bills, in suite order. The cost centre is on none of them, and no name, word or earlier record implies it:
+# the person teaches the firm's rule in the first case, a map from the supplier's GSTIN state code (its first two
+# digits) to the firm's own cost-centre codes (29 to CC-14, 30 to CC-27, 33 to CC-52, any other to CC-90). The
+# suppliers are in three states, so the rule is applied, not one answer remembered: bills 1, 3 and 4 are Karnataka's
+# (29, CC-14), bill 2 is from Goa (30, CC-27) and bill 5 from Maharashtra (27, no code of its own: CC-90). Each bill
+# also prints the client's GSTIN (29), which the rule does not read. The app's two earlier bills sit in CC-52, so
+# copying the last bill's code is wrong too.
 BILLS = {
     "learn-bill-1": lambda: bill(
         "Swiftlark Couriers", "7 Station Approach, Hubballi", gstin("29ABJFS4410Q1Z"), "SC-24117",
         "2026-04-03", "2026-05-03",
         [("Document courier, 42 consignments", 336000), ("Fuel surcharge", 24000)], 9),
     "learn-bill-2": lambda: bill(
-        "Inkhaven Printers", "22 Market Lane, Dharwad", gstin("29AAGFI2287D1Z"), "IP-0782",
+        "Inkhaven Printers", "22 Market Lane, Margao, Goa", gstin("30AAGFI2287D1Z"), "IP-0782",
         "2026-04-09", "2026-05-09",
         [("Menu cards, 500", 275000), ("Price labels, 2,000", 110000), ("Design changes", 45000)], 9),
     "learn-bill-3": lambda: bill(
@@ -85,7 +98,7 @@ BILLS = {
         [("Kitchen deep clean, 2 visits", 320000), ("Grease trap service", 140000), ("Cleaning consumables", 38000)], 9,
         ["Covering letter sent separately by email."]),
     "learn-bill-5": lambda: bill(
-        "Tealbrook Cold Chain", "Unit 3, Food Park, Dharwad", gstin("29AAJCT3318N1Z"), "TC-55102",
+        "Tealbrook Cold Chain", "Unit 3, Food Park, Kolhapur, Maharashtra", gstin("27AAJCT3318N1Z"), "TC-55102",
         "2026-04-29", "2026-05-29",
         [("Freight: chilled van, 6 trips", 900000), ("Driver allowance", 180000), ("Toll charges", 52000),
          ("Waiting time, 3 hours", 45000)], 9),

@@ -1017,10 +1017,35 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 			case qualification.ObservedApproval:
 				text := o.Text
 				// Only a question the desktop's own gate signed is the gate's; the worker's own "may I?" is not.
-				if o.Gate != "" && s.Sandbox.VerifyGateQuestion(desktopID, o.GateID, o.Gate, o.GateSig) {
-					text, ev.GateQuestion = o.Gate, o.Gate
+				signed := o.Gate != "" && s.Sandbox.VerifyGateQuestion(desktopID, o.GateID, o.Gate, o.GateSig)
+				if signed {
+					text = o.Gate
 				}
-				ev.Questions = append(ev.Questions, Asked{Kind: ObservedApproval, Text: text, Required: true})
+				asked := Asked{Kind: ObservedApproval, Text: text, Required: true}
+				// An action the case approves gets the expert's yes, through the route a person's yes takes: the reply
+				// bound to the gate's request and its own words, signed for the gate (practice.ApprovalGateNotice).
+				// Any other approval, or one the gate did not sign, is refused: nothing is granted and the case ends.
+				if _, ok := c.ApprovalFor(o.Gate); ok && signed && arm.Expert {
+					questions++
+					if questions > MaxQuestions {
+						ev.Questions = append(ev.Questions, asked)
+						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
+						ev.Unfinished = append(ev.Unfinished, "too many questions")
+						return problems
+					}
+					asked.Reply = ApprovalYes
+					ev.Questions = append(ev.Questions, asked)
+					if err := s.post(desktop.WithGateNotice(ctx, practice.ApprovalGateNotice(taskID, ApprovalYes, o.Gate, o.GateID)), d, "/request", map[string]string{"content": ApprovalYes, "task_id": taskID}); err != nil {
+						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
+						notDelivered(ev, err, "The expert's approval could not be sent to the worker.")
+						return problems
+					}
+					continue
+				}
+				if signed {
+					ev.GateQuestion = o.Gate
+				}
+				ev.Questions = append(ev.Questions, asked)
 				ev.Observation, ev.FinalText = ObservedApproval, text
 				return problems
 			case qualification.ObservedFinal, qualification.ObservedError:
