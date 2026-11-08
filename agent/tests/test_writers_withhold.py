@@ -54,6 +54,8 @@ ALLOWED = {
                                      "it handed over, kept 0600 in the screen user's private folders",
     "computer/broker.py:worker_a11y_bus": "opens the worker's published accessibility bus address read-only "
                                           "(writes nothing)",
+    "config.py:take_agent_token": "opens the agent token's file read-only (O_RDONLY | O_NOFOLLOW) and deletes it; "
+                                  "it writes nothing",
     "computer/gui_client.py:_read_own": "opens the worker's own state read-only, to tell the screen broker (writes "
                                         "nothing)",
     "computer/gui_client.py:input_files": "opens the files a command names read-only, to hand them to the screen "
@@ -142,6 +144,7 @@ FORMS = {
     "computer/gui_client.py:save_output": {"os.open", "os.write", "os.replace"},
     "computer/broker.py:_keep_copy": {"os.open", "os.write", "os.replace"},
     "computer/gui_client.py:save_state": {"os.open", "os.write", "os.replace"},
+    "config.py:take_agent_token": {"os.open"},
     "computer/gui_client.py:_read_own": {"os.open"},
     "computer/broker.py:worker_a11y_bus": {"os.open"},
     "computer/gui_client.py:input_files": {"os.open"},
