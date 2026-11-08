@@ -197,6 +197,16 @@ since fixed in `practice.SubnetCache`), the agent lets the kept outcome go for g
 (the task then reads `abandoned`). A refusal the desktop cannot tell from an infra fault should be kept and retried with
 backoff, or the task marked failed by the control plane, never left running. **Done** 2026-11-08: `messaging.NOT_YET_CODES` (401, 403, 404, 408, 425, 429) are tried again like an unreachable control plane, kept and resent for up to a day; 400, 409, 413 and 422 stay the control plane's no to the note itself.
 
+## A pre-save refusal that needs the person waits on the model to ask (found 2026-11-08, ERPNext bill 11)
+
+The ledger's pre-save comparison refused a save over a digit date it could not read ("which day 11-10-2026 is cannot be
+told from here - this needs the person ... the agent puts the two readings to them itself when you next ask them
+anything"). The model never asked: it read the refusal as a wrong format, retyped the date three ways (one of them,
+"2026-10-11", the application took as 20-10-2011) and looped for 13 minutes. Code should put such a question to the
+person itself at the refusal (the readings are code's), not wait for the model's HELP. Mitigated in the meantime: a
+taught run no longer declares an ambiguous digit date when the application's order is unknown, and an organisation's
+`DECURIX_DATE_ORDER` settles it. **Open.**
+
 ## Live checks after the next build
 
 The writers could not run these. Run them on the next build, before calling this review done.

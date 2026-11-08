@@ -89,9 +89,18 @@ class TheTaughtRecord(unittest.TestCase):
         self.assertEqual(fields["Supplier"], "Northwind Traders Ltd")
         self.assertNotIn("Typed text", fields)  # an address the demonstration kept, no fact of the document
 
-    def test_a_date_is_declared_as_the_document_writes_it(self):
-        skill_task._declare_taught_record(self.run_for())
+    def test_a_date_is_declared_as_the_document_writes_it_when_the_applications_order_is_known(self):
+        with mock.patch.object(skill_task.task_context, "app_date_order", return_value="day"):
+            skill_task._declare_taught_record(self.run_for())
         self.assertEqual(self.declared[0][2]["Supplier Invoice Date"], "03-Oct-2026")
+
+    def test_an_ambiguous_date_is_left_out_when_nobody_said_the_applications_order(self):
+        """Found live (2026-11-08): declared, the save waited on a person for which day "11-10-2026" is, and the model
+        retyped the date as "2026-10-11", which the application took as 20-10-2011."""
+
+        with mock.patch.object(skill_task.task_context, "app_date_order", return_value=None):
+            skill_task._declare_taught_record(self.run_for())
+        self.assertNotIn("Supplier Invoice Date", self.declared[0][2])
 
     def test_a_document_named_in_the_requests_words_is_its_source(self):
         """Found live (2026-11-08): "Enter this bill ...: ~/work/BILL_14.pdf" brought no file, and nothing was declared."""

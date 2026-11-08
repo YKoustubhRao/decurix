@@ -944,6 +944,12 @@ def _declare_taught_record(run):
             # A date is declared as the document writes it (binding.date_in): the value is how the form takes it, and
             # the save compares the form with the document under each side's order.
             written = binding.date_in(v, [given])
+            if written and _day_open(v):
+                # Declared, it would be compared with the form under an order nobody has said, and the save would wait
+                # for a person to say which day the form's date is. Found live (2026-11-08): it did, the model read the
+                # refusal as a wrong format, and typed "2026-10-11", which the application took as 20-10-2011. Left
+                # out, the date is the check's to read, as it was before dates were declared.
+                continue
             if written or records.stands_in(v, given):
                 fields[label] = written or v
         key = next((v for label, v in fields.items() if records.identifier_field(label)), "")
@@ -961,6 +967,15 @@ def _declare_taught_record(run):
                                                                      for label, v in fields.items()))
     log(f"Skill {run['skill']['name']}: declared record {key} from {files[0]}: {' | '.join(lines)}")
     return key
+
+
+def _day_open(value):
+    """Whether a digit date's day cannot be told as the application reads it: day and month could be either way, and
+    the application's date order is not known (task_context.app_date_order: a person's answer or the organisation's)."""
+
+    from decurix_agent import values as dates
+    found = dates.parse_date(value)
+    return bool(found) and found.kind == "ambiguous" and task_context.app_date_order() not in binding.DATE_ORDERS
 
 
 def _record_plan_text(run):
