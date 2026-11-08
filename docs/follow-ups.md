@@ -189,6 +189,14 @@ pause (`idlepause`) sees only its own database's activity and paused a desktop m
 host), but any rig that runs two (parallel eval lanes) needs both to scope their sweeps to desktops they created (a
 control-plane instance label on the container, checked by idle pause and cleanup). **Open.**
 
+## A refused outcome leaves its task running (found 2026-11-08, video lane)
+
+When the control plane refuses a desktop's outcome with 403 (here an infra fault: a freed practice range still refused,
+since fixed in `practice.SubnetCache`), the agent lets the kept outcome go for good after its short form is refused too
+(`messaging.resend_unsent`), and the task stays `running` in the control plane, blocking the desktop until it is deleted
+(the task then reads `abandoned`). A refusal the desktop cannot tell from an infra fault should be kept and retried with
+backoff, or the task marked failed by the control plane, never left running. **Open.**
+
 ## Live checks after the next build
 
 The writers could not run these. Run them on the next build, before calling this review done.

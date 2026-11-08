@@ -259,11 +259,15 @@ func controlPlaneInContainer() bool {
 }
 
 // PracticeSubnets returns the practice network's address ranges, for refusing
-// them on the primary and gated listeners; nil when the network does not exist.
-func (m *Manager) PracticeSubnets(ctx context.Context) []netip.Prefix {
+// them on the primary and gated listeners; none and no error when the network
+// does not exist, an error when Docker could not say.
+func (m *Manager) PracticeSubnets(ctx context.Context) ([]netip.Prefix, error) {
 	inspect, err := m.client.NetworkInspect(ctx, PracticeNetworkName, network.InspectOptions{})
+	if client.IsErrNotFound(err) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []netip.Prefix
 	for _, cfg := range inspect.IPAM.Config {
@@ -271,7 +275,7 @@ func (m *Manager) PracticeSubnets(ctx context.Context) []netip.Prefix {
 			out = append(out, p)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // copyOut reads one path of a container as a tar, bounded, by Docker's root-side copy. Only for a fixed root-owned

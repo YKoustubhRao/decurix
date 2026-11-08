@@ -78,6 +78,19 @@ def run(steps):
         kind = st[0]
         print("step:", json.dumps(st), flush=True)
         if kind == "open":
+            # With no browser window open, a person starts one from the panel first: ctrl+l alone goes nowhere (found
+            # live on a fresh teach desktop: the address was typed into nothing and the next step found no page).
+            items, w, h, out = look()
+            if "has no open tab" in out or 'Active window: "(none)"' in out:
+                panel = [(x, y) for role, n, x, y in items if n == "Web Browser"]
+                if not panel:
+                    raise SystemExit("no browser is open and the panel has no Web Browser button:\n" + out[-2000:])
+                me.click(*panel[0])
+                for _ in range(30):
+                    time.sleep(1)
+                    if "has no open tab" not in look()[3]:
+                        break
+                me.wait(2)
             me.key("ctrl+l")
             me.type(st[1])
             me.key("Return")

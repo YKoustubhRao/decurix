@@ -416,7 +416,7 @@ func TestInSubnetsAndRefuse(t *testing.T) {
 		}
 	}
 	var calls atomic.Int32
-	cache := &SubnetCache{Lookup: func(context.Context) []netip.Prefix { calls.Add(1); return prefixes }, TTL: time.Hour}
+	cache := &SubnetCache{Lookup: func(context.Context) ([]netip.Prefix, error) { calls.Add(1); return prefixes, nil }, TTL: time.Hour}
 	if got := cache.Subnets(); len(got) != 1 {
 		t.Fatalf("the first call did not wait for the ranges: %v", got)
 	}
@@ -432,11 +432,11 @@ func TestSubnetCacheDoesNotQueueRequestsBehindDocker(t *testing.T) {
 	prefixes := []netip.Prefix{netip.MustParsePrefix("172.30.0.0/16")}
 	release := make(chan struct{})
 	var calls atomic.Int32
-	cache := &SubnetCache{TTL: time.Millisecond, Lookup: func(context.Context) []netip.Prefix {
+	cache := &SubnetCache{TTL: time.Millisecond, Lookup: func(context.Context) ([]netip.Prefix, error) {
 		if calls.Add(1) > 1 {
 			<-release
 		}
-		return prefixes
+		return prefixes, nil
 	}}
 	cache.Subnets()
 	time.Sleep(5 * time.Millisecond)
@@ -457,6 +457,40 @@ func TestSubnetCacheDoesNotQueueRequestsBehindDocker(t *testing.T) {
 		t.Fatalf("Docker was asked %d times, want one question out at a time", n)
 	}
 	close(release)
+}
+
+// A practice network that is gone frees its ranges; a Docker error keeps them refused. Found live (2026-11-08): the
+// ranges of a removed practice network stayed refused, and a new ordinary desktop Docker gave one of them was mute.
+func TestSubnetCacheFreesTheRangesOfARemovedNetwork(t *testing.T) {
+	prefixes := []netip.Prefix{netip.MustParsePrefix("10.213.1.0/24")}
+	var answer atomic.Int32 // 0: the network, 1: Docker failed, 2: no network
+	cache := &SubnetCache{TTL: time.Millisecond, Lookup: func(context.Context) ([]netip.Prefix, error) {
+		switch answer.Load() {
+		case 1:
+			return nil, errors.New("docker did not answer")
+		case 2:
+			return nil, nil
+		}
+		return prefixes, nil
+	}}
+	settle := func() []netip.Prefix {
+		var got []netip.Prefix
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			got = cache.Subnets()
+		}
+		return got
+	}
+	if got := cache.Subnets(); len(got) != 1 {
+		t.Fatalf("ranges = %v", got)
+	}
+	answer.Store(1)
+	if got := settle(); len(got) != 1 {
+		t.Fatalf("a Docker error dropped the ranges known: %v", got)
+	}
+	answer.Store(2)
+	if got := settle(); len(got) != 0 {
+		t.Fatalf("the ranges of a removed network are still refused: %v", got)
+	}
 }
 
 func TestBrokerServesOnlyItsPaths(t *testing.T) {
