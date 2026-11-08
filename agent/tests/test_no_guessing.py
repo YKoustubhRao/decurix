@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from decurix_agent import guidance, skill_task
-from decurix_agent.computer import core, experience
+from decurix_agent.computer import core, experience, selecting
 
 
 def option(name, box):
@@ -174,7 +174,7 @@ class NothingElseInItsPlace(unittest.TestCase):
 
     def setUp(self):
         import pathlib, tempfile
-        self.patch = patch.object(core, "FAILED_SEARCH_FILE", pathlib.Path(tempfile.mkdtemp()) / "failed.json")
+        self.patch = patch.object(selecting, "FAILED_SEARCH_FILE", pathlib.Path(tempfile.mkdtemp()) / "failed.json")
         self.patch.start()
         self.addCleanup(self.patch.stop)
         self.field = {"role": "combobox", "name": "Company"}
@@ -234,7 +234,7 @@ class ACellThatBecomesItsEditor(unittest.TestCase):
         other = {"role": "textbox", "name": "Notes", "path": "site > textbox", "source": "cdp", "states": []}
         with patch.object(core, "observe", return_value={"elements": [cell, other, editor]}):
             self.assertIs(core._editor_opened_by(cell), editor)
-        with patch.object(core, "observe", return_value={"elements": [cell, other]}), patch.object(core, "EDITOR_SECONDS", 0):
+        with patch.object(core, "observe", return_value={"elements": [cell, other]}), patch.object(selecting, "EDITOR_SECONDS", 0):
             self.assertIsNone(core._editor_opened_by(cell))
 
     def test_a_point_on_a_dialog_is_the_dialogs_and_never_the_page_behind_it(self):

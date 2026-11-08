@@ -224,11 +224,22 @@ What the PY lane left for later (lane-PY.md; PLAN-P2 §9).
   checks in code, the judgement against the request not made, so never done). `verdict.derive` never makes a done
   (checked=True alone goes out unchecked), `test_verdict.NoReportReliesOnADerivedDone` keeps the list empty, and
   `legacy` is no gate on either side (`verdict.BY`, `tasks.verdictBy`); stored legacy rows are still read.
-- **Python's model calls, still to move behind soul** (plan rule 3; every one is tagged `py.*` or `legacy.*`, so the
-  proxy's stats show the share): `py.judge`, `py.judge.spot`, `py.skill.ask`, `py.skill.calls_off`, `py.stage`,
-  `py.binding.fill`, `py.approval.read`, `py.approval.choice`, `py.ground`, `py.escalation.ground`, `.judge`,
-  `.detour`, `.point`, `py.mimic`, `py.skill_engine.fits`, `py.kept_facts`, `py.playbook`, `py.study`,
-  `py.tool.args`. `agent/tests/test_purpose_tags.py` holds the set (`legacy.azure.turn` went with the azure harness, O-4).
+- **Python's model calls behind soul** (plan rule 3). **Phase 1, the transport, is done (2026-11-08):** every
+  worker-side call goes through soul's `POST /api/llm/call` (`cmd/soul/llmcall.go`; `agent/decurix_agent/soul_call.py`)
+  - `llm_client.chat`/`ask_once` (hosted) and `ollama_client.ask_once` (local) - so it has soul's trace line, tags,
+  prompt-cache key and concurrency limit, with its `py.*` purpose recorded verbatim (`llm.AgentPurpose`). Straight to
+  the proxy (or Ollama) only when soul cannot make the call (not running, an older image, a refusal, no token or key;
+  logged once per process) and always in the approval gate (`soul_call.in_gate`: IN_GATE or `DECURIX_CALLER=gate`;
+  `test_soul_call.TheGateNeverAsksSoul`). Usage is counted once, by Python (`usage.add`), never in a soul job. What
+  remains is phase 2: moving each **decision** into soul, purpose by purpose, so Python holds tools and evidence only:
+  `py.judge`, `py.judge.spot`, `py.skill.ask`, `py.skill.calls_off`, `py.stage`, `py.binding.fill`, `py.ground`,
+  `py.escalation.ground`, `py.escalation.judge`, `py.escalation.detour`, `py.escalation.point`, `py.mimic`,
+  `py.skill_engine.fits`, `py.kept_facts`, `py.playbook`, `py.study`, `py.tool.args`. `py.approval.read` and
+  `py.approval.choice` stay with the gate by design (another user's process; never soul's).
+  `agent/tests/test_purpose_tags.py` holds the set. Open with phase 1: a desktop's reasoning effort reaches a call
+  through soul as soul read it at start (`OpenAIProvider.Effort`), where the direct path read the file per call; a
+  `temperature` of 0 through soul is the provider's default (no caller passes one today). Live check owed: one L3 run
+  on a hosted brain with `py.*` call lines in soul's trace and no `py.*` proxy row with `caller: agent`.
 - **Spot judgement of trusted replays** is built (`skill_task._spot`, purpose `py.judge.spot`; a `not_done` records a
   failure) and samples 1 in 5 task ids by default (`DECURIX_SPOT_JUDGE_EVERY`; 0 never, 1 always). Open: measure the
   judge's cost and its catch rate on the L3 matrix before changing it. `learn-v1` exists now (2026-11-08) and holds

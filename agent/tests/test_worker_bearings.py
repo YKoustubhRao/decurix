@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from decurix_agent import identity, skill_task
-from decurix_agent.computer import core, launchers
+from decurix_agent.computer import core, launchers, selecting
 
 
 class AReplyThatExplainsThenConfirms(unittest.TestCase):
@@ -126,7 +126,7 @@ class AnEntryTheDocumentsNameIsNotAStandIn(unittest.TestCase):
         core._DOCUMENT_WORDS.clear()
         failed = Path(tmp.name) / "failed.json"
         failed.write_text(json.dumps(kept), encoding="utf-8")
-        with mock.patch.object(core, "FAILED_SEARCH_FILE", failed), \
+        with mock.patch.object(selecting, "FAILED_SEARCH_FILE", failed), \
                 mock.patch.object(core.time, "time", lambda: 10 ** 12), mock.patch.object(core, "_task_now", lambda: ""), \
                 mock.patch("decurix_agent.guidance.persons_words", lambda: ""), \
                 mock.patch("decurix_agent.task_context.current_files", lambda: [str(doc)]):

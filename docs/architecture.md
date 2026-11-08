@@ -526,7 +526,8 @@ desktop container (decurix-desktop:{basic,developer,ai})
         │                     reply goes back with reply=true, which resumes the paused job
         ├─ computer/       — computer use: the ONE action layer the engine and the replays use to see
         │                     and work the screen (see "Computer use" below). core.py has
-        │                     observe/act/verify/open; screen.py (python3-xlib: framebuffer ->
+        │                     observe/act/verify/open (selecting.py, sheets.py and changes.py
+        │                     are parts of it split out, O-10); screen.py (python3-xlib: framebuffer ->
         │                     PNG, window list), atspi.py (GTK/XFCE/LibreOffice widgets),
         │                     cdp.py (Chromium over DevTools, stdlib websocket), xinput.py
         │                     (xdotool), elements.py (one element shape, stable refs, the text
