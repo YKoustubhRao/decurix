@@ -203,7 +203,7 @@ process of the worker is stopped (`kill -STOP -1`; killing them would take the d
 cleared, then, as root, the gate's own store (`/var/lib/decurix-gate/computer`: a pending request, a grant, the last
 reply; its key stays); the container is killed and started, and the snapshot (empty for an eval) is restored. Only a
 container labelled as a practice desktop is reset. `TestPracticeResetLive` runs this on a real desktop image. Nothing in `~/.decurix` is
-needed to run: identity and agent token are the container's environment and the gate's key is outside the home.
+needed to run: identity and agent token come from the container's environment (the token reaches the agent and soul as one-time files, gate-boundary.md) and the gate's key is outside the home.
 
 **Carrying state (a learning curve), never the default.** A suite whose `suite.json` says `"carry_state": true`, run
 with `--carry-state` (`carry_state=1` on the route, `MatrixRequest.CarryState`), skips the reset between a repeat's
