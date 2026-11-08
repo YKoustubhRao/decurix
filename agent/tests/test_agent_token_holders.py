@@ -71,6 +71,46 @@ class TheTokenFile(unittest.TestCase):
             self.assertTrue(target.exists())
 
 
+def _vm_server():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("vm_server_under_test", AGENT / "vm_server.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TheDaemonTakesItsToken(unittest.TestCase):
+    def test_todays_agent_takes_it_itself(self):
+        calls = []
+
+        class Config:
+            @staticmethod
+            def no_dump():
+                calls.append("no_dump")
+                return True
+
+            @staticmethod
+            def take_agent_token():
+                calls.append("take")
+                return True
+        _vm_server()._take_token(Config)
+        self.assertEqual(calls, ["no_dump", "take"])
+
+    def test_an_older_agent_package_gets_it_in_its_environment_and_the_file_goes(self):
+        # An eval arm pinned to an earlier revision copies its own decurix_agent onto today's image: its config has
+        # no take_agent_token and reads only DECURIX_AGENT_TOKEN.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "agent.token"
+            path.write_text("old-arm-token\n", encoding="ascii")
+            env = {"DECURIX_AGENT_TOKEN_FILE": str(path)}
+            with mock.patch.dict(os.environ, env, clear=False):
+                os.environ.pop("DECURIX_AGENT_TOKEN", None)
+                _vm_server()._take_token(object())
+                self.assertEqual(os.environ.get("DECURIX_AGENT_TOKEN"), "old-arm-token")
+            self.assertFalse(path.exists())
+
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "prctl is Linux's")
 class NonDumpable(unittest.TestCase):
     def test_the_process_is_non_dumpable_after_no_dump(self):
