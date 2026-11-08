@@ -369,3 +369,10 @@ Repetitions whose entries each go into one table row, no two into the same row, 
 bill writes "09-Oct-2026", the form takes "09-10-2026": the fill's strict check dropped every bill's date, so every run
 went to the model. A digit date is now held when one of its readings (the application's order when known) is a date the
 document writes, and the record declares the document's own token (`binding.date_in`).
+
+### A Word table cell's lines were read run together
+
+`office read` joined the paragraphs inside a .docx table cell with nothing between them: a bill's customer cell "Hampi
+Residency" / "12 Kunjibettu, Udupi" read "Hampi Residency12 Kunjibettu", so the name the worker typed stood in no source
+as a whole word and soul's provenance guard sent it back four times. A cell's paragraphs are now joined by a space
+(`office.docx_structure`).
