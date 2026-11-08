@@ -189,6 +189,25 @@ class ARunWithItsDocumentInHand(unittest.TestCase):
         self.assertEqual(self.by_model, [])
         self.assertFalse(run.get("asked_person"))  # a yes to the plan is no help: the run can still count
 
+    def test_a_bill_of_fewer_lines_than_the_demonstration_still_replays(self):
+        """Found live (2026-11-08): a one-line bill was handed to the model, the demonstration's second line having no
+        values - a row the document does not have is no value to find."""
+
+        skill = bill_skill()
+        save = skill["steps"].pop()
+        skill["steps"] += [field_step(7, "combobox", "Item", "item_2"), field_step(8, "textbox", "Qty", "qty_2")]
+        save["n"] = 9
+        skill["steps"].append(save)
+        skill["params"] += [{"name": "item_2", "label": "Item", "default": None, "example": "Ink", "varies": True, "step": 7},
+                            {"name": "qty_2", "label": "Qty", "default": None, "example": "2", "varies": True, "step": 8}]
+        run = self.run_for(filled_values())
+        run["skill"], run["ladder"] = skill, skill_task._ladder(skill)
+        run["rows"] = {"count": 1, "names": [["item", "qty"]]}
+        skill_task._prepare(run)
+        self.assertEqual(run["declared"], "NW-2026-118")
+        self.assertEqual(self.by_model, [])
+        self.assertEqual(state.paused_skill["kind"], "plan")
+
     def test_a_value_the_documents_do_not_give_leaves_it_to_the_model(self):
         run = self.run_for(dict(filled_values(), item=""))
         skill_task._prepare(run)

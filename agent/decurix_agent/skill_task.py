@@ -480,13 +480,7 @@ def _prepare(run):
     # taught skill.
     task_context.set_skill("" if run.get("one_off") else skill.get("name") or "", skill.get("version", 1))
 
-    missing = [p for p in _needed(run) if not run["values"].get(p["name"])]
-
-    # A row the demonstration had and this run's document does not is not a value to find or to ask for.
-    if run.get("rows"):
-        used = {name for row in run["rows"]["names"] for name in row}
-        absent = {name for row in (skills.repeated_rows(skill) or {"rows": []})["rows"] for name in row} - used
-        missing = [p for p in missing if p["name"] not in absent]
+    missing = _still_missing(run)
 
     # Lists that do not line up are asked for again, whole - which item a
     # value belongs to is not something to guess. (A gathered run's lists are the per-item block's; a navigation
@@ -620,6 +614,18 @@ MAX_GATHERED_FILES = 40
 GATHER_PHASE = "gather"
 # The documents the fill set aside as not fitting the taught shape: the model enters them after the replay (_finish).
 REST_PHASE = "rest"
+
+
+def _still_missing(run):
+    """The values this run needs that it has not got - leaving out a row the demonstration had and this run's document
+    does not, which is no value to find or to ask for (run["rows"]: the document's own number of rows)."""
+
+    missing = [p for p in _needed(run) if not run["values"].get(p["name"])]
+    if run.get("rows"):
+        used = {name for row in run["rows"]["names"] for name in row}
+        absent = {name for row in (skills.repeated_rows(run["skill"]) or {"rows": []})["rows"] for name in row} - used
+        missing = [p for p in missing if p["name"] not in absent]
+    return missing
 
 
 def _needed(run):
@@ -1951,7 +1957,9 @@ def _learning_by_model(run):
     # whoever types it. The replay types it; the model takes over where a step stops. Measured live (2026-11-08): left
     # to the model while "still learning", each bill took 48-98 turns and 1.3-4.2M tokens, and the skill could never
     # graduate - nothing it did was read back, so no run counted.
-    if run.get("declared") and run.get("start") == 1 and not any(not run["values"].get(p["name"]) for p in _needed(run)):
+    # (A bill of fewer lines than the demonstration's needs none of the rows it does not have: found live, a one-line
+    # bill was handed to the model because the demonstration's second line had no values.)
+    if run.get("declared") and run.get("start") == 1 and not _still_missing(run):
         return False
     if _stage(run) == experience.APPRENTICE:
         return True
