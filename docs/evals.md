@@ -395,6 +395,12 @@ row. Carry state held: in the middle of the oracle arm the practice desktop stil
 `mock_records` with `exact_count` passed against its own fixture, so its mock did not hold the bill the case before it
 saved. The runner removed the practice desktops, the mocks and the practice network at the end.
 
+**Calibrated again** after the approvals and the GSTIN-state lesson (2026-11-08, run `e9aa06b8d2a292e61`, suite SHA
+`c6722c894ced`, image `decurix-desktop:next` 158b3cdebb0b built from 82f2966, control plane 82f2966,
+`--carry-state --repeats 1`): `oracle` 10/10, `nothing` 0/10 (false done 10/10), `ask` 0/10. No infrastructure rows,
+no problems on an oracle row. The oracle posts the form itself, so the gate never stops it and the `approves` path
+is proved only by a model arm (below).
+
 **First curve** (2026-11-08, run `ea1b8e583aab3317b`, `default+expert` = azure Kimi-K2.6 on key 2, n=1: not a result):
 
 | kind | case 1 | cases 2-5 | tokens in, case 1 then 2-5 | questions |

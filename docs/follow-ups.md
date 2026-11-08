@@ -123,9 +123,8 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **`bench/skills/e2e.py` and `bench/recordings/e2e.py`** pass on that image with this tree's agent.
 - **The gui daemon and screen broker tests** pass on Linux (74 tests; two code bugs fixed: the idle clock started
   before the daemon served, and a socket's inode compared with sockfs's).
-- **Still owed:** the sign-in refusal on a real gated listener (needs a worker with an open question; the integration
-  test covers it with the real stores and routes; not reached on 2026-11-08), the field-unit question's round trip
-  with a hosted brain (see below), and every item below.
+- **Done 2026-11-08** (see "Owed checks run on 2026-11-08" below): the sign-in refusal on a real gated listener and the
+  field-unit question's round trip with a hosted brain. Still owed: every item below.
 
 ## Live checks done on 2026-11-08 (image rebuilt from this tree, a dev control plane beside the app's)
 
@@ -139,12 +138,8 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
   twice before two fixes made in this pass (soul adopts the gate's own request for an action it stopped on the screen;
   the agent's watcher no longer takes TheBot's yes from the gate) - gate-boundary.md, same section.
 - **Not reached, still owed:**
-  - The field-unit question with a hosted brain: twice the worker never put a one-sided unit to the save - it declared
-    the record's Rate as "18" (the note says "18%"), then, told to declare 18%, typed "18%" into the field - so the
-    question never came. **Decided and fixed (2026-11-08):** `gui record` keeps the unit the backing source writes a
-    bare figure with (learning-and-verification.md, "A figure declared bare"). Owed: a live run that reaches the
-    question.
-  - The sign-in refusal on the gated listener (step prepared, not run).
+  - The field-unit question with a hosted brain: **run on 2026-11-08, below.**
+  - The sign-in refusal on the gated listener: **run on 2026-11-08, below.**
   - The review's "Still open" lines on a held press read screenshots as empty fields that `gui observe` showed filled
     (seen twice on the tax-code form). **Fixed (2026-11-08):** a chain held at its press (`gui type ... && gui click
     Save`) recorded nothing, so the review was shown the look and the screenshots from before the typing. Now the
@@ -152,6 +147,32 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
     typed since its last look (`lookBeforeCommit`, moved ahead of `review`), a look older than the typing is shown as
     "NOT READ", and only a screenshot of the screen as it is goes to the reviewer (`lastPictures`). Owed: a live held
     Save on that form.
+
+## Owed checks run on 2026-11-08 (images built from HEAD 8586a01 only, broker mode by default, hosted Kimi-K2.6)
+
+- **Gated sign-in: passes.** A user (`maya.finch`, role finance) made on the primary listener; on the gated listener
+  with the access code only, `GET /api/auth/me` 401; a reply to the worker's plan question 401 "Sign in to reply: ...
+  Nothing was sent." and no judgement made; signed in, the same reply 200, delivered, and the task's one judgement
+  for it names `maya.finch` (`kind: person`, door `card`).
+- **Field-unit round trip: passes after one fix.** On a fictional form whose "Rate" has no unit and a note saying
+  "18%": the save stopped with "the agent asks them itself", but the person got the engine's own unnumbered question -
+  in broker mode the screen side kept the unit question in its own `runs/<task>/context.json`. **Fixed:** that file
+  is now sent with each command and handed back (`gui_client.TASK_STATE`, `gui_client.mirrored`; gate-boundary.md,
+  "The screen side's own state"; `test_screen_state.TheTasksRunContextGoesBothWays`). The same applied to the
+  date-order question and to the org's date order the save reads. Patched live: the numbered question came ("Reply 1
+  if the field "Rate" on 127.0.0.1:8765/taxes takes its figures in %, or 2 ..."), "1" was kept as a `field_unit` row
+  derived from it, and a later task (a 12% code) typed "12" against "12%" and saved with no question. On the way: the
+  worker skipped `gui record` on its first run (no declaration, so no unit check) until told; and after the save
+  asked, it retyped "18%" into the field despite "Do not retype the field".
+- **Rule 3: passes.** Every `py.*` call of the three tasks (`py.study`, `py.judge`, `py.kept_facts`,
+  `py.approval.read` read by the agent: 14) is a `caller: soul` row with its purpose and a line in soul's trace, one
+  for one; the gate's two `py.approval.read` went straight to the proxy as `caller: gate` (with no task tag); no
+  `caller: agent` row; `untagged: 0`.
+- **Open, found here:** a one-digit percent cannot be declared. `gui record ... "Rate": "5%"` from a note saying
+  "rate 5%." is refused as not in the source, every time (the worker tried for 30 turns): `records.stands_in` gets None
+  from `values.parse_number("5%")` and the text key "5" is under its two-character floor; "18%" passes only as an
+  identifier. A fix belongs in `records.stands_in` (a figure with a unit stands where the text writes that figure
+  with that unit), not yet made because that file was being changed in parallel.
 
 ## Live checks after the next build
 
@@ -238,8 +259,10 @@ What the PY lane left for later (lane-PY.md; PLAN-P2 §9).
   `py.approval.choice` stay with the gate by design (another user's process; never soul's).
   `agent/tests/test_purpose_tags.py` holds the set. Open with phase 1: a desktop's reasoning effort reaches a call
   through soul as soul read it at start (`OpenAIProvider.Effort`), where the direct path read the file per call; a
-  `temperature` of 0 through soul is the provider's default (no caller passes one today). Live check owed: one L3 run
-  on a hosted brain with `py.*` call lines in soul's trace and no `py.*` proxy row with `caller: agent`.
+  `temperature` of 0 through soul is the provider's default (no caller passes one today). Live check done
+  (2026-11-08, "Owed checks run on 2026-11-08"): `py.*` lines in soul's trace one for one with `caller: soul` rows,
+  none with `caller: agent`. `py.approval.read` is also made by the agent when it reads a reply (`approval.reading`
+  from `engine_questions`, `gated_command`, `final_gate`); those go through soul like any worker-side call.
 - **Spot judgement of trusted replays** is built (`skill_task._spot`, purpose `py.judge.spot`; a `not_done` records a
   failure) and samples 1 in 5 task ids by default (`DECURIX_SPOT_JUDGE_EVERY`; 0 never, 1 always). Open: measure the
   judge's cost and its catch rate on the L3 matrix before changing it. `learn-v1` exists now (2026-11-08) and holds
@@ -376,17 +399,15 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   ([evals.md](evals.md), "The learning curve"). **Calibrated live 2026-11-08** (oracle 10/10, nothing and ask 0/10,
   twice; evals.md). Two runner fixes came of it: the desktop is settled between a carry-state run's cases (an open
   question no longer swallows the next request), and a restart does not count its own memory reservation. Owed:
-  - **A bill case cannot pass a model arm today.** The plan of the work names "Save bill" as a commit ("submitting to
-    another system"), and once the plan is put to the person its "each with your OK first" holds the press for the
-    gate (`DECURIX_PLAN_ASK_FIRST`); the eval never answers an approval, so every `learn-bill-*` ended at the gate (run
-    `ea1b8e583aab3317b`). Owner decision: either the expert may grant a plan-promised OK on a practice desktop (a
-    control-plane-signed reply, as a person's), or a local form's save is not a plan commit; until then the bill half
-    of the curve measures nothing and no method is kept for it.
-  - **The cost-centre lesson is guessable.** Courier/freight to Logistics, the rest to General, follows from the
-    vendors' names (Swiftlark Couriers, Harbourline Freight Carriers, Tealbrook Cold Chain): in `ea1b8e583aab3317b`
-    the worker selected Logistics on bill 1 without asking. A guess that lands passes `learn-bill-1` (its `asked`
-    grader counts only when the case ends asking). Make the rule one no name implies (or grade the question) before
-    the five-repeat curve.
+  - **Done 2026-11-08: a bill case can pass a model arm.** Owner decision taken: approvals are case data. A case lists
+    `approves` (a control and optional role), and the expert says a plain yes to a gate-signed question that words a
+    click on a listed control, through the person's route (`practice.ApprovalGateNotice`); every other approval is
+    refused and ends the case. Every `learn-bill-*` approves "Save bill" only ([evals.md](evals.md), "The scripted
+    expert").
+  - **Done 2026-11-08: the cost-centre lesson is no longer guessable.** The rule is a map from the supplier's GSTIN state
+    code to the firm's own codes (29 CC-14, 30 CC-27, 33 CC-52, else CC-90), with suppliers in three states, and
+    `TestLearnV1SuiteLoads` fails a bill whose code is written in its documents or in an earlier record. Calibrated
+    again live: run `e9aa06b8d2a292e61`, oracle 10/10, nothing and ask 0/10.
   - **Worker findings from the same run** (harness, not suite): on bill 3 the worker tried to `curl` the bill straight
     into the app's form endpoint, with cost centre General for a freight bill (the gate held it); on bill 4 it declared
     "as per covering letter" as the bill number rather than asking; bill 1 took 1.36M tokens and 66 calls, near the
@@ -402,7 +423,9 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   - Runner notes: a run started within 90 s of another's desktops could be refused its desktop on memory reservations
     (fixed by the per-desktop reservation only for a restart; a new arm's desktop still counts the last arm's for 90 s),
     and once an arm's agent never became ready in 4 minutes while tests ran beside it on the host (a retry passed).
-  - `default+expert --carry-state --repeats 5` and its `curve`, after the two above.
+  - `default+expert --carry-state --repeats 5`: run `eeb05dd4a201cecda` started 2026-11-08 08:28 UTC on the dev control
+    plane (image 158b3cdebb0b from 82f2966); its `curve`, and what it says against the bar, are owed here and in
+    evals.md.
 - **Done: D7.** CLAUDE.md now says dev eval suites with fictional data live in `evals/` and the sealed held-out set stays
   outside the repo.
 - **Calibration L2 needs the live stack.** Offline, `TestCoreSuiteLoads` passes the oracle on 10 of 12 core-v1 cases,
