@@ -1251,6 +1251,13 @@ def _ledger_why(found):
     if ledger_checks.SAVED_TWICE in kinds:
         out.append("The same record was saved twice: the second one is the person's to remove - write the WRONG IN "
                    "THE APPLICATION line for it.")
+    if ledger_checks.WORDY_KEY in kinds:
+        out.append("A record's number or reference field holds words, not a code (a document saying where the number "
+                   "is is not the number): ask the person (HELP) for that field's value by its name, then correct the "
+                   "saved record in the application.")
+    if ledger_checks.SENT_AROUND in kinds:
+        out.append("A command sent data to the application around the screen, so what it saved was never read back: "
+                   "say in your report what it sent, and ask the person (HELP) whether that record is right.")
     return " ".join(out) or "A check in code holds a saved record back: ask the person (HELP)."
 
 

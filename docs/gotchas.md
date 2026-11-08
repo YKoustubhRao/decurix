@@ -984,3 +984,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A bare figure declared from a source that writes it with a unit settles the unit silently
 - [part-6.md](gotchas/part-6.md): A carry-state eval sent the next case's request into the earlier case's open question
 - [part-6.md](gotchas/part-6.md): A locked xfce4-panel still starts programs
+- [part-6.md](gotchas/part-6.md): Words in a record's number field were "backed" because the document printed them there

@@ -323,6 +323,65 @@ class TheScreenSideHandsItsWritesBack(Tmp):
                           b"recordings/demo-1/meta.json"])
 
 
+class TheTasksRunContextGoesBothWays(Tmp):
+    """The task's run context (runs/<task>/context.json): the save path reads it on the screen side and keeps there the
+    question it waits on (a field's unit, a date's order), which the agent - the worker - asks the person from. Found
+    live (2026-11-08): it stayed in the screen user's copy, and the person was asked the engine's question instead."""
+
+    def test_the_caller_sends_its_tasks_context(self):
+        task, state = self.path("task"), self.path("state")
+        self.write("task", TASK.encode())
+        self.write(f"state/runs/{TASK}/context.json", b'{"reply_judgement": "j_abcdef12"}')
+        self.write(f"state/runs/{TASK}/run.json", b"{}")
+        self.write("state/runs/t1111111111111111/context.json", b"another task's")
+        with mock.patch.dict(os.environ, {"DECURIX_TASK_FILE": task, "DECURIX_DIR": state}):
+            fields = gui_client.caller_context()
+        sent = {f[2:].split(b"\0", 1)[0]: f[2:].split(b"\0", 1)[1] for f in fields if f[:2] == b"\0c"}
+        self.assertEqual(sent[b"sruns/%s/context.json" % TASK.encode()], b'{"reply_judgement": "j_abcdef12"}')
+        self.assertFalse(any(name.startswith(b"sruns/") and not name.endswith(b"/context.json") for name in sent))
+        self.assertNotIn(b"sruns/t1111111111111111/context.json", sent, "only the current task's context")
+
+    @unittest.skipUnless(POSIX, "needs Unix uids")
+    def test_the_screen_side_keeps_it_in_its_own_folder(self):
+        caller = self.path("caller")
+        os.mkdir(caller, 0o700)
+        state = self.path("screen-state")
+        with mock.patch.dict(os.environ, {"DECURIX_TASK_FILE": os.path.join(caller, "task"), "DECURIX_DIR": state}),                 _Child():
+            broker.take_context({b"sruns/%s/context.json" % TASK.encode(): b"{}",
+                                 b"sruns/%s/run.json" % TASK.encode(): b"{}"})
+        self.assertTrue(os.path.exists(os.path.join(state, "runs", TASK, "context.json")))
+        self.assertFalse(os.path.exists(os.path.join(state, "runs", TASK, "run.json")))
+
+    def test_a_question_the_save_keeps_goes_back_to_the_worker(self):
+        from decurix_agent import config, task_context
+        state = self.path("screen-state")
+        question = {"label": "Rate", "host": "127.0.0.1:8765", "form": "/taxes", "unit": "%", "shown": "18",
+                    "wanted": "18%"}
+        with mock.patch.dict(os.environ, {"DECURIX_DIR": state}), mock.patch.object(config, "DECURIX_DIR", Path(state)),                 _Child() as child:
+            task_context._keep_context(TASK, unit_question=question)
+            broker.mirror(os.path.join(state, "runs", TASK, "run.json"), b"{}")
+            broker.mirror(os.path.join(state, "runs", TASK, "LABELLED"), b"x")
+            frames = child.frames()
+        self.assertEqual([(flags, rel) for flags, rel, _ in frames],
+                         [(gui_client.OUTPUT_STATE, b"runs/%s/context.json" % TASK.encode())])
+        import json
+        self.assertEqual(json.loads(frames[0][2])["unit_question"], question)
+
+    def test_the_worker_writes_its_context_and_nothing_else_of_the_run_folder(self):
+        state = self.path("worker-state")
+        rel = b"runs/%s/context.json" % TASK.encode()
+        with mock.patch.dict(os.environ, {"DECURIX_DIR": state}), mock.patch("os.write", wraps=os.write):
+            self.assertTrue(gui_client.save_state(gui_client.OUTPUT_STATE, rel, b'{"a": 1}'))
+            for bad in (b"runs/%s/run.json" % TASK.encode(), b"runs/%s/LABELLED" % TASK.encode(),
+                        b"runs/t0123/context.json", b"runs/../context.json", b"runs/%s/x/context.json" % TASK.encode()):
+                self.assertFalse(gui_client.save_state(gui_client.OUTPUT_STATE, bad, b"x"), bad)
+        target = os.path.join(state, "runs", TASK, "context.json")
+        with open(target, "rb") as f:
+            self.assertEqual(f.read(), b'{"a": 1}')
+        if POSIX:
+            self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+
+
 # ------------------------------------------------------------
 # Files a command names, handed over
 # ------------------------------------------------------------

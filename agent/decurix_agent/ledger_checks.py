@@ -12,6 +12,10 @@ findings() gathers, as lines a caller can show and sort by their structured `kin
 - an entry the task picked from an application's own list into a form it saved, that nothing given backs
   (records.unbacked_pick_entries: not chosen by an identifier, not picked out by the request, its files or what a
   person authored, not a person's kept answer about that field);
+- a record's number, reference or id typed as words into a form the task saved (records.wordy_saved: a phrase pointing
+  to another paper where a bill's number stands - found live 2026-11-08), with or without a declaration;
+- a command that sent data straight to an application the task entered records in (records.sent_around: a curl post to
+  the form's endpoint), which no declaration, screen or read-back saw;
 - each item of a report's JUDGEMENTS list that the worker itself marked "| not backed" (the protocol's own marker).
 
 A check that could not be made is a finding of its own kind (NOT_MADE): not checked, never passed. Never raises.
@@ -20,8 +24,8 @@ A check that could not be made is a finding of its own kind (NOT_MADE): not chec
 import re
 
 from decurix_agent import task_context
-from decurix_agent.computer.records import (NOT_BACKED, NOT_MADE, SAVED_TWICE, UNBACKED_PICK, UNCOVERED,  # noqa: F401
-                                            UNDECLARED, Finding, finding)
+from decurix_agent.computer.records import (NOT_BACKED, NOT_MADE, SAVED_TWICE, SENT_AROUND, UNBACKED_PICK,  # noqa: F401
+                                            UNCOVERED, UNDECLARED, WORDY_KEY, Finding, finding)
 from decurix_agent.logging_utils import log
 
 _JUDGEMENTS_HEAD = re.compile(r"(?im)^[ \t>*_#-]*JUDG(?:E)?MENTS?[ \t*_]*:[ \t]*(.*)$")
@@ -86,6 +90,21 @@ def findings(task_id=None, reports=(), events=None, picks=True):
                                                   "application's own list into a saved form, and nothing given backs "
                                                   "it (not an identifier, the request, its files, nor what a person "
                                                   "said or taught)"))
+        wordy = records.wordy_saved(task_id, events=events)
+        if wordy:
+            out.append(finding(WORDY_KEY, "a record was saved with " + records.wordy_text(wordy)
+                               + " Then correct the saved record in the application; never enter it again."))
+        if task_id == task_context.current():
+            from decurix_agent import playbooks
+            sent = records.sent_around(playbooks.task_commands(), events=events, task_id=task_id)
+            if sent:
+                # (The command itself is not quoted: it may carry a credential - CLAUDE.md, secrets never reach the chat.)
+                how = sorted({m.group(1) for c in sent for m in [re.search(r"\b(curl|wget)\b", c)] if m}) or ["a script"]
+                out.append(finding(SENT_AROUND, f"{len(sent)} command(s) this task ran ({', '.join(how)}) sent data "
+                                   "straight to the application: what they made was never declared, typed on the screen "
+                                   "or read back, so nothing shows what the application holds. Never enter it again on "
+                                   "the screen (that makes a second record): say in the report what was sent, and ask "
+                                   "the person (HELP) to check it in the application."))
     except Exception as exc:  # noqa: BLE001 - not made, never passed
         log(f"ledger_checks: the saved records could not be checked: {exc!r}")
         out.append(finding(NOT_MADE, "the saved records could not be checked against the declared ones "

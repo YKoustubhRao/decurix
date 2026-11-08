@@ -445,6 +445,8 @@ UNCOVERED = "record_not_declared"
 SAVED_TWICE = "saved_twice"
 UNBACKED_PICK = "unbacked_pick"
 NOT_BACKED = "report_not_backed"
+WORDY_KEY = "identifier_as_words"
+SENT_AROUND = "sent_around_ledger"
 NOT_MADE = "not_made"
 
 
@@ -568,6 +570,14 @@ def _answers_text(task_id=None):
         return ""
 
 
+def _free_text(task_id=None):
+    """What people wrote for this task, as one text: the request, the person's replies the control plane confirms, the
+    person's words on the skill being run and the organisation's knowledge (given_sources' "free" part)."""
+
+    parts = [task_context.current_request() or "", _answers_text(task_id), _taught_text(), _org_text(task_id)]
+    return "\n".join(p for p in parts if p)
+
+
 def given_sources(task_id=None):
     """
     What a picked option may be backed by, as {"free": text, "files": [text]}. Free: the request, the person's replies
@@ -577,7 +587,7 @@ def given_sources(task_id=None):
     option list is the menu; never the worker's own memory, notes or files.
     """
 
-    free = [task_context.current_request() or "", _answers_text(task_id), _taught_text(), _org_text(task_id)]
+    free = [_free_text(task_id)]
     files = []
     try:
         from decurix_agent.tools import office
@@ -597,6 +607,136 @@ def given_text(task_id=None):
 
     sources = given_sources(task_id)
     return "\n".join([sources["free"]] + sources["files"])
+
+
+# ------------------------------------------------------------------ a record's number or reference
+#
+# Found live (2026-11-08): a key field typed with a phrase no source held as a number - a supplier's copy printed a
+# phrase pointing to another paper where its invoice number belongs, and the worker declared that phrase as the bill's
+# number. It was accepted: the phrase DOES stand in the document, beside the field's own label, so the ledger called
+# the value backed. Standing in a source is not enough
+# for the field that identifies a record: the document there says where the number is, not what it is. Decided by
+# structure, not a word list: a field whose label names a number, a reference or an id (label_words: "No.", "#", "Ref"
+# are these) holds a code, and a value of two or more words with no digit in it is words, not a code. Only the people's
+# own words (the request, the person's answers, what they taught, the organisation's knowledge) can give words there.
+
+_IDENTIFIER_LABEL = frozenset({"number", "reference", "id"})
+
+
+def identifier_field(label):
+    """Whether a field's label says it holds a code the record is found by: its number, reference or id."""
+
+    return bool(set(label_words(label)) & _IDENTIFIER_LABEL)
+
+
+def words_not_code(value):
+    """Whether a value is words and no code: two or more words, and not one digit among them."""
+
+    text = " ".join(str(value or "").split())
+    return len(text.split()) >= 2 and not re.search(r"\d", text)
+
+
+def wordy_identifiers(fields, task_id=None, free=None):
+    """
+    [(label, value)] of `fields` ((label, value) pairs) whose label names the record's number, reference or id
+    (identifier_field) and whose value is words, not a code (words_not_code) - unless what people wrote for this task
+    (`free`, default _free_text: the request, the person's answers, their teaching, the organisation's knowledge) gives
+    those words whole. A document writing them there does not give the number: it points elsewhere.
+    """
+
+    found = [(" ".join(str(label).split()), " ".join(str(value or "").split())) for label, value in fields
+             if identifier_field(label) and words_not_code(value)]
+    if not found:
+        return []
+    free = _free_text(task_id) if free is None else free
+    return [(label, value) for label, value in found if not identity.holds(free, value)]
+
+
+def wordy_text(found):
+    """What a worker is told for wordy_identifiers' fields: ask the person for each, by the field's name."""
+
+    named = "; ".join(f"{label}: {value!r}" for label, value in found[:6])
+    asks = ", ".join(dict.fromkeys(label for label, _ in found[:6]))
+    return (f"a record's number, reference or id is a code, and this is words: {named}. Where a document writes words "
+            "in that place, it does not give the code - it says where the code is. Ask the person (HELP) for the "
+            f"{asks}, naming the field; never type the words, a guess or a made-up code in its place.")
+
+
+def typed_into_saved(events):
+    """[(label, value)] typed or chosen into a form that a save then answered as saved (core._current_form's reading
+    of the form, at each save), oldest first."""
+
+    from decurix_agent.computer import core
+    out, seen = [], []
+    for event in events or []:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        seen.append(event)
+        if event.get("kind") in ("click", "key") and core._saved(str(event.get("change") or "")):
+            out += core._current_form(seen[:-1])
+            seen = []
+    return out
+
+
+def wordy_saved(task_id=None, events=None):
+    """wordy_identifiers of the fields this task put into forms it saved: the final check's reading (ledger_checks),
+    for a record saved with or without a declaration."""
+
+    if events is None:
+        from decurix_agent.computer import evidence
+        events = evidence._task_events(task_id)
+    return wordy_identifiers(typed_into_saved(events), task_id)
+
+
+# ------------------------------------------------------------------ a record sent around the screen
+#
+# Found live (2026-11-08): a worker tried to curl a bill straight into the application's form endpoint. The approval
+# gate held that one (the application's host was not this machine), but a send to a server on this machine runs without
+# a person (TheBot's safety reads it as development), and a yes to the gate is a yes to the send, never a check of what
+# was saved. A record sent so was never declared, typed on the screen or read back: nothing shows what the application
+# holds. So a send the task made to an application it entered records in is held against the done.
+
+def _hosts_worked(events):
+    """The hosts (lower case, no port) of the pages where this task opened a new record's form or had a save answered."""
+
+    from decurix_agent.computer import core
+    import urllib.parse
+    hosts = set()
+    for event in events or []:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        pages = re.findall(r"page is now (\S+)", change)
+        if event.get("kind") == "open" and event.get("target"):
+            pages.append(str(event["target"]))
+        record_page = core._saved(change) and event.get("kind") in ("click", "key")
+        for page in pages + ([str(event.get("url"))] if event.get("url") else []):
+            if record_page or core._NEW_RECORD_PAGE.search("page is now " + page.rstrip(";,")):
+                try:
+                    host = urllib.parse.urlsplit(page.rstrip(";,")).hostname or ""
+                except ValueError:
+                    host = ""
+                if host:
+                    hosts.add(host.lower())
+    return hosts
+
+
+def sent_around(commands, events=None, task_id=None):
+    """
+    The commands among `commands` (shell commands this task ran) that sent data to an application around the screen
+    (playbooks.sends_data): every such send when the task declared a record (the ledger is how its records go in), and
+    any send naming the host of a page where the task opened a new record's form or saved one. [] when none.
+    """
+
+    from decurix_agent import playbooks
+    sending = [c for c in commands or () if playbooks.sends_data(c)]
+    if not sending:
+        return []
+    if load(task_id):
+        return sending
+    hosts = _hosts_worked(events)
+    return [c for c in sending
+            if any(re.search(r"(?<![\w.-])" + re.escape(h) + r"(?![\w-])", c, re.I) for h in hosts)]
 
 
 def _option_words(text):
@@ -992,6 +1132,11 @@ def declare(key, source, fields, scope="", task_id=None):
     picture = is_picture(source)
     elsewhere = chosen = selects = resolved = given = None
     kept, unsourced, partial, unbacked = {}, [], [], []
+    # A number, reference or id given as words (wordy_identifiers): refused before anything else is asked of the value -
+    # a document that writes the words there, beside the field's label, does not give the code (found live 2026-11-08).
+    wordy = wordy_identifiers(fields.items(), task_id)
+    if wordy:
+        raise ComputerError("not declared - " + wordy_text(wordy))
 
     def backed(value, label):
         # Whether a value the worker took from an application's list is backed (pick_backed): by an identifier, a

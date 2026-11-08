@@ -244,3 +244,9 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   side's window list is its own small program instead (`computer/windowlist.py`): no toolkit (GTK loads the modules
   the XSETTINGS manager names, and that is the worker's xfsettingsd), no menu, no keyboard, nothing it can start. Its
   window must select button presses too, or the window manager's grab takes the release and a click does nothing.
+- **Words in a record's number field were "backed" because the document printed them there** (2026-11-08, first
+  learn-v1 run, bill 4). "Invoice number: as per covering letter" made the phrase stand in the source, so `gui record`
+  kept it as the bill's number and nothing asked. A number, reference or id field holds a code: words with no digit
+  there are refused at the declaration, the save and the final check unless the people's own words give them
+  (`records.wordy_identifiers`). A record curl'd to the application's endpoint is never declared or read back: the
+  final check holds such a send against the done (`records.sent_around`).

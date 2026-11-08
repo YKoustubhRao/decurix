@@ -1963,6 +1963,10 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
             # value, not one made up. Any other value no source holds is refused below, like an engine's.
             unsourced = [(label, value) for label, value in unsourced if not _taught_value(value)]
         made_up += unsourced
+        # A record's number, reference or id the worker typed as words (records.wordy_identifiers): a document writing
+        # them there points elsewhere; only the person can give the code (found live 2026-11-08).
+        from decurix_agent.computer import records
+        wordy = records.wordy_identifiers(_entered_fields(found["fields"]))
     except Exception as exc:  # noqa: BLE001
         # A check that could not be made is not a check that passed (review 2026-11-02): the press waits for a person.
         return (f"Not pressed: the check of where {el._quote(found['form'], 60)}'s values come from could not be made "
@@ -1973,6 +1977,9 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         # Never sent, with or without --checked (found live 2026-10-20: a joiner onboarded with phone 9999999999) - nor
         # by a replay: a value in no source is refused, never put to a person to wave through (review 2026-11-03).
         return filler.refusal(made_up, files)
+    if wordy:
+        # Never sent, with or without --checked, a replay's press too: the person is the one to give the code.
+        return f"Not pressed: {el._quote(found['form'], 60)}: " + records.wordy_text(wordy)
     ledger_lines = []
     judged = _ledger_check(found["fields"])
     if judged is not None:

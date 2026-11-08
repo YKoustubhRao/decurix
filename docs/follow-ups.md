@@ -390,7 +390,15 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   - **Worker findings from the same run** (harness, not suite): on bill 3 the worker tried to `curl` the bill straight
     into the app's form endpoint, with cost centre General for a freight bill (the gate held it); on bill 4 it declared
     "as per covering letter" as the bill number rather than asking; bill 1 took 1.36M tokens and 66 calls, near the
-    case budget. The reconciliation half met the bar (674k tokens then about 110k, no question after the lesson).
+    case budget. **Fixed 2026-11-08** (bills 3 and 4): the bill-4 phrase did stand in the
+    document, beside "Invoice number", so `declare` called it backed; a number, reference or id given as words (no
+    digit, two or more words) is now refused at `gui record`, at the save and at the final check unless the people's own
+    words give it (`records.wordy_identifiers`), with a question naming the field. A data-sending curl/wget or posting
+    code is a final-check finding when the task declared a record or the command names a host where it opened or saved
+    a record's form (`records.sent_around`). **Decided 2026-11-08:** a send to this machine is not held at the gate
+    (the command guard stays frozen); such a save can never be reported done, and the real fix is the egress proxy in
+    O-1's broker plan. `skill_task._ledger_why` names both new kinds. Owed: the next live learn-v1 run, to see bill 4
+    end asking. The reconciliation half met the bar (674k tokens then about 110k, no question after the lesson).
   - Runner notes: a run started within 90 s of another's desktops could be refused its desktop on memory reservations
     (fixed by the per-desktop reservation only for a restart; a new arm's desktop still counts the last arm's for 90 s),
     and once an arm's agent never became ready in 4 minutes while tests ran beside it on the host (a retry passed).
