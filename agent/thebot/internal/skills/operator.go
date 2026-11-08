@@ -732,6 +732,16 @@ type operatorState struct {
 	// looked at (evidence.go unseenTyping).
 	TypedAt  map[string]int `json:",omitempty"`
 	ListedAt map[string]int `json:",omitempty"`
+	// Step is how many commands the goal has run, one the approval gate held included (at); ScreenStep the step of the
+	// last one that looked at or acted on the screen, and ShotStep the step whose screenshot is the newest in the
+	// transcript - a screenshot from before ScreenStep is not the screen now (reviewer.go lastPictures).
+	Step       int `json:",omitempty"`
+	ScreenStep int `json:",omitempty"`
+	ShotStep   int `json:",omitempty"`
+	// lookShot is the picture the look before a commit took (lookBeforeCommit), at lookShotStep: the screen as the
+	// review weighs it. Never in the transcript.
+	lookShot     []byte
+	lookShotStep int
 	// VerifyCache is the verifier's working of each blanked screen and its sources, by their hash (evidence.go).
 	VerifyCache map[string]map[string]string `json:",omitempty"`
 	// AskedPoints are the review's points in the question with the person now; AnsweredPoints are those already put
@@ -1143,6 +1153,10 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		}
 	}
 	res := runShell(rc.Ctx, rc.Dir(), run, o.commandTimeout(), st.guiEnv()...)
+	st.Step = st.at() + 1
+	if touchesScreen(run) {
+		st.ScreenStep = st.Step
+	}
 	st.traceCommand(rc, command, res, time.Since(started))
 	noteFilesRead(run)
 	// (The host's "recorded working" is what is noted here: never what the command printed back of its own text.)
@@ -1160,6 +1174,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		st.noteTaught("gui skill "+name, runShell(rc.Ctx, rc.Dir(), "gui skill '"+name+"'", 30*time.Second, st.guiEnv()...))
 	}
 	if reason := screenApprovalReason(run, res); reason != "" {
+		st.noteHeldScreen(run, res)
 		rc.Logf("operator", "approval needed on screen - %s", reason)
 		return reason
 	}
@@ -1240,6 +1255,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		}
 		msg.Images, msg.ImageLabels = [][]byte{shot}, []string{"the screen as this command left it"}
 		msg.Content += screenshotNote
+		st.ShotStep = st.Step
 	}
 	st.Messages = append(st.Messages, msg)
 	if screen && (listsScreen(command) || len(msg.Content) > longScreenOutput) {

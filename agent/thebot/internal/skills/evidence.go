@@ -815,7 +815,7 @@ func (st *operatorState) noteListing(command, output string) {
 		if st.ListedAt == nil {
 			st.ListedAt = map[string]int{}
 		}
-		st.ListedAt[window] = len(st.Worked)
+		st.ListedAt[window] = st.at()
 	}
 	kept := st.Listings[:0]
 	for _, l := range st.Listings {
@@ -832,13 +832,22 @@ func (st *operatorState) noteListing(command, output string) {
 // lookBeforeCommit makes sure the checks before a commit have a screen of the window the action acts on: when none
 // was taken, the screen is looked at now (a read-only gui observe - the gate stopped there, so it is that window).
 func (o *OperatorSkill) lookBeforeCommit(rc RunContext, st *operatorState, action string) {
-	if !st.Hosted || st.actionListing(action) != "" {
+	window := actionWindow(action)
+	if window == "" {
+		window = st.ActiveWindow
+	}
+	// A look from before the work typed into the window is the form as it was, not as it is: looked at again too.
+	if !st.Hosted || (st.actionListing(action) != "" && !st.typedSinceLook(window)) {
 		return
 	}
+	started := time.Now()
 	res := runShell(rc.Ctx, rc.Dir(), "gui observe", 60*time.Second, st.guiEnv()...)
 	if res.ExitCode != 0 || strings.TrimSpace(res.Output) == "" {
 		rc.Logf("operator", "no screen of the action's window to check before it")
 		return
+	}
+	if shot := st.takeScreenshot(started); shot != nil {
+		st.lookShot, st.lookShotStep = shot, st.at()
 	}
 	st.noteListing("gui observe", res.Output)
 	st.noteEvidence("gui observe", res.Output)
@@ -1390,7 +1399,7 @@ func (st *operatorState) noteTypedWindow(window string) {
 	if st.TypedAt == nil {
 		st.TypedAt = map[string]int{}
 	}
-	st.TypedAt[window] = len(st.Worked)
+	st.TypedAt[window] = st.at()
 }
 
 // openWindowsLineRe is a screen listing's line of the open windows (agent elements.render).
@@ -1490,6 +1499,35 @@ func (st *operatorState) typedByWork(value string) bool {
 		}
 	}
 	return false
+}
+
+// at is where the goal stands in commands run, one the approval gate held included: what orders a window's typing
+// against its looks (TypedAt, ListedAt). A goal checkpointed before Step was kept counted commands that went through.
+func (st *operatorState) at() int {
+	if st.Step < len(st.Worked) {
+		st.Step = len(st.Worked)
+	}
+	return st.Step
+}
+
+// touchesScreen reports whether any simple command of command looks at or acts on the screen (screenVerbRe).
+func touchesScreen(command string) bool {
+	for _, seg := range shellSegments(command) {
+		if screenVerbRe.MatchString(seg.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+// noteHeldScreen is what a command the approval gate held did on the screen before the gate stopped it: the typing
+// of a chain ahead of the held press went through, so the window's looks from before are no longer what it holds.
+// Found live (2026-11-08, twice): "gui type ... && gui click Save" held at Save recorded nothing, the review was shown
+// the look from before the typing, and its "Still open" lines said fields were empty that gui observe showed filled.
+func (st *operatorState) noteHeldScreen(command string, res shellResult) {
+	if typedOnScreenRe.MatchString(command) {
+		st.noteWindow(command, shellResult{ExitCode: 0, Output: res.Output})
+	}
 }
 
 // typedSinceLook reports whether the work typed or chose in the window after its last look at it.

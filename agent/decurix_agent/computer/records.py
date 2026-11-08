@@ -912,6 +912,48 @@ def _elsewhere_text():
     return "\n".join(parts)
 
 
+def _source_units(key, kept, text, task_id):
+    """
+    A figure declared bare keeps the unit what backs it writes it with (owner decision, 2026-11-08). Found live: a note
+    said "18%", the worker declared the record's Rate as "18", the save compared 18 with the unit-less field's 18 and
+    the unit question - the very case it exists for - never came. What backs a figure is the record's source for one
+    kept "from source", and what was given (given_text: the request, its files, the person's answers) for one kept
+    "from seen" (never the application's pages it read, where the form's own bare figure stands). Where every place it writes the figure writes the same unit, the intent is
+    the figure as written there ("18%"), changed in `kept`, so the save's comparison with a field whose label states no
+    unit reaches the person's question (presave, _undecided). Where it writes the figure with a unit and also bare, or
+    with two units, which one is this field's cannot be told: refused, once when one of them is bare (declared bare
+    again, that is the worker's choice, made with both shown), and every time otherwise (the source never writes it
+    bare). Returns (the "label=written" lines kept with a unit, the refusals).
+    """
+
+    united, forms = [], []
+    given = None
+    for label, f in kept.items():
+        value = f.get("intent") or ""
+        bare = values.parse_amount(value)
+        if f.get("from") not in ("source", "seen") or not isinstance(bare, values.Amount) or bare.unit or bare.currency:
+            continue
+        if f["from"] == "seen":
+            if given is None:
+                given = given_text(task_id)
+            backing = given
+        else:
+            backing = text
+        places = values.units_beside(value, backing)
+        units = {u for u, _ in places}
+        if not units or units == {""}:
+            continue
+        if len(units) == 1:
+            f["intent"] = next(w for u, w in places if u)
+            united.append(f"{label}={f['intent']}")
+            continue
+        shown = list(dict.fromkeys(w for _, w in places))[:6]
+        if "" in units and not stop_once(task_id, f"unit-{key}-{label}-{value}"):
+            continue
+        forms.append(f"{label}: '{value}' - written there as " + ", ".join(repr(w) for w in shown))
+    return united, forms
+
+
 def declare(key, source, fields, scope="", task_id=None):
     """
     Keep a record's intent: {key, source, scope, fields{label: {intent, from}}}. Every value must stand in the source
@@ -1019,6 +1061,13 @@ def declare(key, source, fields, scope="", task_id=None):
                             "(a place as 'Kerala', not the application's option label '32-Kerala'; a party as the "
                             "document names it): the application's own wording of an option or an entry chosen from "
                             "its list is accepted at the save. A value the document does not give at all is not typed.")
+    united, unit_forms = _source_units(key, kept, text, task_id)
+    if unit_forms:
+        raise ComputerError("not declared - a figure is declared bare where what backs it writes it with a unit: "
+                            + "; ".join(unit_forms) + ". Declare each as the source writes it for this field (with its "
+                            "unit): the save compares it with the field and asks the person when the field's label "
+                            "does not say the unit. A figure the source also writes bare may be declared bare again "
+                            "only when that is the one this field takes.")
     records = load(task_id)
     if done is not None:
         return _add_to_saved(task_id, records, done, kept)
@@ -1033,6 +1082,9 @@ def declare(key, source, fields, scope="", task_id=None):
     if seen:
         lines.append("(from the screen, the application's own lists, the request or the person rather than the source: "
                      + ", ".join(seen) + ")")
+    if united:
+        lines.append("(kept with the unit their source writes them in, which the declaration left out: "
+                     + ", ".join(united) + ")")
     unread = [f"{l}={f['intent']}" for l, f in kept.items() if f["from"] == "picture"]
     if unread:
         lines.append("(read off the picture and NOT confirmed by OCR - look at the picture again for each before saving: "

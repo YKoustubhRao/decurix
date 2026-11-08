@@ -205,6 +205,48 @@ def field_units(label):
     return frozenset(re.findall(r"%|[^\W\d_]+", text))
 
 
+# A figure a text writes as a token of its own: not inside a longer number, a date, a time, a code or a word.
+_FIGURE_IN_TEXT = re.compile(r"(?<![\w.,/\-])(?<!\d:)\d[\d,]*(?:\.\d+)?(?![\w/\-]|[.,]\d)")
+# What opens a value of its own just before a figure, on its line: the line's start, a table's cell, a label's ":"/"=".
+_VALUE_OPENS = re.compile(r"(?:^|[|\t:=]| {2})[ \t]*$")
+# One word right after a figure that closes the value: the end of the line or of a table's cell, or a comma/semicolon.
+_UNIT_WORD = re.compile(r"[ \t]+[^\W\d_]{1,12}\.?(?=[ \t]*(?:[\r\n|,;]|$)|\t| {2})")
+
+
+def units_beside(value, text):
+    """
+    For each place `text` writes the figure `value` writes (by value, however grouped), the unit parse_amount reads
+    beside it there and how it is written there, as (unit, written): ("%", "18%"), and ("", "18") for a place that
+    writes it bare. [] when `value` is no plain figure or the text never writes it. A percent sign is a unit wherever
+    it stands ("GST @ 18%", "18 %"); a word only where the figure and the word make a whole value of their own - a
+    table's cell, or a label's value to the end of its line ("Weight: 15 kg", "| 18 Nos |") - never a word a sentence
+    runs on with ("came to 18 today"). Structure only, never a list of units (2026-11-08: a note's "18%" declared as
+    a bare 18 settled a unit-less field's unit silently - computer/records.py declare).
+    """
+
+    want = parse_amount(value)
+    if not isinstance(want, Amount):
+        return []
+    text = unicodedata.normalize("NFKC", str(text or ""))
+    out = []
+    for m in _FIGURE_IN_TEXT.finditer(text):
+        got = parse_amount(m.group(0))
+        if not isinstance(got, Amount) or got.magnitude != want.magnitude:
+            continue
+        rest = text[m.end():]
+        written = m.group(0)
+        pct = re.match(r"[ \t]?%", rest)
+        if pct:
+            written += pct.group(0)
+        elif _VALUE_OPENS.search(text[text.rfind("\n", 0, m.start()) + 1:m.start()]):
+            word = _UNIT_WORD.match(rest)
+            if word and isinstance(parse_amount(written + word.group(0)), Amount):
+                written += word.group(0)
+        found = parse_amount(written)
+        out.append((found.unit if isinstance(found, Amount) else "", " ".join(written.split())))
+    return out
+
+
 # ------------------------------------------------------------------ dates
 
 def _day(y, m, d):

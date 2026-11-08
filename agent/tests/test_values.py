@@ -93,6 +93,25 @@ class SignsUnitsAndFormats(unittest.TestCase):
         self.assertIsNone(values.parse_number("INV-1234"))
 
 
+class TheUnitASourceWritesBesideAFigure(unittest.TestCase):
+    """values.units_beside: what records.declare keeps a bare figure's unit by (2026-11-08)."""
+
+    def test_a_percent_sign_is_a_unit_wherever_it_stands(self):
+        self.assertEqual(values.units_beside("18", "Note: GST on all lines at 18%."), [("%", "18%")])
+        self.assertEqual(values.units_beside("18", "Rate 18.00 %"), [("%", "18.00 %")])
+        self.assertEqual(values.units_beside("18.00", "Rate 18%"), [("%", "18%")])
+
+    def test_a_word_is_a_unit_only_as_a_whole_value(self):
+        self.assertEqual(values.units_beside("15", "Weight: 15 kg\nPacked by: Asha"), [("kg", "15 kg")])
+        self.assertEqual(values.units_beside("18", "| Item | 18 Nos |"), [("nos", "18 Nos")])
+        self.assertEqual(values.units_beside("18", "It came to 18 today."), [("", "18")])
+
+    def test_every_place_is_given_bare_or_not_and_no_other_figure(self):
+        self.assertEqual(values.units_beside("18", "Qty: 18\nRate: 18%"), [("", "18"), ("%", "18%")])
+        self.assertEqual(values.units_beside("18", "Due 18/09/2026 at 10:18, rate 18.5%, bill 1188, INV-18"), [])
+        self.assertEqual(values.units_beside("INV-18", "INV-18 at 18%"), [])
+
+
 class ARangeAndItsCount(unittest.TestCase):
     """Review round 2 leftover: false_sums read "Rows 2 - 10 = 9." as a wrong subtraction. A range of numbered things
     and how many it holds is no sum - decided by its structure, never by which word names the things."""

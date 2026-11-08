@@ -225,3 +225,10 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   the screen broker reads the worker's bus, the worker can lay a made-up "Cancel" over the browser's "Pay"; a press by
   its box lands on the browser while the gate is asked about "Cancel". Act on such a widget only where the window shown
   at that point is the worker's own (its `_NET_WM_PID`, which only the window's client can set, and that process's uid).
+- **A command the gate held still did what came before the held press** (2026-11-08). `gui type ... && gui click
+  Save` held at Save had typed, but a held command recorded nothing: the review read the form off the look and the
+  screenshots from before the typing and said filled fields were empty. Note a held chain's typing, order looks and
+  typing by commands run (held ones included), and give a review only the latest look of a window, or "not read".
+- **A bare figure declared from a source that writes it with a unit settles the unit silently** (2026-11-08). "18" from
+  "18%" matched a unit-less field's 18, and the unit question never came. A declaration keeps the unit its backing
+  writes (`records._source_units`).

@@ -150,6 +150,12 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 	o.readRecordLedger(rc, st) // the records declared and what their saves showed, for the reviewer (record_ledger.go)
 	// Folders this task named unlike the folders beside them: a fact for the reviewer (folder_names.go).
 	st.folderFacts = o.folderNameFacts(rc, st)
+	if action != "" {
+		// The window the action acts on, looked at now when no look of it is newer than the work's typing in it - before
+		// the review, which weighs the screen as it is (found live 2026-11-08: reviewed on the look from before the
+		// typing, a held Save's "Still open" lines said fields were empty that the screen showed filled).
+		o.lookBeforeCommit(rc, st, action)
+	}
 	issues, reviewed := o.review(rc, st, said, items, action)
 	issues = append(issues, pictured...)
 	if action == "" {
@@ -188,7 +194,7 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 		// the sources by a check that does not see them (evidence.go), and the records the action covers against every
 		// source read, each disagreement needing a source that explains it (case.go). Their findings are points like
 		// the review's.
-		o.lookBeforeCommit(rc, st, action)
+		// (The screen was looked at again before the review: lookBeforeCommit, above.)
 		issues = append(issues, o.verifyCommit(rc, st, action)...)
 		issues = append(issues, o.caseMatrix(rc, st, action)...)
 	}

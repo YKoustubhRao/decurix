@@ -16,7 +16,7 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 | O-7 | Org knowledge and skill writes from the gated listener (A-08) | Done: host-operator only |
 | O-8 | Acquired skills, proven fixes and the coding harness inside Decurix (T-07, T-08, T-21) | Done: off unless `THEBOT_STANDALONE=1`. Veto keeps them |
 | O-9 | taskRules audit to principles only (T-18) | Staged as commit `ab8cac8`. **Open:** bench it on hosted brains before keeping it |
-| O-10 | God-file splits (`core.py`, `long_task.py`, `skill_task.py`, `operator.go`, `httpapi`) and the check-registry rewrite | First split done (2026-11-07): `long_task.py`'s stage checks and the cross-check's code part moved to `stage_checks.py`, no behaviour change. **Open:** the other files, one at a time, each behind the replay gate |
+| O-10 | God-file splits (`core.py`, `long_task.py`, `skill_task.py`, `operator.go`, `httpapi`) and the check-registry rewrite | First split done (2026-11-07): `long_task.py`'s stage checks and the cross-check's code part moved to `stage_checks.py`, no behaviour change. Second (2026-11-08): `computer/core.py` (5673 -> 4135 lines) gave select's machinery to `selecting.py`, sheet blocks and slide text to `sheets.py`, and the comparison of two looks to `changes.py`, no behaviour change. **Open:** the other files, one at a time, each behind the replay gate |
 | N-W4-8 | A Landlock file policy for Brainiac's headless browser (profile folder plus the system read set, network kept) | **Built** 2026-11-08 (`web/render.go` `browserPolicy`, `render_linux.go`): through `isolate.Wrap`, profile read-write, system read set read-only, `HOME`/`TMPDIR`/XDG moved into the profile; no Landlock = old behaviour plus one log line. Live in a `golang:1.27` container: a child under the policy wrote its profile, read `/usr`, and got EACCES for a file outside, `/proc/1/environ` and a write outside. **Open:** a real Chrome render under the policy (`BRAINIAC_LIVE_RENDER`) before Render may be turned on on an appliance; Chrome's children lack their own `/proc/self` |
 | N-W4-8 note | Render stays off the automatic path everywhere, off by default on an appliance, behind the guard proxy, page read bounded | Done |
 
@@ -69,7 +69,7 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 
 ### Python agent (W2)
 
-- **O-10:** the check-registry rewrite (step 1, the `_checked` wrapper, is done). The first god-file split is done (2026-11-07): the stage checks (`stage_code_findings`, `CHECK_MATURITY`, `_checked`, every check and the helpers only they use) and the cross-check's code part (`code_disagreements`, `model_disagreements`, `odd_one_out`) are `stage_checks.py`; long_task keeps the prompts and the run, imports what it calls and re-exports the names other modules and tests read through it. stage_checks never imports long_task: the run's ledger, runner and model call are handed over at import (`stage_checks.use_run`), looked up in long_task at each call. A test that patches a check helper patches it on `stage_checks`. Left: `core.py`, `skill_task.py`, `operator.go`, `httpapi`.
+- **O-10:** the check-registry rewrite (step 1, the `_checked` wrapper, is done). The first god-file split is done (2026-11-07): the stage checks (`stage_code_findings`, `CHECK_MATURITY`, `_checked`, every check and the helpers only they use) and the cross-check's code part (`code_disagreements`, `model_disagreements`, `odd_one_out`) are `stage_checks.py`; long_task keeps the prompts and the run, imports what it calls and re-exports the names other modules and tests read through it. stage_checks never imports long_task: the run's ledger, runner and model call are handed over at import (`stage_checks.use_run`), looked up in long_task at each call. A test that patches a check helper patches it on `stage_checks`. The second split is done (2026-11-08): `computer/core.py` keeps observe/act/verify/open and what they share; `selecting.py` (select's machinery and "nothing else in its place"), `sheets.py` (a block of cells or slide text typed and read back, here or in a relayed viewer) and `changes.py` (`compare`, `summarize`, `text_change`, `expectations`) never import core: `observe`, `_task_now` and `_focus_window` are handed over at import (`use_core`), looked up in core at each call; core re-exports by name what others read through it, and the broker's `core.forget_failed_search` route still resolves there. Chosen as the parts with the fewest names tests patch through core: the downloads, settle, commit-check and record-scan groups were left because tests patch their helpers through core while code inside the group calls them, so a move would make those patches silently miss. Left: the rest of `core.py` (downloads/waits, the commit check), `skill_task.py`, `operator.go`, `httpapi`.
 - **E-41:** the "PAYMENT TO " string branch only adds a prompt hint and a warning; make it a typed field when `FileFacts` reaches `code_problems`.
 - **E-42:** `claims_done` stays (its only effect is a second judge call, whose "cannot" ends "not checked"; widening its regex would be a word list).
 - **E-43:** run-folder retention is the owner's call (run folders hold the person's outputs; locks, temp files and host copies are pruned).
@@ -141,12 +141,17 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **Not reached, still owed:**
   - The field-unit question with a hosted brain: twice the worker never put a one-sided unit to the save - it declared
     the record's Rate as "18" (the note says "18%"), then, told to declare 18%, typed "18%" into the field - so the
-    question never came. Owed: a run that reaches it, and a decision on whether `gui record` should keep a document's
-    unit when the worker drops it (declaring "18" from "18%" settles the unit silently, the case the question exists
-    for).
+    question never came. **Decided and fixed (2026-11-08):** `gui record` keeps the unit the backing source writes a
+    bare figure with (learning-and-verification.md, "A figure declared bare"). Owed: a live run that reaches the
+    question.
   - The sign-in refusal on the gated listener (step prepared, not run).
   - The review's "Still open" lines on a held press read screenshots as empty fields that `gui observe` showed filled
-    (seen twice on the tax-code form); not investigated.
+    (seen twice on the tax-code form). **Fixed (2026-11-08):** a chain held at its press (`gui type ... && gui click
+    Save`) recorded nothing, so the review was shown the look and the screenshots from before the typing. Now the
+    typing ahead of a held press is noted (`noteHeldScreen`), the window is looked at again before the review when
+    typed since its last look (`lookBeforeCommit`, moved ahead of `review`), a look older than the typing is shown as
+    "NOT READ", and only a screenshot of the screen as it is goes to the reviewer (`lastPictures`). Owed: a live held
+    Save on that form.
 
 ## Live checks after the next build
 
