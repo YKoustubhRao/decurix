@@ -276,10 +276,15 @@ def _described(skill):
     return "\n".join(lines)
 
 
+# A study's completion budget: its floor, what each step adds, and its ceiling. A reasoning model's budget holds its
+# reasoning as well as the JSON. Found live (2026-11-08, Kimi-K2.6, a 44-step bill): 7,520 tokens and then the retry's
+# 16,000 were spent thinking and the answer was cut off mid-JSON both times - two lessons in a row had no understanding,
+# so no rules for any run and no brief for the check. The study is made once per lesson and every run reads it.
+STUDY_FLOOR, STUDY_PER_STEP, STUDY_CEILING = 24000, 120, 40000
+
+
 def _token_budget(skill):
-    # Reasoning-model completion budgets include reasoning as well as JSON.
-    # Long demonstrations need room for one purpose per step plus inputs.
-    return min(24000, max(6000, 4000 + 80 * len(skill.get("steps") or [])))
+    return min(STUDY_CEILING, max(STUDY_FLOOR, 8000 + STUDY_PER_STEP * len(skill.get("steps") or [])))
 
 
 def _call(system, content, max_tokens=6000):
