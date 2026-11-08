@@ -672,6 +672,12 @@ type operatorState struct {
 	// was shown whole, and CycleAsk that one went round again after that (cycle.go).
 	RecentRuns  []ranCommand `json:",omitempty"`
 	CycleNudges int          `json:",omitempty"`
+	// SaveRefusal is the last refusal of the save check (its key), SaveRefusals how often it came back in a row, and
+	// SaveRefusalAsk the question the loop puts to the person once it came back maxSameSaveRefusals times
+	// (save_refusal.go).
+	SaveRefusal    string `json:",omitempty"`
+	SaveRefusals   int    `json:",omitempty"`
+	SaveRefusalAsk string `json:",omitempty"`
 	// OnScreenNudged: a question quoting what a listing shows was pushed back once, NamesNudged: one naming a list a
 	// listing shows (screen_answer.go); RecordLedger is
 	// the record ledger as gui records last printed it, read before a review (knowledge.go).
@@ -1201,6 +1207,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	st.Commands = append(st.Commands, command)
 	st.LastCommand = command
 	st.LastResult = &res
+	st.noteSaveRefusal(command, res) // the same save refusal on an unchanged form, again and again (save_refusal.go)
 	// What a page on the internet says is a source of values only for a request that asks for it from the web: a
 	// web page is never where a record's or a document's figures come from (grounding.go).
 	if !isLookup(command) || researchRe.MatchString(st.Request) || st.fetchesPersonLink(command) {
@@ -2114,6 +2121,11 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			if q := st.CycleAsk; q != "" {
 				st.CycleAsk = ""
 				rc.Logf("operator", "still going round the same commands after seeing them together - asking the person")
+				return ask(q)
+			}
+			if q := st.SaveRefusalAsk; q != "" {
+				st.SaveRefusalAsk = ""
+				rc.Logf("operator", "the save check refused the same unchanged form %d times - asking the person", maxSameSaveRefusals)
 				return ask(q)
 			}
 

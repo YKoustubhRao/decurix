@@ -139,7 +139,7 @@ class AReplaysCommittingPress(_Store):
 
     def _form(self, **patches):
         save = {"ref": "e2", "role": "button", "name": "Save", "path": "div > button Save", "source": "cdp", "group": "g"}
-        with mock.patch.object(core, "_ledger_check", lambda fields: None),                 mock.patch.object(core, "_unsourced_fields", patches.get("unsourced", lambda fields: [])):
+        with mock.patch.object(core, "_ledger_check", lambda fields, **_: None),                 mock.patch.object(core, "_unsourced_fields", patches.get("unsourced", lambda fields: [])):
             return core._form_check(save, found={"form": "New order", "fields": self.FULL}, listing="ask")
 
     def test_a_replay_saving_sourced_values_asks_nobody(self):
@@ -246,13 +246,13 @@ class OneNotePerTask(_Store):
         save = {"ref": "e2", "role": "button", "name": "Save", "path": "div > button Save", "source": "cdp", "group": "g"}
         found = {"form": "New order", "fields": AReplaysCommittingPress.FULL}
         with mock.patch.object(core, "_unsourced_fields", lambda fields: []), \
-                mock.patch.object(core, "_ledger_check", lambda fields: None), \
+                mock.patch.object(core, "_ledger_check", lambda fields, **_: None), \
                 mock.patch("decurix_agent.task_context.current", lambda: "t" + "a" * 16):
             self.assertIn("Not pressed yet", core._form_check(save, found=found))
             self.assertEqual(core._form_check(save, checked=True, found=found), "")
             self.assertIn("ta", core._form_check_file().name)
         with mock.patch.object(core, "_unsourced_fields", lambda fields: []), \
-                mock.patch.object(core, "_ledger_check", lambda fields: None), \
+                mock.patch.object(core, "_ledger_check", lambda fields, **_: None), \
                 mock.patch("decurix_agent.task_context.current", lambda: "t" + "b" * 16):
             self.assertIn("Not pressed yet", core._form_check(save, checked=True, found=found))
 

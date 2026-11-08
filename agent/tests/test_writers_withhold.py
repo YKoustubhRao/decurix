@@ -31,7 +31,8 @@ ALLOWED = {
     "computer/privacy.py:_with_resume": "a planned run's resume copy of its request, beside the tasks' secret values: "
                                         "tmpfs, 0600, let go at the task's end",
     "gate_server.py:__enter__": "the gate's lock file, in its own 0700 directory",
-    "gate_server.py:_write_private": "the gate's own stores (the signed request, the tasks' secret values), 0600, in "
+    "gate_server.py:_write_private": "the gate's own stores (the signed request, the tasks' secret values, the seen "
+                                     "nonces), 0600, in "
                                      "the gate's 0700 directory, which the worker cannot read",
     # Lock files: an empty handle to lock, no content.
     "computer/approval.py:_locked": "the approval store's lock, and its state in the gate only (fingerprints and "
@@ -198,7 +199,9 @@ TEMP_FILES = {"NamedTemporaryFile", "TemporaryFile", "SpooledTemporaryFile"}
 RAW_HELPERS = {
     "write_bytes_whole": {"computer/recording.py:write_whole"},
     "_hold": {"long_task.py:_take_message", "long_task.py:_take_new_request"},
-    "_write_private": {"gate_server.py:end_task", "gate_server.py:keep_request", "gate_server.py:keep_secrets"},
+    # (_fresh: the seen nonces and their expiry - random ids the control plane made, no words of anyone's)
+    "_write_private": {"gate_server.py:_fresh", "gate_server.py:end_task", "gate_server.py:keep_request",
+                       "gate_server.py:keep_secrets"},
     "_keep_copy": {"computer/broker.py:take_context", "computer/broker.py:local_copy",
                    "computer/broker.py:_take_launchers"},
     "save_request": {"http_api.py:_learn", "http_api.py:_replay", "http_api.py:_request", "http_api.py:_run_skill"},

@@ -24,7 +24,10 @@ from decurix_agent.computer.errors import ComputerError
 
 LEDGER_DIR = config.DECURIX_DIR / "computer" / "evidence"
 MAX_FIELDS = 60
-MAX_VALUE = 400
+# The longest value a record declares. Never cut: a longer one is refused (declare). Found live (2026-11-08): a value
+# kept cut can never equal what the form holds, and that save is refused at every try. Well above what the form
+# readers keep whole (cdp.FORM_VALUE_CHARS), so a field read whole always meets its declared value whole.
+MAX_VALUE = 4000
 # How much of a look's text the read-back searches (fields in view or not, and the page's words).
 MAX_PAGE_TEXT = 60000
 # A label's words that say nothing about which field it is.
@@ -84,6 +87,13 @@ def stands_in(value, text, value_order=None, text_order=None):
 
     if not text:
         return False
+    amount = values.parse_amount(value)
+    if isinstance(amount, values.Amount) and amount.unit and any(
+            unit == amount.unit for unit, _ in values.units_beside(value, text)):
+        # A figure with its unit ("5%", "15 kg") stands where the text writes that figure with that same unit, however
+        # short (values.units_beside: by structure, never a list of units). Found live (2026-11-08): "5%" from "rate
+        # 5%." was refused every time - it is no bare number, and its one digit fell under the floor below.
+        return True
     n = as_number(value)
     if n is not None:
         for tok in _NUMBER_TOKEN.findall(text):
@@ -340,6 +350,7 @@ def _add_to_saved(task_id, records, done, kept):
             rb["absent"] = list(dict.fromkeys(rb["absent"]))
             r["undeclared"] = [u for u in r.get("undeclared") or []
                                if not any(label_matches(l, u.split("=", 1)[0]) for l in new)]
+            r["unset"] = [u for u in r.get("unset") or [] if not any(label_matches(l, u) for l in new)]
             rec = r
     _save(task_id, records)
     lines = [f"Record {done.get('key')} is saved already; its declaration now also covers: "
@@ -1151,9 +1162,13 @@ def declare(key, source, fields, scope="", task_id=None):
         return any(pick_backed(p, given, resolved, value=value, labels=(label,)) for p in mine)
     for label, value in fields.items():
         label = " ".join(str(label).split())
-        value = " ".join(str(value if value is not None else "").split())[:MAX_VALUE]
+        value = " ".join(str(value if value is not None else "").split())
         if not label:
             continue
+        if len(value) > MAX_VALUE:
+            raise ComputerError(f"not declared - {label} is longer than {MAX_VALUE} characters, and a record's value is "
+                                "kept whole or not at all (a part would never match the form). Ask the person (HELP) "
+                                "how this field is to be entered.")
         if not value:
             kept[label] = {"intent": "", "from": "empty"}
             continue
@@ -1355,19 +1370,29 @@ def _undecided(flabel, fvalue, want, why, place=("", ""), unit=""):
             "person.")
 
 
-def presave(rec, form_fields):
+def presave(rec, form_fields, cut=(), unset=()):
     """
     The intent against a form about to be saved: (blocking, advisory) lines. A matched field whose value is not the
     intent's blocks; an intent field the form does not name, or a filled form field the intent does not cover, is
     advisory. Also returns how many intent fields the form matched (the diff is "clean" when nothing blocks).
+
+    cut: the form's labels whose values were read in part (cdp.FORM_VALUE_CHARS) - compared only as far as they were
+    read, never called different for the part not read (_read_in_part). unset: the form's choices left in their "no
+    selection" state (cdp.FORM_FIELDS, by structure) - one the record does not declare is a point (unset_choice_line;
+    ADVISORY until UNSET_CHOICE_BLOCKS).
     """
 
     fields = {l: f for l, f in rec.get("fields", {}).items() if f.get("intent")}
     matched = match_fields(fields, [(str(l), str(v if v is not None else "")) for l, v in form_fields])
     blocking, advisory = [], []
     chosen = place = None
+    cut = {str(c) for c in cut or ()}
     for label, flabel, fvalue in matched:
         want = fields[label]["intent"]
+        if str(flabel) in cut and str(fvalue).strip():
+            line, differs = _read_in_part(flabel, fvalue, want)
+            (blocking if differs else advisory).append(line)
+            continue
         if not str(fvalue).strip():
             if _IDENT_RE.match(str(want).strip()):
                 # A party saved without the identifier its document gives is a record nothing can resolve later -
@@ -1413,12 +1438,67 @@ def presave(rec, form_fields):
              and str(l) not in used]
     if extra:
         advisory.append("on the form but not in the record: " + ", ".join(str(x)[:80] for x in extra[:12]))
+    left = undeclared_unset(rec, unset)
+    if left:
+        (blocking if UNSET_CHOICE_BLOCKS else advisory).append(unset_choice_line(rec, left))
     return blocking, advisory, len(matched)
 
 
-def note_presave(rec, blocking, task_id=None, undeclared=None):
-    """Keep the last pre-save diff on the record (what blocked, how many checks, and the fields this task set on the
-    form that the record does not declare - what the final check holds against a saved record)."""
+def _read_in_part(flabel, fvalue, want):
+    """
+    (line, differs) for a field whose value was read only in part (cdp.FORM_VALUE_CHARS: cut at a word): the part is
+    compared with the start of the record's value (values._compare_key: letters and digits in order, gaps aside) and
+    nothing more. Found live (2026-11-08): the form readers cut values at 80 characters with no mark, presave compared
+    the part with a declared 126-character Notes value, and the save was refused at every try until the token budget ran
+    out. A part that agrees is undecided - the save goes on, and the read-back after it looks for the whole value; only
+    a part that already reads otherwise than the record's start differs.
+    """
+
+    part, whole = values._compare_key(fvalue), values._compare_key(want)
+    if part and whole.startswith(part):
+        return (f"{flabel} was read only in part (its first {len(str(fvalue))} characters), and that part agrees with "
+                "the record; the rest is not compared before the save - the read-back after it looks for the whole "
+                "value", False)
+    return (f"{flabel} holds {str(fvalue)!r}... (read in part) where the record says {want!r} - the part read already "
+            "reads otherwise than the record's start", True)
+
+
+# Whether presave blocks a save over a choice left unset that the record does not declare (unset_choice_line).
+# ADVISORY until it passes the replay gate and a clean live round (CLAUDE.md: a new code check ships advisory): until
+# then it is a point the worker is shown at the save (readback) and the reviewer reads in the ledger (listing).
+UNSET_CHOICE_BLOCKS = False
+
+
+def undeclared_unset(rec, unset):
+    """The labels of the form's choices left in their "no selection" state (cdp.FORM_FIELDS, by structure) that the
+    record does not declare - a declared field, its value given or declared empty, covers one by label."""
+
+    declared = list((rec.get("fields") or {}).keys())
+    out = []
+    for label in unset or ():
+        label = " ".join(str(label or "").split())
+        if not label or label in out:
+            continue
+        if any(label_matches(d, label) or label_words(d) == label_words(label) for d in declared):
+            continue
+        out.append(label)
+    return out
+
+
+def unset_choice_line(rec, labels):
+    """The point for choices left unset that record `rec` does not declare: each named by its label, with the two ways
+    to settle it - declared from a source, or asked of the person."""
+
+    names = ", ".join(labels[:8])
+    return (f"{names} {'is' if len(labels) == 1 else 'are'} left unset (the choice's own \"no selection\" state) and "
+            f"record {rec.get('key')} does not declare {'it' if len(labels) == 1 else 'them'}: declare each with the "
+            f"value a source gives (gui record), or ask the person (HELP) which {labels[0]} this record takes")
+
+
+def note_presave(rec, blocking, task_id=None, undeclared=None, unset=None):
+    """Keep the last pre-save diff on the record (what blocked, how many checks, the fields this task set on the
+    form that the record does not declare - what the final check holds against a saved record - and the choices left
+    unset that it does not declare, shown after the save and in the ledger: undeclared_unset)."""
 
     task_id = task_id or task_context.current()
     records = load(task_id)
@@ -1428,6 +1508,8 @@ def note_presave(rec, blocking, task_id=None, undeclared=None):
             r["last_blocked"] = blocking[:12]
             if undeclared is not None:
                 r["undeclared"] = [f"{l}={v}" for l, v in undeclared][:12]
+            if unset is not None:
+                r["unset"] = [str(l) for l in unset][:12]
             for label, f in rec.get("fields", {}).items():
                 if f.get("entered") and label in r.get("fields", {}):
                     r["fields"][label]["entered"] = f["entered"]
@@ -1464,7 +1546,12 @@ def readback(rec, title, page_text, change, task_id=None):
         line += ". Open the saved record and check those before going on; a value the application changed is not what the document says."
     elif total:
         line += " - all of them."
-    return [line]
+    lines = [line]
+    if rec.get("unset"):
+        # The pre-save point (ADVISORY: UNSET_CHOICE_BLOCKS), shown with the save it did not stop.
+        lines.append("Left unset at this save: " + unset_choice_line(rec, list(rec["unset"])) + ". If a source or the "
+                     "person gives a value, open the saved record and set it there - never enter the record again.")
+    return lines
 
 
 # ------------------------------------------------------------------ listing
@@ -1494,6 +1581,10 @@ def listing(task_id=None):
                 continue
             mark = "seen" if label in rb.get("seen", []) else ("ABSENT" if label in rb.get("absent", []) else "-")
             out.append(f"    {label}: {f['intent']} [{f.get('from')}; read back: {mark}]")
+        if rec.get("unset"):
+            # (No ": " in this line: the soul reads "    Label: value" lines as declared fields - record_ledger.go.)
+            out.append("    (left unset at the last save check and not declared - " + ", ".join(rec["unset"][:8])
+                       + " - a value from a source or the person's answer is owed)")
     return out
 
 

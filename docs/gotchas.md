@@ -986,3 +986,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A locked xfce4-panel still starts programs
 - [part-6.md](gotchas/part-6.md): Words in a record's number field were "backed" because the document printed them there
 - [part-6.md](gotchas/part-6.md): In broker mode the save path's question stayed with the screen user
+- [part-6.md](gotchas/part-6.md): A cut read was judged as the whole value

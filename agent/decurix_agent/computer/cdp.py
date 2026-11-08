@@ -2185,6 +2185,28 @@ def focused_number_field():
             page.close()
 
 
+# How much of a field's value the form readers keep (FORM_FIELDS, core._page_fields, the Enter path): the 600 characters
+# approvals quote. A longer value is cut at a word and marked cut (cut_value), and a cut read is never judged as the
+# whole value (records.presave). Found live (2026-11-08): values were cut at 80 characters without a mark, and a
+# declared 126-character Notes field was refused at every save as differing from the record until the budget ran out.
+FORM_VALUE_CHARS = 600
+
+
+def cut_value(value, limit=None):
+    """(value, cut): a field's value whole up to `limit` (FORM_VALUE_CHARS) characters; a longer one cut at its last
+    whole word before that (no partial token left to judge) and marked cut."""
+
+    value = str(value if value is not None else "")
+    limit = FORM_VALUE_CHARS if limit is None else limit
+    if len(value) <= limit:
+        return value, False
+    part = value[:limit]
+    gap = max(part.rfind(c) for c in " \n\t")
+    if gap > limit // 2:
+        part = part[:gap]
+    return part.rstrip(), True
+
+
 FORM_FIELDS = """function(enter) {
   const b = this;
   const form = b.form || (b.closest && b.closest('form'));
@@ -2203,24 +2225,42 @@ FORM_FIELDS = """function(enter) {
     const l = f.closest('label'); if (l) return l.textContent.trim();
     return f.name || f.id || f.type;
   };
-  const out = [];
+  const out = [], unset = [];
   for (const f of form.elements) {
     if (f.disabled) continue;
     const ft = (f.type || '').toLowerCase();
     if (['hidden', 'submit', 'button', 'reset', 'image', 'file', 'password'].includes(ft)) continue;
     let v = '';
-    if (f.tagName === 'SELECT') { const o = f.options[f.selectedIndex]; v = o && o.value !== '' ? o.label : ''; }
+    if (f.tagName === 'SELECT') {
+      const o = f.options[f.selectedIndex];
+      v = o && o.value !== '' ? o.label : '';
+      // A choice left in its "no selection" state - nothing selected, or the option whose value is empty - told by
+      // structure, never by the option's words (records.presave: declared from a source, or asked).
+      if (!o || o.value === '') unset.push(labelOf(f).slice(0, 60));
+    }
     else if (ft === 'checkbox' || ft === 'radio') { if (!f.checked) continue; v = 'checked'; }
-    else v = String(f.value || '');
+    else {
+      v = String(f.value || '');
+      if (v.trim() === '' && (f.getAttribute('role') || '').toLowerCase() === 'combobox') unset.push(labelOf(f).slice(0, 60));
+    }
     if (v.trim() === '') continue;
-    out.push([labelOf(f).slice(0, 60), v.slice(0, 80), ft, (f.getAttribute('autocomplete') || '').toLowerCase()]);
+    // A value is read whole up to __VALUE_CHARS__ characters; a longer one is cut at its last whole word before that and
+    // marked cut, so nothing judges the part as the whole (cut_value; records.presave).
+    let cut = false;
+    if (v.length > __VALUE_CHARS__) {
+      cut = true;
+      v = v.slice(0, __VALUE_CHARS__);
+      const gap = v.search(/\\s\\S*$/);
+      if (gap > __VALUE_CHARS__ / 2) v = v.slice(0, gap);
+    }
+    out.push([labelOf(f).slice(0, 60), v, ft, (f.getAttribute('autocomplete') || '').toLowerCase(), cut]);
   }
   const name = form.getAttribute('aria-label') || form.getAttribute('name') || form.id ||
     ((form.querySelector('legend, h1, h2, h3') || {}).textContent || '').trim() || 'the form';
   const control = enter ? submitControl : b;
   const submit = ((control && (control.getAttribute('aria-label') || control.textContent || control.value)) || '').trim();
-  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60)};
-}"""
+  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60), unset: unset};
+}""".replace("__VALUE_CHARS__", str(FORM_VALUE_CHARS))
 
 # A form with fewer filled fields than this (a search box and its button, a sign-in) is sent without the check.
 FORM_CHECK_MIN_FIELDS = 3
@@ -2242,7 +2282,7 @@ def _without_secrets(found):
         return found
     from decurix_agent.computer import privacy
 
-    fields = []
+    fields, cut = [], []
     for item in found.get("fields") or []:
         label, value = (list(item) + ["", ""])[:2]
         kind, autocomplete = (list(item) + ["", "", "", ""])[2:4]
@@ -2253,7 +2293,10 @@ def _without_secrets(found):
             secret = True
         if not secret:
             fields.append([label, value])
-    return dict(found, fields=fields)
+            if len(item) > 4 and item[4]:
+                cut.append(label)  # read in part (FORM_VALUE_CHARS): never judged as the whole value
+    # "cut": the labels whose values were read in part; "unset": choices left in their "no selection" state.
+    return dict(found, fields=fields, cut=cut, unset=[str(u) for u in found.get("unset") or [] if str(u).strip()])
 
 
 # The largest WebSocket frame read from the browser (a screenshot of a large page is a few MB), and how many

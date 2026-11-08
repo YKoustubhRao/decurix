@@ -255,3 +255,12 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   there are refused at the declaration, the save and the final check unless the people's own words give them
   (`records.wordy_identifiers`). A record curl'd to the application's endpoint is never declared or read back: the
   final check holds such a send against the done (`records.sent_around`).
+- **A cut read was judged as the whole value** (2026-11-08, learn-v1 bill 1). The form readers kept a value's first 80
+  characters with no mark (`cdp.FORM_FIELDS`'s `v.slice(0, 80)`, `core._page_fields`, the Enter path), and
+  `records.presave` compared that part with the declared value, so a declared 126-character Notes field was refused at
+  every save ("Notes holds '... Taxable val' where the record says '... Taxable value: 3,600.00; ...'") until the token
+  budget ran out. The same bug as the 80-character cuts of 2026-10-25 (part 5): a reader that cuts must say so. Values
+  are now read whole up to `cdp.FORM_VALUE_CHARS` (600, what approvals quote); a longer one is cut at a word and marked
+  (`found["cut"]`), and presave compares a cut value only as far as it was read (`records._read_in_part`): a part that
+  agrees is undecided and left to the read-back, never "differs". A declared value is never kept cut either
+  (`records.MAX_VALUE`, 4000: longer is refused, not silently cut as at 400).

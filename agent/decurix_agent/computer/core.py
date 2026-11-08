@@ -1981,7 +1981,7 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         # Never sent, with or without --checked, a replay's press too: the person is the one to give the code.
         return f"Not pressed: {el._quote(found['form'], 60)}: " + records.wordy_text(wordy)
     ledger_lines = []
-    judged = _ledger_check(found["fields"])
+    judged = _ledger_check(found["fields"], cut=found.get("cut") or (), unset=found.get("unset") or ())
     if judged is not None:
         held, clean, ledger_lines = judged
         if held:
@@ -2050,20 +2050,28 @@ def _page_fields(observation, element):
     """
 
     group = (element or {}).get("group") or active_group(observation)
-    fields = []
+    fields, cut, unset = [], [], []
     for e in (observation or {}).get("elements") or []:
         if e.get("role") not in FILLED_ROLES or (group and e.get("group") != group) or e is element:
-            continue
-        value = " ".join(str(e.get("value") or "").split())
-        if not value or privacy.secret_field(e) or privacy.credential_in(value) or _FILE_NAME_VALUE.fullmatch(value):
             continue
         if approval.searches(e) or _FILTER_FIELD.match(str(e.get("name") or "")):
             # A list's search box and filters say what is shown, not what a press saves (review 2026-11-03: a list
             # page's filters were checked as the record a "Create" there would save).
             continue
-        fields.append([" ".join(str(e.get("name") or e.get("role") or "").split())[:60], value[:80]])
+        label = " ".join(str(e.get("name") or e.get("role") or "").split())[:60]
+        value = " ".join(str(e.get("value") or "").split())
+        if not value and e.get("role") == "combobox":
+            unset.append(label)  # a choice in its "no selection" state (records.presave), told by structure
+        if not value or privacy.secret_field(e) or privacy.credential_in(value) or _FILE_NAME_VALUE.fullmatch(value):
+            continue
+        # Read whole up to cdp.FORM_VALUE_CHARS, a longer value marked cut: a cut read is never judged as the whole
+        # (found live 2026-11-08: cut at 80 characters, a 126-character field could never be saved).
+        value, part = cdp.cut_value(value)
+        fields.append([label, value])
+        if part:
+            cut.append(label)
     title = (element or {}).get("window_title") or (observation or {}).get("active_title") or "the window"
-    return {"form": str(title)[:80], "fields": fields}
+    return {"form": str(title)[:80], "fields": fields, "cut": cut, "unset": unset}
 
 
 def _commit_keys(keys):
@@ -2126,9 +2134,10 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
         if typed_enter:
             # What the field will hold when its new line submits the form: the text typed before it.
             label = " ".join(str(field.get("name") or field.get("role") or "").split())[:60]
-            line = text.split("\n", 1)[0]
+            line, part = cdp.cut_value(text.split("\n", 1)[0])
             form = dict(form, fields=[f for f in form.get("fields") or [] if f[0] != label]
-                        + ([[label, line[:80]]] if line.strip() and not privacy.secret_field(field) else []))
+                        + ([[label, line]] if line.strip() and not privacy.secret_field(field) else []),
+                        cut=[c for c in form.get("cut") or [] if c != label] + ([label] if part else []))
         submit = {"name": form.get("submit") or "Submit", "ref": "", "path": field.get("path") or ""}
         committing(submit)
         return _form_check(submit, found=form, listing=listing, confirm=(
@@ -2144,11 +2153,13 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
     return ""
 
 
-def _ledger_check(form_fields):
+def _ledger_check(form_fields, cut=(), unset=()):
     """
     The declared record (records.py) against the form about to be saved: None when no record is open; else
     (what stops the click or "", whether the diff is clean enough to save without a listing, advisory lines). A field
     holding a value the record does not stops the click; the record's scope absent from the window stops it once.
+    cut: the form's labels whose values were read in part (cdp.FORM_VALUE_CHARS); unset: its choices left in their
+    "no selection" state (records.presave).
     """
 
     from decurix_agent import task_context
@@ -2169,7 +2180,7 @@ def _ledger_check(form_fields):
         if done is not None and _new_record_fields(events)[1]:
             return ("Not pressed: " + records.saved_again_text(done), False, [])
         return None
-    blocking, advisory, matched = records.presave(rec, form_fields)
+    blocking, advisory, matched = records.presave(rec, form_fields, cut=cut, unset=unset)
     # A field this task set on the form that the record does not declare: its value has no source on record. ADVISORY
     # at the save until it passes the replay gate (records.UNDECLARED_FIELD_BLOCKS); the final check holds it against
     # the saved record (records.gate_faults) - review round 9, A.
@@ -2194,7 +2205,8 @@ def _ledger_check(form_fields):
                         "right and only worded otherwise, save again.", False, [])
             advisory.append(f"the window does not show the scope words {', '.join(missing)}")
     try:
-        records.note_presave(rec, blocking, undeclared=undeclared)
+        records.note_presave(rec, blocking, undeclared=undeclared,
+                             unset=records.undeclared_unset(rec, unset))
     except Exception:  # noqa: BLE001
         pass
     if blocking:

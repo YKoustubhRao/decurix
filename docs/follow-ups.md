@@ -81,9 +81,11 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **The X-6 test** calls `_pause` directly; it should drive `_prepare`/`_execute`.
 - **The ledger:** withholding runs on every save rather than once (fails closed); done: only a parse error moves the ledger aside; an `OSError` is retried four times with backoff, then the save fails loudly and leaves the file (`long_task._ledger_io`).
 - **A stale "filled from" note** could add a block for a reused output path (fc0849c).
-- **An all-capitals request** hides the client's own facts (fails closed).
+- **Done 2026-11-08 (uncommitted): an all-capitals request** no longer hides the client's own facts: `memory_context.names_whole` reads a capital as continuing a name only on a line that writes small letters too (a line wholly in capitals has no case, like one all in small letters).
 - **Done: an IBAN** with an unknown country and a valid mod-97 is reported "IBAN NOT CHECKED" among the unchecked payments (`payees._is_iban` answers None).
-- **A second note on the same value** overwrites `OTHER_SIGN`.
+- **Done 2026-11-08 (uncommitted): a second note on the same value** no longer overwrites `OTHER_SIGN`: `binding._clean`
+  keeps every harness note on a value whole (`OTHER_SIGN`, `NUMBERED`, `WORKED`), joined, beside the model's own words
+  cut short, so no cut takes the end of a mark the final check looks for.
 - **Done: `false_sums`** skips a range of numbered things and its count ("Rows 2 - 10 = 9.", `values.range_count`, by structure); "200 - 350 = 150" is still a wrong sum.
 - **X-6 for TheBot:** an optional structured secret marker on HELP.
 - **Done 2026-11-07: the legacy harnesses** are deleted (O-4).
@@ -168,11 +170,15 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
   `py.approval.read` read by the agent: 14) is a `caller: soul` row with its purpose and a line in soul's trace, one
   for one; the gate's two `py.approval.read` went straight to the proxy as `caller: gate` (with no task tag); no
   `caller: agent` row; `untagged: 0`.
-- **Open, found here:** a one-digit percent cannot be declared. `gui record ... "Rate": "5%"` from a note saying
+- **Done 2026-11-08 (uncommitted), found here:** a one-digit percent could not be declared. `gui record ... "Rate": "5%"` from a note saying
   "rate 5%." is refused as not in the source, every time (the worker tried for 30 turns): `records.stands_in` gets None
   from `values.parse_number("5%")` and the text key "5" is under its two-character floor; "18%" passes only as an
   identifier. A fix belongs in `records.stands_in` (a figure with a unit stands where the text writes that figure
-  with that unit), not yet made because that file was being changed in parallel.
+  with that unit), not yet made because that file was being changed in parallel. Now `records.stands_in` takes a
+  figure written with its unit as standing where `values.units_beside` finds that figure with that same unit ("5%"
+  in "rate 5%.", "5 kg" in "Weight: 5 kg"); `values.parse_amount` already read a percent of any length, and
+  `parse_number` stays unit-less on purpose (a bare 5 would then stand for "5%"). A bare one-digit figure is still
+  never found inside another figure.
 
 ## Live checks after the next build
 
@@ -420,6 +426,16 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     (the command guard stays frozen); such a save can never be reported done, and the real fix is the egress proxy in
     O-1's broker plan. `skill_task._ledger_why` names both new kinds. Owed: the next live learn-v1 run, to see bill 4
     end asking. The reconciliation half met the bar (674k tokens then about 110k, no question after the lesson).
+  - **Bill 1's budget, diagnosed 2026-11-08 (`eeb05dd4a201cecda`):** the save was refused at every try because the form
+    readers cut values at 80 characters and presave judged the part as the whole (a 126-character Notes field); the
+    worker went round declaring, typing, curl and the dev tools until the budget ran out, and the Cost centre select,
+    left at its empty first option, was never seen by presave. **Fixed:** values read whole up to 600 characters, a
+    longer one marked cut and compared only as far as it was read (a gotcha, part 6); a choice left unset that the
+    record does not declare is a point at the save; the operator ends a refusal repeated three times on an unchanged
+    form with a question naming the field ([harnesses.md](harnesses.md)). **Owed:** `records.UNSET_CHOICE_BLOCKS` is
+    ADVISORY. It becomes blocking only by its own entry here, after it passes the replay gate
+    (`agent/tests/test_replay_gate.py`, a fixture with a correctly saved record whose form has an optional choice left
+    unset must meet no blocking point) and a clean live learn-v1 round in which no correct save met it.
   - Runner notes: a run started within 90 s of another's desktops could be refused its desktop on memory reservations
     (fixed by the per-desktop reservation only for a restart; a new arm's desktop still counts the last arm's for 90 s),
     and once an arm's agent never became ready in 4 minutes while tests ran beside it on the host (a retry passed).
@@ -484,13 +500,21 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 
 ## Phase 2: Python agent, review round 2
 
-- **Comparators still outside `values.py`** (known divergences, each to move as its area is next touched):
-  - `long_task._same_value` / `_scalar` (`long_task.py`, a kept cell's value): its own date logic reads `a > 12` as day
-    first even under MM/DD, and compares numbers within their written precision (a deliberate tolerance for a cell and
-    its computed value).
-  - `provenance.fact_value` / `same_figure` (`provenance.py`): figures within the coarser precision, and an ambiguous
-    date with no convention compared as written.
-  - `stage_facts`: amounts as floats (`round(..., 2)`, `abs(...) <= 0.011`).
+- **Done 2026-11-08 (uncommitted): the comparators outside `values.py`** ask it now.
+  - Dates: `stage_checks._scalar` (a kept cell) and `provenance.fact_value` read dates by `values.parse_date` under
+    the request's order, so a first part over 12 is no date under MM/DD (not decided, so a kept cell is "changed"
+    and a fact is compared as written), and an ambiguous date with no order is the same only as written.
+  - Numbers: one precision rule, `values.within_precision` (half the coarser written place, a float's 1e-6 noise
+    aside), reached as `values.compare(..., precision=True)` and `values.same_figure(a, b, precision, a_computed)`.
+    A kept cell against its computed value and a fact against a rounded figure keep it (deliberate); a computed
+    value (`a_computed`: a product, a sum, a formula's result) claims no precision, so only the written side's
+    counts (a result written 1392 is 1392.4 rounded, one written 1392.04 is not); two computed values, or two
+    figures each read as written in `stage_facts` (a row's stated amount against its working's cells, a message's
+    amounts, a source's price), are equal only (noise aside). Gone: provenance's extra 0.005 (10.00 and 10.01 were
+    one figure) and stage_facts' 0.011 and float rounding (`removed_residue` sums in Decimal, compared noise aside).
+  - Separators that read two ways ("12,5") are no figure in `provenance.fact_value` either (it read 12).
+  - Left as is: provenance's scale words (lakh, crore, a declared unit), which `values` does not read; `sources.
+    _same_figure`, not in this list.
 - **Done: every request and reply names its execution** (`execution_id`, H-PY-7: 0f82aad). Teach, replay and
   run-skill send it too (a498b96), and the agent keeps it on those doors as on `/request` (H-CP-10, cc96751).
 - **A run open or paused for days is not held** before it has a label: `evidence._prune` can take its notes after 2
@@ -553,9 +577,12 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   - Not done from REVIEW-PY-A-2's nits: `core._shown_by_app` still takes the application's value from any observation,
     not only one before the worker's first input on that form; `skill_task._correct` still reads the reply's
     judgement and secret flag from globals.
-  - `resend_learned` can post a line twice when two threads read it at once (no client id for the control plane to
-    dedupe on).
-  - The gate's nonces are in memory: after a gate restart a signed body still within its 120 s window replays (the
-    worker cannot capture the traffic: NET_RAW is dropped). Said in gate-boundary.md.
+  - Done 2026-11-08 (uncommitted): `resend_learned` is single-flight (a call while one runs asks it for one more pass
+    and returns), and each learned line carries its own `client_id` (32 hex), the same on every try; the control plane
+    answers a line already kept under that id with that row (200), under a mutex with its write (`learned.go`
+    `keptLearned`). A line with no id (an older desktop) is kept as before.
+  - Done 2026-11-08 (uncommitted): the gate's nonces are kept in its own directory (`gate-nonces.json`, 0600, written
+    whole, loaded at start, pruned on expiry; `gate_server.use_nonce_store`), so a signed body seen before a gate
+    restart is refused after it. Said in gate-boundary.md.
   - Done: soul's step text (`Running: gui type e3 "<value>"`) withholds a job's secret values in every written form
     the agent's `approval.written_forms` gives (H-PY-9, 99d7962).
