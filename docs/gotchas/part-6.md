@@ -307,3 +307,9 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   once sent their counts in either order and the helper could be left told 0 with a person watching: its capture stops
   and their screen freezes. The count and its send are one step now (`viewersSend`). A count, a state or a version sent
   to another process after its lock is released can arrive stale; send it under a lock of its own.
+- **A learned method kept the plan's first idea of the output and only the plan question's answer** (2026-11-08, an eval
+  run's third repeat of a reconciliation). The plan's question got "I don't know"; the layout (a CSV, one row per
+  statement line) came in answer to a later question; the method kept the plan's workbook and the "don't know", and
+  the next task of the kind wrote the workbook, asked nothing, and was passed. A method keeps every answer of the run
+  with its question, and offers them as holding over its plan where they differ (`methods.keep`,
+  `guidance.exchanges_this_task`).

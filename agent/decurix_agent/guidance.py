@@ -101,6 +101,15 @@ _exchanges = {"task": None, "said": []}
 MAX_EXCHANGES = 12
 
 
+def exchanges_this_task():
+    """[(asked, reply)]: the questions put to the person in the task being worked on, each with their reply, oldest
+    first (note_exchange; [] for another task's)."""
+
+    if _exchanges["task"] != task_context.current():
+        return []
+    return list(_exchanges["said"])
+
+
 def note_exchange(asked, reply, judgement_id="", secret=False):
     """
     Keep one question of this task with the person's reply, for the final check (said_this_task), and on disk for the

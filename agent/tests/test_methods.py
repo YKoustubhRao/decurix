@@ -64,6 +64,24 @@ class Methods(unittest.TestCase):
                       'person answered: "I don\'t know that, so I can\'t give it to you."', said)
         self.assertNotIn("The person said about this plan", said)
 
+    def test_every_answer_of_the_run_is_kept_and_holds_over_the_plan(self):
+        # Found live (2026-11-08): the plan's question got "I don't know", the layout came in answer to a later
+        # question, and the method kept only the first - so the next task of the kind wrote the plan's file and asked
+        # nothing.
+        from decurix_agent import guidance
+        later = [("I cannot lay it out without knowing the layout you want. Which layout?",
+                  "Our usual layout: recon.csv with date,amount,ledger_ref, one row per statement line.")]
+        with mock.patch.object(guidance, "exchanges_this_task", return_value=later):
+            methods.note_job(job_with(dict(PLAN, ask="OK to go ahead as planned?", personSaid="I don't know that.")))
+            methods.keep("File Udupi Traders' September return on the portal from their workbook")
+        said = methods.context("File Karavali Stores' October return on the portal from their workbook")
+        self.assertIn("where an answer differs from the plan above - what it writes, how it is laid out - the answer "
+                      "holds", said)
+        self.assertIn('Asked on an earlier run: "OK to go ahead as planned?" - the person answered: "I don\'t know that."',
+                      said)
+        self.assertIn("recon.csv with date,amount,ledger_ref, one row per statement line.", said)
+        self.assertLess(said.index("I don't know that"), said.index("recon.csv"))
+
     def test_an_answer_kept_before_questions_were_kept_still_reads(self):
         methods.note_job(job_with(PLAN))
         methods.keep("File Udupi Traders' September return on the portal from their workbook")

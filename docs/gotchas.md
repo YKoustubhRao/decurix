@@ -993,3 +993,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A reply carried without its question read as the person's standing word, and a sent-back job lost every reply
 - [part-6.md](gotchas/part-6.md): The final check imposed its own idea of the work over the person's taught rule, and the worker obeyed it: a false done
 - [part-6.md](gotchas/part-6.md): A host app's viewer count could reach its helper out of order
+- [part-6.md](gotchas/part-6.md): A learned method kept the plan's first idea of the output and only the plan question's answer
