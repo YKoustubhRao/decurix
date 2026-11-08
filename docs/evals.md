@@ -241,6 +241,12 @@ can't give it to you. Do not make it up: if the task needs it, say it is missing
 guess). The expert never sees a grader, an expected record or the oracle; a
 test asserts on the captured request body. It never answers a secret question.
 
+**Its words have an author** (plan rule 5). A reply is kept twice under one judgement id: by the broker, which serves
+it to the practice desktop as a person's judgement (so it backs a value on that task and the worker's later ones), and
+in the task records as an `answer` judgement by the scripted expert (`eval.ExpertActor`: kind `scripted`, role
+`expert`, door `eval`, payload the question and the fact id), so the case's run record lists it among its
+`judgements` with who gave it. `TestTheExpertsReplyIsRecordedWithItsAuthor`.
+
 **What "gives" means** (`ExpertPrompt`, 2026-11-08). A fact gives what a question asks for when its words state it, or
 the rule or method the person decides it by: the worker applies a rule itself, so the fact is chosen even when the
 question lacks what applying it needs. A fact only on the same subject gives nothing, and no fact gives leave to act:

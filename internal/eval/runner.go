@@ -954,6 +954,30 @@ func (s *Service) readLedger(ctx context.Context, d desktop.PracticeDesktop, tas
 	return out
 }
 
+// ExpertActor is the scripted expert as the task records keep its words: a scripted actor, standing in for a person on
+// a practice desktop (tasks.ActorScripted), with the role the broker serves it under.
+var ExpertActor = tasks.Actor{ID: "eval-expert", Name: "The eval's scripted expert", Roles: []string{"expert"}, Kind: tasks.ActorScripted}
+
+// judgementAdder is the task store's AddJudgement, when the runner's task records have one.
+type judgementAdder interface {
+	AddJudgement(j tasks.Judgement) (string, error)
+}
+
+// recordExpertReply keeps the expert's reply to a question in the task records as an answer judgement, under the id
+// the broker serves it by, so the case's run record names its author (plan rule 5: every human input has one) and
+// which fact it gave. A record that fails is logged: the reply itself was already kept and is sent.
+func (s *Service) recordExpertReply(id, workerID, taskID, question string, asked Asked) {
+	adder, ok := s.Tasks.(judgementAdder)
+	if !ok || s.Tasks == nil {
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{"asked": clipText(question, 2000), "fact": asked.Fact})
+	if _, err := adder.AddJudgement(tasks.Judgement{ID: id, Actor: ExpertActor, Door: "eval", Kind: tasks.JudgementAnswer,
+		WorkerID: workerID, TaskID: taskID, Text: asked.Reply, Payload: payload}); err != nil {
+		log.Printf("eval: recording the expert's reply on %s: %v", taskID, err)
+	}
+}
+
 // pullBundle pulls a case's bundle (its recording, ledger, notes, soul trace) off the practice desktop before the next
 // case resets it, and returns the execution id its trajectory is served by: for a model arm, and for the oracle, whose
 // steps run as the worker under the case's task id (its gui and office steps record as a worker's do). The nothing
@@ -1016,6 +1040,7 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				body := map[string]string{"content": asked.Reply, "task_id": taskID}
 				if id := s.Broker.KeepReply(taskID, o.Text, asked.Reply); id != "" {
 					body["judgement_id"] = id
+					s.recordExpertReply(id, desktopID, taskID, o.Text, asked)
 				}
 				if err := s.post(desktop.WithGateNotice(ctx, practice.ReplyGateNotice(taskID, asked.Reply, o.Text, o.Secret)), d, "/request", body); err != nil {
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text

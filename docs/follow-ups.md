@@ -488,8 +488,9 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     3), the worker saved the bill outside the ledger with `--checked`, then declared it twice under two keys after the
     save; neither was saved, and the final check rightly held a record no declaration covers. No fix to that check;
     with the causes above the declaration passes before the save. **Owed:** the next live learn-v1 run, to see bills
-    3 and 4 end done without asking the rule again; the expert's replies are still not in the run record's
-    `judgements` (the broker keeps them in memory only).
+    3 and 4 end done without asking the rule again. (Done 2026-11-08: the expert's replies are in the task records as
+    answer judgements authored by the scripted expert, `eval.ExpertActor`, under the id the worker is sent, so the run
+    record's `judgements` names them; `TestTheExpertsReplyIsRecordedWithItsAuthor`.)
   - **Rerun on today's fixes, in progress 2026-11-08:** images rebuilt from ac20e00 (`decurix-desktop:basic`, `:next`,
     `:developer`, `:ai` = a8edcd908964; `decurix-tools` unchanged, 28170e9f7e03); dev control plane `decurix-dev`
     restarted on a binary from ac20e00 (sha256 5939e84a...), volume `decurix-dev-data` kept, brain Kimi-K2.6 set.
