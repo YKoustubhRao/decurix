@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import test_skills as ts
 
-from decurix_agent import guidance, playbooks, procedures, produced, skill_task, source_guard, state, verify
+from decurix_agent import final_gate, guidance, playbooks, procedures, produced, skill_task, source_guard, state, verify
 from decurix_agent.computer import evidence
 
 
@@ -43,7 +43,7 @@ class _Reports(ts.TeachingBase):
         self.made = ["/work/result.xlsx"]
         for patch in (mock.patch.object(skill_task.verify, "available", lambda: True),
                       mock.patch.object(skill_task.verify, "judge", judge),
-                      mock.patch.object(skill_task, "_did_screen_work", lambda: False),
+                      mock.patch.object(final_gate, "_did_screen_work", lambda: False),
                       mock.patch.object(skill_task.produced, "files", lambda report="", **kw: list(self.made)),
                       mock.patch.object(skill_task.produced, "text", lambda paths, focus=(): "A7='a row'"),
                       mock.patch.object(skill_task.produced, "missing_on_host", lambda request: ""),
@@ -101,7 +101,7 @@ class AnAnswerIsCheckedOrSaidNotChecked(ts.TeachingBase):
             mock.patch.object(skill_task, "write_final_reply",
                               lambda text, kind="final", engine=None, **kw: self.reports.append(dict(kw, kind=kind,
                                                                                                      text=text))),
-            mock.patch.object(skill_task, "_did_screen_work", lambda: False),
+            mock.patch.object(final_gate, "_did_screen_work", lambda: False),
             mock.patch.object(produced, "files", lambda *a, **k: []),
             mock.patch.object(produced, "drafts", lambda *a, **k: []),
             mock.patch.object(produced, "drafts_text", lambda *a, **k: ""),
@@ -112,7 +112,7 @@ class AnAnswerIsCheckedOrSaidNotChecked(ts.TeachingBase):
             mock.patch.object(playbooks, "changed_things", lambda *a, **k: []),
             mock.patch.object(evidence, "observed", lambda *a, **k: list(self.observed)),
             mock.patch.object(evidence, "files_read", lambda *a, **k: list(self.read)),
-            mock.patch.object(skill_task, "_commands_text", lambda: ""),
+            mock.patch.object(final_gate, "_commands_text", lambda: ""),
             mock.patch.object(skill_task.verify, "available", lambda: True),
             mock.patch.object(skill_task.verify, "judge",
                               lambda *a, **k: (self.judged.append(k), verdict(verify.DONE, seen="the ledger says so"))[1]),

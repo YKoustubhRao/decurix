@@ -11,7 +11,7 @@ from unittest import mock
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 
-from decurix_agent import playbooks, produced, skill_task, tool_task, verify
+from decurix_agent import final_gate, playbooks, produced, skill_task, tool_task, verify
 from decurix_agent.computer import approval, core
 
 
@@ -163,14 +163,14 @@ class ShellOnlyWork(unittest.TestCase):
 
     def test_the_gate_takes_a_task_whose_commands_changed_things(self):
         with mock.patch.object(skill_task.guidance, "get", lambda: None), \
-                mock.patch.object(skill_task, "_did_screen_work", lambda: False), \
+                mock.patch.object(final_gate, "_did_screen_work", lambda: False), \
                 mock.patch.object(skill_task.produced, "files", lambda *a, **k: []), \
                 mock.patch.object(skill_task.produced, "drafts", lambda: []), \
-                mock.patch.object(skill_task.procedures, "in_request", lambda t: False), \
+                mock.patch.object(final_gate.procedures, "in_request", lambda t: False), \
                 mock.patch.object(skill_task.produced, "requested_names", lambda t: []):
             said = []
             # Nothing changed and nothing read: not judged, and sent said NOT checked (E-02/T-01, review 2026-11-03).
-            with mock.patch.object(playbooks, "changed_things", lambda commands=None: []),                     mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []),                     mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []),                     mock.patch.object(skill_task, "_commands_text", lambda: ""),                     mock.patch.object(skill_task, "write_final_reply", lambda text, **k: said.append((text, k))):
+            with mock.patch.object(playbooks, "changed_things", lambda commands=None: []),                     mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []),                     mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []),                     mock.patch.object(final_gate, "_commands_text", lambda: ""),                     mock.patch.object(skill_task, "write_final_reply", lambda text, **k: said.append((text, k))):
                 self.assertTrue(skill_task._gate("Done.", "final", "thebot"))
             self.assertTrue(said[-1][0].startswith(skill_task.UNCHECKED_ANSWER))
             self.assertIs(said[-1][1].get("checked"), False)

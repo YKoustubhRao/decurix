@@ -4,7 +4,7 @@ from unittest.mock import patch
 import config_stub  # noqa: F401  (first: a task file of this test process's own)
 from temp_case import TempDirCase
 
-from decurix_agent import guidance, lessons, skill_task, state
+from decurix_agent import engine_questions, guidance, lessons, skill_task, state
 
 
 class _Memory(TempDirCase):
@@ -173,11 +173,11 @@ class TestAnsweringFromLessons(_Memory):
             return self.answer
 
         skill_task._self_answered.update(task=None, count=0)
-        for p in (patch.object(skill_task.study, "_call", gate_call),
+        for p in (patch.object(engine_questions.study, "_call", gate_call),
                   patch.object(skill_task.llm_client, "available", lambda: True),
                   patch.object(skill_task.progress, "emit", lambda text: None),
                   patch.object(skill_task.task_context, "current", lambda: "t1"),
-                  patch.object(skill_task.threading, "Thread",
+                  patch.object(engine_questions.threading, "Thread",
                                lambda target, args, daemon: unittest.mock.Mock(start=lambda: self.told.append(args[0]))),
                   patch.object(state, "paused_skill", None), patch.object(state, "paused_replay", None)):
             p.start()

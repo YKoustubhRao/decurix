@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from decurix_agent import skill_task
+from decurix_agent import final_gate, skill_task
 from decurix_agent.computer import approval
 
 
@@ -108,7 +108,7 @@ class ADoneThatIsNotDone(unittest.TestCase):
         with mock.patch.object(skill_task.approval, "read_choice",
                                return_value={"choice": "correction", "instruction": "fix the total"}), \
                 mock.patch.object(skill_task, "_engine_can_drive", return_value=True), \
-                mock.patch.object(skill_task, "_retry_engine") as retry, \
+                mock.patch.object(final_gate, "_retry_engine") as retry, \
                 mock.patch.object(skill_task, "write_final_reply") as final:
             skill_task._confirm_reply(paused, "correct except the total, fix that")
         final.assert_not_called()

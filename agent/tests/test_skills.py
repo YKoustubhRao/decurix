@@ -23,7 +23,7 @@ from unittest import mock
 # Imported first: it stubs decurix_agent.config on a machine with no desktop.
 from test_recordings import FakeScreen, event, field
 
-from decurix_agent import http_api, playbooks, skill_task, state
+from decurix_agent import http_api, playbooks, skill_task, state, teaching
 from decurix_agent.computer import cli, learning, recording, replay, skill_engine, skills
 
 
@@ -382,10 +382,10 @@ class LearnedMemoryDispatch(unittest.TestCase):
             release.wait(timeout=2)
 
         def launch():
-            skill_task._remember_async({"name": "saved-skill"})
+            teaching._remember_async({"name": "saved-skill"})
             returned.set()
 
-        with mock.patch.object(skill_task, "_remember", slow_memory):
+        with mock.patch.object(teaching, "_remember", slow_memory):
             caller = threading.Thread(target=launch)
             caller.start()
             try:
@@ -416,8 +416,8 @@ class TeachingBase(unittest.TestCase):
             # The Outbox's log is this test's own: another test's drafts under the same task id are not this task's
             # work (review round 3: a gate test read them and sent correct work back).
             mock.patch.object(outbox, "DRAFTS_DIR", Path(self.tmp.name) / "drafts"),
-            mock.patch.object(skill_task, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
-            mock.patch.object(skill_task, "_remember_async", lambda skill: skill_task._remember(skill)),
+            mock.patch.object(teaching, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
+            mock.patch.object(teaching, "_remember_async", lambda skill: teaching._remember(skill)),
             mock.patch.object(skill_task, "ask_for_query", self._ask_for_query),
             mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None, **kw: self.finals.append((text, kind))),
             mock.patch.object(skill_task.usage, "add"),

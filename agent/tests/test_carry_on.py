@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from decurix_agent import skill_task
+from decurix_agent import engine_questions, skill_task
 
 
 # Found live (2026-10-21): an engine that ran out of steps with three of eight invoices saved asked the person to
@@ -15,7 +15,7 @@ class TestAnEngineThatRanOutOfStepsCarriesOn(unittest.TestCase):
         for patcher in (mock.patch.object(skill_task.task_context, "current", return_value="t9"),
                         mock.patch.object(skill_task.task_context, "current_stage", return_value=("", 0)),
                         mock.patch.object(skill_task.progress, "emit"),
-                        mock.patch.object(skill_task.threading, "Thread")):
+                        mock.patch.object(engine_questions.threading, "Thread")):
             patcher.start()
             self.addCleanup(patcher.stop)
 

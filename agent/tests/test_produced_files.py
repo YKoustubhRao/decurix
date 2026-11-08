@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import test_skills as ts
 from test_apprentice import verdict
 
-from decurix_agent import guidance, produced, skill_task, state, verify
+from decurix_agent import final_gate, guidance, produced, skill_task, state, verify
 
 
 def write(path, text="x", age=0):
@@ -111,7 +111,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.made = ["/work/result.xlsx"]
         for patch in (mock.patch.object(skill_task.verify, "available", lambda: True),
                       mock.patch.object(skill_task.verify, "judge", judge),
-                      mock.patch.object(skill_task, "_did_screen_work", lambda: False),
+                      mock.patch.object(final_gate, "_did_screen_work", lambda: False),
                       mock.patch.object(skill_task.produced, "files", lambda report="", **kw: list(self.made)),
                       mock.patch.object(skill_task.produced, "text", lambda paths, focus=(): "A7='only in the first list'"),
                       mock.patch.object(skill_task, "_engine_can_drive", lambda: False)):
@@ -195,7 +195,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.made = []
         with mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []), \
                 mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []), \
-                mock.patch.object(skill_task, "_commands_text", lambda: ""):
+                mock.patch.object(final_gate, "_commands_text", lambda: ""):
             self.assertTrue(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
         self.assertEqual(self.judged, [])
         self.assertTrue(self.finals[-1][0].startswith(skill_task.UNCHECKED_ANSWER))
@@ -208,7 +208,7 @@ class FileWorkIsChecked(ts.TeachingBase):
     def test_a_person_s_recording_is_not_judged_even_though_it_is_all_screen_work(self):
         # Found live: a ticket ended with the form not yet saved was judged "not done" and handed to the engine,
         # which started typing into the person's form.
-        with mock.patch.object(skill_task, "_did_screen_work", lambda: True), \
+        with mock.patch.object(final_gate, "_did_screen_work", lambda: True), \
                 mock.patch.object(skill_task, "_engine", lambda *a, **k: self.fail("handed to the engine")):
             self.assertFalse(skill_task._gate("Recorded 20 steps of \"Enter this order\".", "final", "human"))
         self.assertEqual(self.judged, [])
@@ -228,7 +228,7 @@ class NoModelAtTheGate(ts.TeachingBase):
         self.addCleanup(guidance.end)
         self.said = []
         for patch in (mock.patch.object(skill_task.verify, "available", lambda: False),
-                      mock.patch.object(skill_task, "_did_screen_work", lambda: False),
+                      mock.patch.object(final_gate, "_did_screen_work", lambda: False),
                       mock.patch.object(skill_task.produced, "files", lambda report="", **kw: ["/work/result.xlsx"]),
                       mock.patch.object(skill_task.produced, "text", lambda paths, focus=(): "A7='Total 1,134.00'"),
                       mock.patch.object(skill_task, "_engine_can_drive", lambda: False),
@@ -457,7 +457,7 @@ class ANewRequestIsNotAnAnswer(ts.TeachingBase):
                   "verdict": verdict(verify.UNSURE, seen="the form is still open")}
         message = "Enter this one too\n\n" + attachments.MARK + "\n  /home/headless/work/inbox/up-1/document_2.pdf"
         with mock.patch.object(skill_task, "_correct", lambda run, text: corrected.append(text)), \
-                mock.patch.object(skill_task, "_retry_engine", lambda *a, **k: corrected.append("retried")):
+                mock.patch.object(final_gate, "_retry_engine", lambda *a, **k: corrected.append("retried")):
             skill_task._confirm_reply(paused, message)
         self.assertEqual(corrected, [])
         self.assertEqual(self.finals[-1][1], "error")
@@ -478,7 +478,7 @@ class AYesThatSaysWhatIsMissing(ts.TeachingBase):
         paused = {"mode": "confirm", "run": None, "claim": "Triaged all six.", "engine": "thebot",
                   "task": "triage the inbox", "verdict": verdict(verify.NOT_DONE, seen="no reply to Rae")}
         with mock.patch.object(skill_task, "_engine_can_drive", lambda: True), \
-                mock.patch.object(skill_task, "_retry_engine", lambda *a, **k: handed.append(a)):
+                mock.patch.object(final_gate, "_retry_engine", lambda *a, **k: handed.append(a)):
             skill_task._confirm_reply(paused, message)
         return handed
 

@@ -16,7 +16,7 @@ import config_stub  # noqa: F401  (first: a task file of this test process's own
 import test_skills as ts
 from test_recordings import event, field
 
-from decurix_agent import guidance, messaging, skill_task, state, study, verify
+from decurix_agent import engine_questions, final_gate, guidance, messaging, skill_task, state, study, verify
 from decurix_agent.computer import cli, evidence, experience, learning, skills
 
 
@@ -71,11 +71,11 @@ class WithTheModel(ts.TeachingBase):
             return self.verdicts.pop(0) if self.verdicts else verdict(verify.UNSURE)
 
         for patch in (mock.patch.object(skill_task, "_engine_can_drive", lambda: True),
-                      mock.patch.object(skill_task, "_did_screen_work", lambda: self.acted_on_screen),
+                      mock.patch.object(final_gate, "_did_screen_work", lambda: self.acted_on_screen),
                       mock.patch.object(skill_task, "_engine", engine),
                       mock.patch.object(skill_task.verify, "judge", judge),
                       mock.patch.object(skill_task.verify, "available", lambda: True),
-                      mock.patch.object(skill_task.study, "available", lambda: False),
+                      mock.patch.object(study, "available", lambda: False),
                       mock.patch.object(skill_task.evidence, "live", lambda scale=1: b"now"),
                       mock.patch.object(skill_task.evidence, "final_frame", lambda skill: None)):
             patch.start()
@@ -266,9 +266,9 @@ class WithTheModel(ts.TeachingBase):
             return lesson_says or {"answered": False}
 
         for patch in (mock.patch.object(skill_task, "_engine", engine),
-                      mock.patch.object(skill_task.study, "_call", call),
+                      mock.patch.object(study, "_call", call),
                       mock.patch.object(skill_task.llm_client, "available", lambda: True),
-                      mock.patch.object(skill_task.threading, "Thread",
+                      mock.patch.object(engine_questions.threading, "Thread",
                                         lambda target, args, daemon: mock.Mock(start=lambda: told.append(args[0])))):
             patch.start()
             self.addCleanup(patch.stop)
@@ -447,11 +447,11 @@ class StudiedLesson(ts.TeachingBase):
             skill["understanding"].setdefault("rules", []).append(f"rule from: {answer}")
             return self.follow_ups.pop(0) if self.follow_ups else ""
 
-        for patch in (mock.patch.object(skill_task.study, "available", lambda: True),
-                      mock.patch.object(skill_task.study, "study",
+        for patch in (mock.patch.object(study, "available", lambda: True),
+                      mock.patch.object(study, "study",
                                         lambda skill: {k: (v.copy() if hasattr(v, "copy") else v)
                                                        for k, v in self.UNDERSTANDING.items()}),
-                      mock.patch.object(skill_task.study, "absorb", absorb)):
+                      mock.patch.object(study, "absorb", absorb)):
             patch.start()
             self.addCleanup(patch.stop)
 
@@ -645,22 +645,22 @@ class AnyScreenTask(ts.TeachingBase):
     def test_a_chat_answer_is_not_checked(self):
         # Not judged - nothing was read to judge it by - and said NOT checked, never sent as a checked result
         # (E-02/T-01, review 2026-11-03).
-        with mock.patch.object(skill_task, "_did_screen_work", lambda: False), \
+        with mock.patch.object(final_gate, "_did_screen_work", lambda: False), \
                 mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []), \
                 mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []), \
-                mock.patch.object(skill_task, "_commands_text", lambda: ""):
+                mock.patch.object(final_gate, "_commands_text", lambda: ""):
             self.assertTrue(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
         self.assertTrue(self.finals[-1][0].startswith(skill_task.UNCHECKED_ANSWER))
 
     def test_screen_work_is_reported_done_only_once_seen(self):
         self.verdicts = [verdict(verify.DONE, seen="Invoice INV-1 shows Approved")]
-        with mock.patch.object(skill_task, "_did_screen_work", lambda: True):
+        with mock.patch.object(final_gate, "_did_screen_work", lambda: True):
             self.assertTrue(skill_task._gate("Approved it.", "final", "thebot"))
         self.assertIn("Checked on the screen: Invoice INV-1 shows Approved", self.finals[-1][0])
 
     def test_screen_work_the_check_doubts_is_asked_about(self):
         self.verdicts = [verdict(verify.NOT_DONE, seen="the approve button is still there")]
-        with mock.patch.object(skill_task, "_did_screen_work", lambda: True):
+        with mock.patch.object(final_gate, "_did_screen_work", lambda: True):
             self.assertTrue(skill_task._gate("Approved it.", "final", "thebot"))
         self.assertEqual(self.finals, [])
         self.assertIn("the approve button is still there", self.asked[-1][0])

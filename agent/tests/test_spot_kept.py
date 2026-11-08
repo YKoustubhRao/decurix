@@ -12,7 +12,7 @@ from unittest import mock
 
 import config_stub  # noqa: F401
 
-from decurix_agent import skill_task, state, verify
+from decurix_agent import final_gate, skill_task, state, verify
 from decurix_agent.computer import experience, replay, skills
 
 
@@ -41,7 +41,7 @@ class TheSpotFailureIsKept(unittest.TestCase):
                 mock.patch.object(skill_task, "_judge", lambda run, claim, note="", purpose="": dict(judged)), \
                 mock.patch.object(skill_task, "_engine_can_drive", lambda: False), \
                 mock.patch.object(skill_task, "ask_for_query", lambda *a, **k: None), \
-                mock.patch.object(skill_task, "_done_reading", lambda reply, seen="": {"choice": "done", "instruction": ""}), \
+                mock.patch.object(final_gate, "_done_reading", lambda reply, seen="": {"choice": "done", "instruction": ""}), \
                 mock.patch.object(skill_task, "_read_back", lambda run, text: ([], [])), \
                 mock.patch.object(skill_task, "_own_run"), \
                 mock.patch.object(skill_task.experience, "commit", lambda *a, **k: []), \

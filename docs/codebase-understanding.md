@@ -105,7 +105,7 @@ Windows applications run on a private native desktop through `internal/winhost` 
 
 `computer/records.py` tracks declared record intent, identifiers, field values, sources, and save/readback status. `resolve.py` helps match an intended party or item to the application's actual entry. Form checks resist mismatched records, filler values, and duplicate or crossed work. Several checks depend on label and text matching; some findings are advisory or uncertain. This is a useful enforcement layer, not a complete proof of business correctness.
 
-`skill_task._gate`, `verify.py`, `produced.py`, `source_guard.py`, and staged checks combine deterministic facts with model judgment. They examine such matters as:
+`final_gate._gate`, `verify.py`, `produced.py`, `source_guard.py`, and staged checks combine deterministic facts with model judgment. They examine such matters as:
 
 - Requested files actually existing in the requested location and having the right underlying format.
 - Source originals staying unchanged, with restoration where the shared-source guard applies.
