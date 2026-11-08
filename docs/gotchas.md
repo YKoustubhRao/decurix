@@ -985,3 +985,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A carry-state eval sent the next case's request into the earlier case's open question
 - [part-6.md](gotchas/part-6.md): A locked xfce4-panel still starts programs
 - [part-6.md](gotchas/part-6.md): Words in a record's number field were "backed" because the document printed them there
+- [part-6.md](gotchas/part-6.md): In broker mode the save path's question stayed with the screen user

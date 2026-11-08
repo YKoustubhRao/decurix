@@ -255,9 +255,11 @@ watcher waits up to 45 s for that settlement (`approval.resolve_reply`, the gate
 (`gate-secrets.json`, per task) and `computer/approval.json` are 0600 files in the gate's directory, beside `key` and
 `gate.log`, each written whole (a temporary file of the writer's, flushed, then put in place; approval.json since
 2026-11-07, before which it was written with the process's umask). A grant there lasts at most 15 minutes. What a reply settled is kept in memory for 10
-minutes, for the agent or TheBot to take once. The nonces it has seen are kept in memory only,
-for twice the 120 s window a signed body is accepted in. So after a gate restart, a body signed less than 120 s before
-can be replayed once more. The worker cannot capture one: `NET_RAW` is dropped.
+minutes, for the agent or TheBot to take once. The nonces it has seen are kept for twice the 120 s window a signed
+body is accepted in, in memory and in `gate-nonces.json` (0600, written whole on each new nonce, read back at start
+with those past their expiry dropped; `gate_server.use_nonce_store`, 2026-11-08). So a body seen before a gate restart
+is refused after it. A nonce that cannot be written refuses its body; a store that cannot be read at start refuses
+every body signed before that start (what it held is unknown) and is written over at the next nonce.
 
 **The gated listener** forwards no soul route but `GET /agent/<id>/api/health` (`httpapi.gatedAgentRoutes`). A
 phone or the tunnel cannot drive the worker through soul.
@@ -452,8 +454,9 @@ containers, and a desktop the real control plane made - see "Checked on a deskto
     worker's state (`gui_client.caller_context`): the task file's parts (the task, its stage, request, files, the task's
     secret values and resume copies), `withheld-secrets`, a few state files a screen command reads (`active-task.json`,
     `filled-documents.json`, `opened-files.json`, the worker mode, the guided run), the current task's evidence so far
-    (`computer/evidence/<task>.*`) and its recording's `meta.json`, and the worker's launchers (its desktop's and menu's
-    `.desktop` files). The broker's child writes them into the screen user's own folders before the command runs
+    (`computer/evidence/<task>.*`), its recording's `meta.json` and its run context (`runs/<task>/context.json`), and
+    the worker's launchers (its desktop's and menu's `.desktop` files). The broker's child writes them into the screen
+    user's own folders before the command runs
     (`broker.take_context`: the task file's parts in `/run/decurix-screen/caller`, 0700, tmpfs like the worker's own;
     the rest under its `DECURIX_DIR`; the launchers under `~/caller-launchers`, the screen side's `launchers.PLACES`),
     and removes a part the worker no longer has. So the screen side knows the task (evidence is keyed by it; the
@@ -463,7 +466,14 @@ containers, and a desktop the real control plane made - see "Checked on a deskto
     so already withheld; a recording's frames and an observation's blob) is written in its own folder as before and
     also handed back over the command's connection (`broker.mirror`, an O frame flagged STATE, appends as appends);
     the client writes it as the worker under the worker's own `DECURIX_DIR` (`gui_client.save_state`: a relative path
-    of plain parts, in those two roots only, 0644/0755 at most whatever the caller's umask). A demonstration's recorder
+    of plain parts, in those two roots only, 0644/0755 at most whatever the caller's umask). The run context goes both
+    ways too (`gui_client.mirrored`: that one file of a task's run folder, written 0600): the save path reads the org's
+    date order and the reply's judgement there and keeps there the question it waits on (a date's order, a field's
+    unit), which the agent asks the person from. Found live (2026-11-08): it stayed in the screen user's copy, so the
+    save said "the agent asks them itself" and the person got the engine's own unnumbered question instead; with the
+    context handed back the numbered unit question went out, its "1" was kept as a `field_unit` row, and the next task
+    saved the same field unasked. A write of the worker's to that file while a command runs is lost to the copy the
+    command hands back (the window is the command's). A demonstration's recorder
     has no caller of its own, so at its stop (or `recover`) the whole recording is handed back (`broker.mirror_tree`).
     Every reader (the agent's checks, the run record, the control plane's puller) finds them where it does today.
     Checked live: a task's recording (meta, events, frames, observations), its evidence notes and a demonstration

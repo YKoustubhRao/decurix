@@ -81,6 +81,11 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **Check copies of host files go in a folder per task and per full path** (E-31). Two files with the same name in two folders were one copy.
 - **Every write of desktop state goes through `privacy.write_scrubbed`** (phase 2, round 3). `test_writers_withhold` forbids every other way of writing a file in the agent's package outside a short list. A new writer either calls `write_scrubbed` (`shapes=False` for a store whose values are compared later) or is added to the list with its reason and its forms.
 - **Withholding by shape breaks machine state** (phase 2, round 3). When the writers first went through `write_scrubbed`, 185 tests failed: shape withholding read a workflow checkpoint's `"claim_token": "..."` as a token and withheld it, so every stage failed "requires its current claim token". A text pass over dumped JSON also took a quote along with a `"password": "..."` value and broke the line. Write JSON as an object (withheld string by string), and use `shapes=False` for stores of ids, tokens and compared values.
+- **In broker mode the save path's question stayed with the screen user** (2026-11-08, live). The save runs in the
+  screen broker as `decurixscreen`, whose `DECURIX_DIR` is its own: `unit_answers.ask` kept the unit question in that
+  side's `runs/<task>/context.json`, the agent (the worker) never saw it, and the person got the engine's own
+  unnumbered question, whose reply backs nothing. Any state the screen side writes for the worker must be in the
+  caller route both ways (`gui_client.TASK_STATE`, `gui_client.mirrored`); a new kind of it needs its entry there.
 
 ## TheBot
 
