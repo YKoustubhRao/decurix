@@ -267,7 +267,7 @@ Writes CODE_MAP.md at the repository root from every tracked file's own header c
 - `test_atspi_resolve.py`: An AT-SPI element is found again by its index path only when the accessible there is still the one looked at: the same role, its own name and its process.
 - `test_attachment_archives.py`: A .zip attached to a request is a folder of files: unpacked beside itself with its folders, and the request then names the files it holds.
 - `test_attachment_originals.py`
-- `test_attachments.py`: Files attached to a request or a ticket: what a request's words are, which files a ticket keeps with its recording (also once a broker-mode recording is handed back whole), and th…
+- `test_attachments.py`
 - `test_attempt_kept_nothing.py`: Found live (2026-10-22): the first attempt's login failed and nothing was entered, but it had touched the screen, so the second attempt was told to open and correct the record the…
 - `test_binding_figures.py`: A figure read from a document for a field that takes a bare number is the number it stands for.
 - `test_binding_paths_and_signs.py`: binding: a left-out document is exactly one of the run's files (E-34), and a negative figure is held by a text that says it (E-45).
