@@ -110,6 +110,26 @@ if [ -s "$GATE_DIR/key" ]; then
     cd /
 fi
 
+# The agent's token (DECURIX_AGENT_TOKEN): the agent (vm_server.py) and soul are the only two programs that need it.
+# In an environment it was in every program the worker's user started (the panel, the session bus, the launch helper),
+# and the worker reads any of those from /proc/<pid>/environ. So it leaves the environment here, before any of the
+# worker's programs starts, and reaches its two holders as one file each in a folder made now (/run is a new tmpfs on
+# every start): each holder makes itself non-dumpable (its /proc and memory are then root's), reads its file and deletes
+# it (config.take_agent_token, soul's takeTokenFile), and start_agent_terminal.sh deletes a file nobody took. A holder
+# with no token refuses every call but its health check. soul's file only when the image has soul.
+AGENT_TOKEN_DIR=/run/decurix-agent
+/usr/bin/rm -rf "$AGENT_TOKEN_DIR"
+if [ -n "${DECURIX_AGENT_TOKEN:-}" ]; then
+    /usr/bin/install -d -m 700 -o root -g root "$AGENT_TOKEN_DIR"
+    for holder in agent soul; do
+        [ "$holder" = soul ] && [ ! -x /opt/soul ] && continue
+        (umask 077; printf '%s' "$DECURIX_AGENT_TOKEN" > "$AGENT_TOKEN_DIR/$holder.token")
+        /usr/bin/chown "$UID_WORKER:$GID_WORKER" "$AGENT_TOKEN_DIR/$holder.token"
+    done
+    /usr/bin/chown "$UID_WORKER:$GID_WORKER" "$AGENT_TOKEN_DIR"
+fi
+unset DECURIX_AGENT_TOKEN
+
 # Broker mode (DECURIX_SCREEN_USER=1, set at creation when the control plane runs with DECURIX_SCREEN_BROKER=1;
 # docs/gate-boundary.md, "Next: the input broker"). The screen is the screen user's (decurixscreen): the X server, the
 # window manager and the screen broker run as that user (/opt/decurix-screen-session.sh), and the broker starts the
@@ -161,7 +181,7 @@ if [ "${DECURIX_SCREEN_USER:-0}" = "1" ] && /usr/bin/getent passwd decurixscreen
         LANG="${LANG:-C.UTF-8}" PYTHONDONTWRITEBYTECODE=1
     for name in $(/usr/bin/env | /usr/bin/sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case "$name" in
-            DECURIX_AGENT_TOKEN|DECURIX_GATE_KEY|VNC_PW|VNC_PASSWORD|VNC_VIEW_ONLY_PW|*_TOKEN|*_KEY|*PASSWORD*|*SECRET*) continue ;;
+            DECURIX_AGENT_TOKEN|DECURIX_AGENT_TOKEN_FILE|DECURIX_GATE_KEY|VNC_PW|VNC_PASSWORD|VNC_VIEW_ONLY_PW|*_TOKEN|*_KEY|*PASSWORD*|*SECRET*) continue ;;
             DECURIX_*|DESKTOP_*|CONTROL_PLANE_URL|AGENT_HARNESS|VNC_RESOLUTION|VNC_COL_DEPTH|VNC_PORT|TZ|NO_AT_BRIDGE|GTK2_MODULES) ;;
             *) continue ;;
         esac

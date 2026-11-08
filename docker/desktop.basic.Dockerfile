@@ -368,8 +368,11 @@ COPY agent/decurix-xfwm4.xml /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchanne
 # The worker's panel in broker mode: no window list (an untrusted client cannot see the windows); the screen user's
 # window list (decurix_agent/computer/windowlist.py) sits between its two bars. The worker's session puts it in place.
 COPY agent/decurix-panel-broker.xml /opt/decurix-panel-broker.xml
+# The worker's session bus in broker mode: the system's session configuration without the worker's own service folders.
+COPY agent/decurix-session-bus.conf /opt/decurix-session-bus.conf
 RUN chmod 755 /opt/decurix-screen-session.sh /opt/decurix-worker-session.sh \
-    && chmod 644 /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml /opt/decurix-panel-broker.xml
+    && chmod 644 /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml /opt/decurix-panel-broker.xml \
+       /opt/decurix-session-bus.conf
 # Broker mode: the screen broker reads the worker's apps' widgets on the worker's accessibility bus (computer/atspi.py,
 # _broker_bus), so that bus admits the screen user as well as its own user and root. The other way it does not: the
 # screen user's own bus admits root and the screen user only. The screen user exists on every desktop but runs nothing

@@ -556,7 +556,8 @@ What remains, in order:
 4. **Load and long runs**: a whole skill replay with ladder questions on a broker-mode desktop, Chrome's pipe mode
    under load (target order, events), and the per-command cost of the context (a few small files read and written;
    observe stayed well under a second live).
-5. **The agent's own user** (path 6's open half), and `VNC_PW` out of a `docker exec`'s environment.
+5. ~~**The agent's own user** (path 6's open half)~~: the token half is closed without one (2026-11-08, "The agent
+   token's two holders"). Left: `VNC_PW` out of a `docker exec`'s environment.
 
 **Making broker mode the default** (decision for the owner, O-1; taken 2026-11-08, see "Broker mode is the default"
 below): every path of the six that the screen side holds is
@@ -761,11 +762,52 @@ The costs that remain in broker mode:
 - **No desktop icons.** xfdesktop cannot run as the worker's untrusted client, and as the screen user its menus
   would start programs past the gate; the screen user draws the wallpaper only. Apps are reached from the panel's
   Start menu and launchers, and `gui open`.
-- **The agent token is readable by the worker** (path 6's agent half): the agent still runs as the worker with
-  `DECURIX_AGENT_TOKEN` in its environment, so the worker can read it from `/proc` and start tasks as a "person". It
-  cannot make a yes. Closing it is the agent's own user (step 5 of the order above).
+- ~~**The agent token is readable by the worker**~~ (path 6's agent half). Closed 2026-11-08, see "The agent token's
+  two holders" below; the agent still runs as the worker's user, so what is left of path 6 is the worker's own
+  programs.
 - `VNC_PW` is still in a `docker exec`'s environment (path 2's last part), and the screen user can read the
   worker's home by path (`/home/headless` is 0755; above, "Seen, not fixed").
+
+### The agent token's two holders (2026-11-08)
+
+The agent token (`DECURIX_AGENT_TOKEN`, internal/desktop/agenttoken.go) lets its holder start tasks as a person and
+call the agent's API on :8081 and soul's on :4900. It cannot make a yes. Until now every program of the worker's user
+had it in its environment (the panel, the session bus, the launch helper, the agent, soul: 14 processes on a probe
+desktop), and the worker read any of them from `/proc/<pid>/environ`. Worse, the start scripts looked commands up on
+the container's PATH, which puts `~/.local/bin` first: a `python3` the worker left there started in the agent's place
+at the next boot (`planted python3 ran: -I /opt/vm_server.py`), and a session-bus service file in its home ran too.
+
+Now:
+- **Out of every environment.** The entrypoint (root, before any program of the worker's starts) writes the token to
+  one file per holder in a fresh `/run/decurix-agent` (`agent.token`, `soul.token`; the worker's, 0400) and unsets it.
+- **Two holders, non-dumpable.** `vm_server.py` and soul make themselves non-dumpable first thing (prctl
+  `PR_SET_DUMPABLE` 0: their `/proc` files and memory become root's, no ptrace by the same user), then read their file
+  (`DECURIX_AGENT_TOKEN_FILE`; a link or a non-regular file gives no token) and delete it (`config.take_agent_token`,
+  soul's `takeTokenFile`). A program either one runs is dumpable again and gets no token.
+- **Taken before anything reads the worker's settings.** In broker mode the worker's session starts the agent right
+  after its session bus and waits for both files to be gone before the panel, the settings daemon and the file
+  manager start; the start script waits (30 s) and deletes a file nobody took. A holder without a token refuses every
+  call but its health check (both already did).
+- **Commands by the system's PATH.** `decurix-worker-session.sh` and `start_agent_terminal.sh` look their own
+  commands up on the system's PATH; what they start for the worker gets the container's PATH back. The holders are
+  started by absolute path (`/usr/bin/python3 -I /opt/vm_server.py`, `/opt/soul`), and every Python before them runs
+  `-I`.
+- **The worker's bus starts no service of the worker's.** `/opt/decurix-session-bus.conf` is the system's session
+  configuration without `~/.local/share/dbus-1/services`.
+
+Checked live on a broker-mode desktop (`decurix-desktop:next` with these files, the token in its environment, a
+`python3` planted in `~/.local/bin` and an `org.a11y.Bus` service planted in the worker's home): no process of the
+worker's user has the token in its environment; reading `/proc/<pid>/environ` of the agent and of soul is refused to
+the worker; both files are gone; neither planted program ran in the holders' place (the planted `python3` ran as the
+launch helper, the worker's own program, after both tokens were taken, as before); :8081 and soul answer 401 without
+the token and serve with it; `gui observe` and `gui open` work. The same probe on the image's previous scripts showed
+the token in 14 environments and both planted programs running. Tests: `agent/tests/test_agent_token_holders.py`,
+soul's `agenttoken_test.go`.
+
+What is left: the default mode (a desktop made with `DECURIX_SCREEN_BROKER=0`) gets the same files and holders, but
+there the agent is started by XFCE's autostart, after a session that reads the worker's own settings, so a program the
+worker left there can race for the files at boot. And a person's `docker exec` without `env -i` still sees the token
+in the container's configuration (the control plane's own execs clear it, `workerCmd`).
 
 ## What this does not cover (said plainly)
 
@@ -775,8 +817,9 @@ The costs that remain in broker mode:
   (TheBot's command guard and the shell checks) are filters.
 - **What the gate is told.** The gate does not see the screen: the action's description comes from the worker's side.
   A lying caller can only get a grant for the action it described, but with direct input it needs none.
-- **The agent token** is still in the agent's environment and readable by the worker (`/proc/<agent>/environ`). With it
-  the worker can start tasks as a "person" and call the agent's API. It can no longer make a yes.
+- **The agent token** is no longer in any environment of the worker's user, and its two holders are non-dumpable
+  (2026-11-08, "The agent token's two holders"). A person's own `docker exec` without `env -i` still gets it from the
+  container's configuration, as it gets `VNC_PW`.
 - **The script sandbox cuts the network and ends what a script started, but not its files.** It runs
   `unshare --user --map-root-user --net --ipc --pid --fork --kill-child`, so nothing a script starts outlives it. A
   pathname Unix socket stays reachable with `unshare` alone; `script_sandbox.status()` reports it. A kernel that

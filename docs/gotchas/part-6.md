@@ -280,3 +280,11 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   `declare` found saved records by key only, so the ledger held two records for the application's one and the eval's
   `ledger_readback` failed. A key that is a saved record's own number (an identifier field's value) is that record
   (`records.saved_by_number`).
+- **The agent's start scripts ran the worker's own `python3` in the agent's place, and every program had the token**
+  (2026-11-08, probe on a broker-mode desktop). The container's PATH puts `~/.local/bin` first, and
+  `start_agent_terminal.sh` and the worker's session looked `python3`, `nice` and `setsid` up on it: a `python3` left
+  there started as the agent at the next boot. The token was in the environment of 14 processes of the worker's user,
+  each readable at `/proc/<pid>/environ`, and a session-bus service file in the worker's home ran at boot. A script
+  that starts a holder of a secret looks its commands up on the system's PATH and starts the holder by absolute path;
+  a secret reaches its holder in a file it reads once it is non-dumpable, never in an environment
+  (gate-boundary.md, "The agent token's two holders").

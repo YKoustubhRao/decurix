@@ -6,7 +6,7 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 
 | ID | Decision | State |
 |---|---|---|
-| O-1 | Input broker and OS boundary: direct input around the gate (XTEST, VNC, CDP, AT-SPI, host-app and phone viewers), a gate-owned evidence store, `checked` set by the worker, the script sandbox's filesystem | **Broker on by default** (decided 2026-11-08): every new desktop is made in broker mode unless the control plane runs with `DECURIX_SCREEN_BROKER=0`; existing desktops keep their mode until recreated. The panel's window list is the screen user's now (`computer/windowlist.py`, lists and raises windows, starts nothing; [gate-boundary.md](gate-boundary.md), "The panel's window list"). The word guards are frozen. **Open:** the agent's own user (the agent token is still readable by the worker, path 6's agent half), `VNC_PW` out of a `docker exec`'s environment, the worker's home readable by the screen user by path, no desktop icons in broker mode, the gate-owned evidence store (it makes "observed" real), an agent-signed outcome callback; also a per-task `$HOME` snapshot, read-only binds outside `~/work`, an egress proxy |
+| O-1 | Input broker and OS boundary: direct input around the gate (XTEST, VNC, CDP, AT-SPI, host-app and phone viewers), a gate-owned evidence store, `checked` set by the worker, the script sandbox's filesystem | **Broker on by default** (decided 2026-11-08): every new desktop is made in broker mode unless the control plane runs with `DECURIX_SCREEN_BROKER=0`; existing desktops keep their mode until recreated. The panel's window list is the screen user's now (`computer/windowlist.py`, lists and raises windows, starts nothing; [gate-boundary.md](gate-boundary.md), "The panel's window list"). The word guards are frozen. The agent token's half of path 6 is closed (2026-11-08: out of every environment, two non-dumpable holders, start scripts on the system's PATH, a session bus without the worker's services; gate-boundary.md, "The agent token's two holders"; checked live). **Open:** the default mode's boot race for the token files, `VNC_PW` out of a `docker exec`'s environment, the worker's home readable by the screen user by path, no desktop icons in broker mode, the gate-owned evidence store (it makes "observed" real), an agent-signed outcome callback; also a per-task `$HOME` snapshot, read-only binds outside `~/work`, an egress proxy |
 | O-1.a | TheBot command guard: five structural fixes before the final freeze | **Done** 2026-11-07: all five landed and the guard is frozen (`safety.go`'s FROZEN note). Table below |
 | O-2 | Per-desktop cache volume (B-02) | Done as recommended: a cache volume per desktop, the model cache shared read-only |
 | O-3 | Brainiac appliance: model user, AppArmor, signed catalog, uploader list | **Open; required before any box ships.** Table below |
@@ -496,7 +496,15 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     Calibration `e838100482d961956` (oracle + nothing, `--carry-state --repeats 1`, 09:34 UTC): **oracle 10/10,
     nothing 0/10** (false done 10/10), no infrastructure or invalid rows, no problems on an oracle row. The
     5-repeat `default+expert` run, the curve, and the cleanup (`cp-dev.sh stop`, the dev volume, the `before-1107`
-    tags, the buildx builder `decurix-wsl-2048m`) are still owed; the run waits for the cross-task provenance fix.
+    tags, the buildx builder `decurix-wsl-2048m`) are still owed.
+  - **The "after" run, in progress 2026-11-08:** HEAD 9038515 (the expert prompt, the broker serving the expert's
+    replies, scope=worker provenance, the cut-read, unset-choice and refusal-loop fixes). Images rebuilt from a
+    `git archive` of HEAD (`decurix-desktop:basic`, `:next`, `:developer`, `:ai` = e00bd82ce61e; `decurix-tools`
+    unchanged, 28170e9f7e03); `decurix-dev` restarted on a binary from the same archive (sha256 68315fea4223...),
+    volume `decurix-dev-data` kept. Brain Kimi-K2.6 / gpt-5.4-mini on `AZURE_KEY_1` (the before run's; key 3,
+    `AZURE_KEY_2`, still answers 401 on every route). Run **`eaa791e6bd0cff5fa`** (`default+expert --carry-state
+    --repeats 5`) started 10:30 UTC; watch with `py -3 evals/run.py --cp http://127.0.0.1:18080 table
+    eaa791e6bd0cff5fa`.
   - **Fixed 2026-11-08: the expert's "don't know" to bill 2's cost-centre question.** Matching was right (the question
     named `cost-centre-rule` by `refers_to`); the expert's model chose null because the fact gives a rule, not "which"
     ("it explains how, not which"; the question held no GSTIN). `ExpertPrompt` now says a fact gives what is asked when

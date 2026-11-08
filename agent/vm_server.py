@@ -9,7 +9,15 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from decurix_agent.app import main  # noqa: E402
-
 if __name__ == "__main__":
+    # Before anything else: non-dumpable, then this process's token out of its file (config.take_agent_token;
+    # decurix-entrypoint.sh). Nothing of the worker's can read either from this process after this.
+    from decurix_agent import config  # noqa: E402
+
+    if not config.no_dump() and os.environ.get(config.AGENT_TOKEN_FILE_ENV):
+        print("[vm_server] could not make this process non-dumpable; its token is readable by the worker", flush=True)
+    config.take_agent_token()
+
+    from decurix_agent.app import main  # noqa: E402
+
     main()

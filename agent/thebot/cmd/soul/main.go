@@ -960,7 +960,15 @@ func skillLibraryFor(standalone bool, root string, embedder llm.Embedder, model 
 }
 
 func main() {
+	// Before anything else: non-dumpable, then the token out of its file (agenttoken.go), so nothing of the worker's
+	// can read either from this process.
+	if err := noDump(); err != nil {
+		log.Printf("[soul] could not make this process non-dumpable (%v): the worker can read its memory", err)
+	}
 	cfg := config.Load()
+	if cfg.AgentToken == "" {
+		cfg.AgentToken = takeTokenFile(os.Getenv(agentTokenFileEnv))
+	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("[soul] config error: %v", err)
 	}

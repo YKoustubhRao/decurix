@@ -673,7 +673,8 @@ class TheSessionsAndTheLauncher(unittest.TestCase):
     def test_the_worker_session_has_no_xfdesktop_and_publishes_its_accessibility_bus(self):
         worker = _code(Path(AGENT, "decurix-worker-session.sh"))
         self.assertNotIn("xfdesktop", worker)
-        self.assertIn("env -u DISPLAY -u XAUTHORITY XDG_RUNTIME_DIR=\"$LAUNCH_DIR\" dbus-launch", worker)
+        self.assertIn("/usr/bin/env -u DISPLAY -u XAUTHORITY XDG_RUNTIME_DIR=\"$LAUNCH_DIR\" PATH=\"$WORKER_PATH\" "
+                      "/usr/bin/dbus-launch", worker)
         self.assertIn("org.a11y.Bus.GetAddress", worker)
         self.assertIn('"$LAUNCH_DIR/a11y-bus"', worker)
         self.assertLess(worker.index("org.a11y.Bus.GetAddress"), worker.index("dbus-update-activation-environment"))
