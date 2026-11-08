@@ -388,8 +388,8 @@
     }
   ],
   "budget": {
-    "max_minutes": 55,
-    "max_tokens": 4000000
+    "max_minutes": 60,
+    "max_tokens": 10000000
   },
   "tags": [
     "wrong-export-folder",

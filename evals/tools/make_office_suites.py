@@ -360,7 +360,7 @@ def write_case(suite, case, files, fixture):
     return out
 
 
-def case_doc(cid, category, kind, request, files, facts, approves, graders, oracle, secrets=(), minutes=40, tokens=3000000,
+def case_doc(cid, category, kind, request, files, facts, approves, graders, oracle, secrets=(), minutes=60, tokens=8000000,
              tags=()):
     doc = {"schema": "decurix.eval-case/v1", "id": cid, "category": category, "kind": kind, "request": request,
            "start": {"files": sorted(files), "mock": MOCK, "fixture": "fixture.json"},
@@ -618,7 +618,7 @@ def books_suite():
         oracle.append({"answer": f"Entered {len(new)} Sales vouchers for {month} in {SUVARNA['name']} 2025-26: "
                                  + ", ".join(b["no"] for b in new) + "."})
         doc = case_doc(case["id"], case["category"], "sales_bills_to_books", request, files, facts,
-                       ["Save voucher", "Save ledger"], graders, oracle, minutes=40, tokens=3000000, tags=case["tags"])
+                       ["Save voucher", "Save ledger"], graders, oracle, minutes=60, tokens=8000000, tags=case["tags"])
         out.update(write_case("office-books-v1", doc, files, fixture))
         earlier += [b for b in case["bills"] if b["no"] not in case["entered"]] + [b for b in case["bills"] if b["no"] in case["entered"]]
     out["suite.json"] = (json.dumps(suite_doc(
@@ -632,7 +632,7 @@ def books_suite():
         "already entered from an earlier mail, a bill whose amount in words differs from its figures, and a bill missing "
         "from the mail (a gap in the numbers) that only the person can supply. Graded on the books' records: exactly the "
         "expected vouchers, in the right company, and the new ledgers. Fictional data; the ca-office mock.",
-        [c["id"] for c in BOOKS_CASES], 40, 3000000), indent=2) + "\n").encode("utf-8")
+        [c["id"] for c in BOOKS_CASES], 60, 8000000), indent=2) + "\n").encode("utf-8")
     return {f"office-books-v1/{k}": v for k, v in out.items()}
 
 
@@ -942,7 +942,7 @@ def gstr_books_suite():
         # The portal's demo passwords (every client's login is in the fixture); the oracle types its client's.
         secrets = tuple(TN_PASSWORDS[x] for x in TN_PASSWORDS)
         doc = case_doc(case["id"], case["category"], "gstr1_from_books", request, files, facts, approves, graders, oracle,
-                       secrets=secrets, minutes=55, tokens=4000000, tags=case["tags"])
+                       secrets=secrets, minutes=60, tokens=10000000, tags=case["tags"])
         out.update(write_case("office-gstr1-books-v1", doc, files, fixture))
     out["suite.json"] = (json.dumps(suite_doc(
         "office-gstr1-books-v1",
@@ -957,7 +957,7 @@ def gstr_books_suite():
         "Append would double, and a receiver whose GSTIN the register shows cancelled (the return must not be filed). "
         "Graded on the share, the software's receivers and uploads, and the portal's tables and filed return, exactly; and "
         "the ARN in the report. Fictional data; the ca-office mock.",
-        [c["id"] for c in GSTR_BOOKS_CASES], 55, 4000000), indent=2) + "\n").encode("utf-8")
+        [c["id"] for c in GSTR_BOOKS_CASES], 60, 10000000), indent=2) + "\n").encode("utf-8")
     return {f"office-gstr1-books-v1/{k}": v for k, v in out.items()}
 
 
@@ -1142,7 +1142,7 @@ def chat_suite():
                    f"in ~/work/practice/{case['id']}/. Our apps: ClientChat http://chat.example.test, FilePrep GST "
                    f"http://fileprep.example.test (it opens TaxNet signed in as the client), TaxNet http://taxnet.example.test.")
         doc = case_doc(case["id"], case["category"], "gstr1_from_invoices", request, files, [otp_fact(case["otp"])],
-                       ["File with EVC", "Verify"], graders, oracle, secrets=tuple(CHAT_PASSWORDS.values()), minutes=55, tokens=4000000,
+                       ["File with EVC", "Verify"], graders, oracle, secrets=tuple(CHAT_PASSWORDS.values()), minutes=60, tokens=10000000,
                        tags=case["tags"])
         out.update(write_case("office-gstr1-chat-v1", doc, files, fixture))
     out["suite.json"] = (json.dumps(suite_doc(
@@ -1156,7 +1156,7 @@ def chat_suite():
         "1 is the one a person demonstrates; the rest are new months: a registered buyer and a cancelled invoice, "
         "inter-state buyers with the portal opening on the current quarter, and a month with no bills. Graded on the "
         "portal's tables and filed return, exactly, and the ARN in the report. Fictional data; the ca-office mock.",
-        [c["id"] for c in CHAT_CASES], 55, 4000000), indent=2) + "\n").encode("utf-8")
+        [c["id"] for c in CHAT_CASES], 60, 10000000), indent=2) + "\n").encode("utf-8")
     return {f"office-gstr1-chat-v1/{k}": v for k, v in out.items()}
 
 

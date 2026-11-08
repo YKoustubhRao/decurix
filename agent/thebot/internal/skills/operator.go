@@ -398,8 +398,22 @@ func parseControl(reply string) (action, value string) {
 		value = strings.TrimSpace(strings.Trim(value, "`"))
 		value = strings.TrimSpace(strings.TrimPrefix(value, "$ "))
 		value = withoutLeakedCall(value)
+		value = withoutThinkTag(value)
 	}
 	return action, value
+}
+
+// thinkTagRe is a reasoning model's closing tag left at the end of a command's text.
+var thinkTagRe = regexp.MustCompile(`\s*</think>\s*$`)
+
+// withoutThinkTag takes a reasoning model's closing tag off the end of a command: no shell command ends in one, and
+// left on, bash refuses the line. Found live (2026-11-08, Kimi-K2.6): `ls -la ~/work/</think>` and three more commands
+// in one eval case failed with "syntax error near unexpected token `newline'", a turn each.
+func withoutThinkTag(value string) string {
+	for thinkTagRe.MatchString(value) {
+		value = strings.TrimSpace(thinkTagRe.ReplaceAllString(value, ""))
+	}
+	return value
 }
 
 // leakedCallRe is the trace a hosted model leaves when part of its own

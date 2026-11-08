@@ -671,6 +671,35 @@ def _new_documents(run):
     return sorted(new, key=lambda p: now[p])[:MAX_GATHERED_FILES]
 
 
+# A folder a request names under the home folder ("~/work/practice/october/"): binding.PATH_RE names files only.
+FOLDER_RE = re.compile(r"(?<![\w/])((?:~|" + re.escape(str(Path.home()).replace("\\", "/")) + r")/[^\s'\"<>|;,]+)")
+
+
+def _documents_in_hand(run):
+    """The documents the request itself brings, in order: its attached files, the files it names by path, and the
+    document files directly in a folder it names (by name). At most MAX_GATHERED_FILES."""
+
+    text = str(run.get("context") or "")
+    found = []
+
+    def add(path):
+        if Path(path).suffix.lower() in DOCUMENT_SUFFIXES and path not in found and len(found) < MAX_GATHERED_FILES:
+            found.append(path)
+
+    for path in list(task_context.current_files() or []) + binding.referenced_files(text):
+        add(str(path))
+    for match in FOLDER_RE.finditer(text):
+        folder = Path(os.path.expanduser(match.group(1).rstrip(".)")))
+        try:
+            if folder.is_dir():
+                for f in sorted(folder.iterdir(), key=lambda p: p.name):
+                    if f.is_file() and not f.name.startswith("."):
+                        add(str(f))
+        except OSError:
+            continue
+    return found
+
+
 def _after_phase(run, phase, reply, kind):
     """The engine's report on a phase of a per-document run (from _gate): decides what the run does next. True: handled."""
 
@@ -699,6 +728,14 @@ def _after_phase(run, phase, reply, kind):
         return True
 
     documents = _new_documents(run)
+    if not documents and (in_hand := _documents_in_hand(run)):
+        # Nothing new was saved because the request's documents were in hand all along (a folder or files it names):
+        # those are this run's documents. Found live (2026-11-08, an eval month whose bills sat in the folder its
+        # request named): after 25 minutes of collecting, "no document appeared" handed the whole task to the model
+        # from its first step, with two minutes left - and with three vouchers the phase had entered already.
+        progress.emit(f"The collection saved no new document; the {len(in_hand)} the request names are this run's: "
+                      + ", ".join(Path(d).name for d in in_hand[:12]))
+        documents = in_hand
     if not documents:
         progress.emit(f"No document file appeared under the home folder since the collection began ({len(_document_files())} "
                       "document files seen in all), so the model does the rest of the task itself.")

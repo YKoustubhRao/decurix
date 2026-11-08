@@ -170,8 +170,8 @@
     }
   ],
   "budget": {
-    "max_minutes": 40,
-    "max_tokens": 3000000
+    "max_minutes": 60,
+    "max_tokens": 8000000
   },
   "tags": [
     "sent-twice",

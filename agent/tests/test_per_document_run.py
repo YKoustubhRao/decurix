@@ -170,6 +170,27 @@ class APerDocumentRun(unittest.TestCase):
         self.assertIn("could not find the mail", kw["note"])
         self.assertEqual(self.executed, [])
 
+    def test_a_gather_that_saved_nothing_new_uses_the_documents_the_request_names(self):
+        # Found live (2026-11-08): the month's bills sat in the folder the request named, so the collection saved
+        # nothing new, and "no document appeared" handed the whole task to the model from its first step.
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("1053 Pai.docx", "1054 Sharada.docx", "notes.bin"):
+                (Path(folder) / name).write_text("x")
+            run = self.run_for()
+            run["context"] = REQUEST + f" The attachments are also saved in {folder}/."
+            run["gathered"], run["files_before"] = "started", {}
+            filled = ({self.number: "1053; 1054", self.party: "Pai; Sharada"}, {}, None, [])
+            folder_re = skill_task.re.compile(r"(" + skill_task.re.escape(folder) + r"/?)")
+            with mock.patch.object(skill_task, "_document_files", return_value={}), \
+                    mock.patch.object(skill_task, "FOLDER_RE", folder_re), \
+                    mock.patch.object(skill_task.binding, "fill_lists", return_value=filled) as fill:
+                self.assertTrue(skill_task._after_phase(run, "gather", "Opened the mail; the bills are in the folder.", "final"))
+        docs = [str(Path(folder) / "1053 Pai.docx"), str(Path(folder) / "1054 Sharada.docx")]
+        self.assertEqual((run["gathered"], run["documents"]), ("done", docs))
+        self.assertEqual(fill.call_args.args[3], docs)
+        self.assertEqual(self.by_model, [])  # not the whole task to the model again
+        self.assertEqual(state.paused_skill["kind"], "plan")
+
     def test_a_gather_that_failed_leaves_the_whole_task_to_the_model(self):
         run = self.run_for()
         run["gathered"] = "started"
