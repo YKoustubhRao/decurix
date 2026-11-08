@@ -695,6 +695,9 @@ type operatorState struct {
 	// kept apart from the transcript so a compaction never loses it (context.go, reviewer.go).
 	LastAsked  string   `json:",omitempty"`
 	PersonSaid []string `json:",omitempty"`
+	// Picked is the taught task's fields filled by picking an application's entry (RunContext.PickedFields), for the
+	// review (seedPicked).
+	Picked []string `json:",omitempty"`
 	// Lookups are the web pages the goal read (knowledge.go): never a source until the person confirms one;
 	// PersonLinks are the links the person gave (the request, their replies), whose pages are sources; AskedSources are
 	// the lookups a question to the person asked them to confirm.
@@ -921,6 +924,7 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 	st.Request = subtask.Step
 	st.PlanAgreed = rc.PlanAgreed
 	st.seedEarlierSaid(rc.EarlierSaid)
+	st.seedPicked(rc.PickedFields)
 	st.notePersonLinks(subtask.Step)
 	// Only what earlier steps read or ran is a source a typed value may be traced to: a model's own reply (a chat
 	// answer, a summary of web pages) is shown above as context, never noted as seen (skills.go, MetaModelReply).

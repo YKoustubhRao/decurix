@@ -45,3 +45,13 @@ func TestTheGatedListenerCanBeKeptOffTheLAN(t *testing.T) {
 		t.Fatalf("lanListenAddr() = %q", got)
 	}
 }
+
+// An eval run's free-memory minimum is the default unless DECURIX_EVAL_MIN_FREE_MB sets one at or above the floor.
+func TestEvalMinFreeBytes(t *testing.T) {
+	for raw, want := range map[string]uint64{"": 0, "x": 0, "512": 0, "1800": 1800 << 20, " 2048 ": 2048 << 20} {
+		t.Setenv("DECURIX_EVAL_MIN_FREE_MB", raw)
+		if got := evalMinFreeBytes(); got != want {
+			t.Fatalf("DECURIX_EVAL_MIN_FREE_MB=%q: %d, want %d", raw, got, want)
+		}
+	}
+}

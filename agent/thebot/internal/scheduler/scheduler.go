@@ -144,6 +144,8 @@ type Request struct {
 	PlanAgreed bool
 	// EarlierSaid is the person's replies on the task before this request, each with its question (skills.RunContext).
 	EarlierSaid []skills.Said
+	// PickedFields is the taught task's fields filled by picking an application's entry (skills.RunContext).
+	PickedFields []string
 }
 
 type Scheduler struct {

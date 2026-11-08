@@ -116,6 +116,10 @@ type RunContext struct {
 	// host's control plane confirms them (Python's person_record.answers): a later job of the task - one the final
 	// check sent back - starts a goal of its own, and without them its review had no "what the person said".
 	EarlierSaid []Said
+	// PickedFields is the fields of the taught task this job does that are filled by picking an existing entry from
+	// the application's own list, each with the words that searched for it, as the host's skill records them
+	// (Python's skill_task._chosen_for): the record holds the entry's own name, not those words. Data, never prompt.
+	PickedFields []string
 }
 
 // Said is one reply of the person's with the question it answered.
@@ -128,6 +132,9 @@ type Said struct {
 const (
 	MaxEarlierSaid     = 20
 	MaxEarlierSaidText = 4000
+	// Bounds on the picked fields a job is sent (PickedFields).
+	MaxPickedFields    = 40
+	MaxPickedFieldText = 300
 )
 
 // Reading is what the host read a reply to an approval as - the one reading every part of the worker acts on (the

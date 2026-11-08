@@ -544,6 +544,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// the host's control plane confirms them: a later job of the task starts a goal of its own and keeps them
 		// (skills.RunContext.EarlierSaid). Bounded there.
 		EarlierSaid []skills.Said `json:"earlierSaid"`
+		// PickedFields is the taught task's fields filled by picking an existing entry from the application's list,
+		// with the words that searched for it (skills.RunContext.PickedFields). Bounded there.
+		PickedFields []string `json:"pickedFields"`
 		// TaskID is the control plane's task this request belongs to (PLAN-P2 C2). It tags every model call and command
 		// of the job (llm.WithTags) and names its trace; one not of llm.TaskIDShape is ignored.
 		TaskID string `json:"taskId"`
@@ -593,7 +596,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	history := s.sessions.History(body.SessionID)
 
 	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history,
-		Reading: body.ApprovalReading, PlanAgreed: body.PlanAgreed, EarlierSaid: body.EarlierSaid}
+		Reading: body.ApprovalReading, PlanAgreed: body.PlanAgreed, EarlierSaid: body.EarlierSaid,
+		PickedFields: body.PickedFields}
 	if paused := s.takePaused(body.SessionID); paused != nil {
 		// The paused job's prompt is withheld by its own values and this request's, before it is cut or quoted.
 		pausedSecrets := withheld.Clean(append(append([]string{}, body.Secrets...), paused.Secrets...))

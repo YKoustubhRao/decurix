@@ -89,6 +89,22 @@ func (st *operatorState) personWords() []string {
 	return personSaid(st.Messages)
 }
 
+// seedPicked keeps the taught task's fields that are filled by picking an existing entry from the application's own
+// list (RunContext.PickedFields), bounded, for the review: the record holds the entry's own name, which may differ from
+// the document's words that searched for it. Found live (2026-11-08): told only the run's values, the review sent a
+// saved bill back twice to put a line's description from the document where the application's item belonged, and the
+// worker typed both into the field.
+func (st *operatorState) seedPicked(picked []string) {
+	for i, p := range picked {
+		if i == MaxPickedFields {
+			break
+		}
+		if p = strings.TrimSpace(truncateText(p, MaxPickedFieldText)); p != "" {
+			st.Picked = append(st.Picked, p)
+		}
+	}
+}
+
 // seedEarlierSaid starts a goal with the person's replies on this task from before its job (RunContext.EarlierSaid),
 // kept as a reply in the goal is: with what it answered (PersonSaid, the review's "what the person said"), and its
 // words a source a typed value may come from (the reply alone, never the question, which is the worker's). Found live
@@ -203,6 +219,12 @@ func (st *operatorState) reviewFacts(report string, items []string, action strin
 	if said := st.personWords(); len(said) > 0 {
 		b.WriteString("\nWHAT THE PERSON SAID IN THIS GOAL (with what each reply answered):\n- " +
 			tailText(strings.Join(said, "\n- "), maxReviewMemoryChars) + "\n")
+	}
+	if len(st.Picked) > 0 {
+		b.WriteString("\nFIELDS FILLED BY PICKING AN EXISTING ENTRY FROM THE APPLICATION'S OWN LIST (from how the person " +
+			"taught it - a fact, set by code): the document's words only searched for the entry, and the record holds the " +
+			"entry's own name, which may differ from them. A different name in such a field is no point when the entry " +
+			"is plainly the same thing; raise it only when it is another thing:\n- " + strings.Join(st.Picked, "\n- ") + "\n")
 	}
 	if prefix := st.Messages[:st.prefixEnd()]; len(prefix) > 0 && prefix[0].Role == "system" {
 		// The worker's memory of the person's rules and earlier answers lives in its system frame, after the standing

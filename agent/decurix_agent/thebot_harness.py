@@ -519,6 +519,38 @@ def _earlier_said():
             for r in rows[-MAX_EARLIER_SAID:] if str(r.get("text") or "").strip()]
 
 
+# The picked fields a job is sent at most (soul's skills.MaxPickedFields bounds it too).
+MAX_PICKED_FIELDS = 40
+
+
+def _picked_fields():
+    """The fields of the taught task this job does that are filled by picking an existing entry from the application's
+    own list, each with the words this run searches with (skill_task._chosen_for): ["Item (item_2): searched with
+    \"...\""], [] when the job is no taught task's. Sent with every job for soul's review, which was told only the run's
+    values and sent a saved bill back twice to put the document's line description where the application's item
+    belonged (found live 2026-11-08). Data beside the prompt, never in it."""
+
+    try:
+        run = (guidance.get() or {}).get("run") or {}
+        skill = run.get("skill")
+        if not skill:
+            return []
+        from decurix_agent import skill_task
+        chosen = skill_task._chosen_for(run)
+        params = {p["name"]: p for p in skill.get("params") or []}
+        bases = (run.get("rows") or {}).get("base") or {}
+        out = []
+        for name, value in (run.get("values") or {}).items():
+            if name not in chosen or not str(value or "").strip():
+                continue
+            param = params.get(name) or params.get(bases.get(name)) or {}
+            out.append(f"{param.get('label') or name} ({name}): searched with {json.dumps(str(value), ensure_ascii=False)}")
+        return out[:MAX_PICKED_FIELDS]
+    except Exception as exc:  # noqa: BLE001 - a fact that cannot be worked out is not sent
+        log(f"TheBot: could not work out the picked fields: {exc}")
+        return []
+
+
 def _plan_agreed():
     """Whether the job about to start is under a plan the person agreed: this process put the plan to them and they
     answered it (plan_context), or the job is a stage of a planned long request (workflow_task points at a stage of a
@@ -679,6 +711,8 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 "planAgreed": _plan_agreed(),
                 # The person's replies on this task before this job, with their questions (_earlier_said).
                 "earlierSaid": _earlier_said(),
+                # The taught task's fields filled by picking an application's entry, with their search words (_picked_fields).
+                "pickedFields": _picked_fields(),
                 # The control plane's task this job works for (C2): soul tags every model call it makes for the job
                 # with it, so the proxy's record joins each call to its task.
                 "taskId": task_context.current(),

@@ -221,12 +221,27 @@ func lanPort(addr string) int {
 	return n
 }
 
+// evalMinFreeMBFloor is the least DECURIX_EVAL_MIN_FREE_MB may set: one practice desktop's own working set.
+const evalMinFreeMBFloor = 1024
+
+// evalMinFreeBytes reads DECURIX_EVAL_MIN_FREE_MB, the free memory an eval run needs before it starts: 0 (unset,
+// invalid, or below evalMinFreeMBFloor) keeps practice.DefaultMinFreeBytes. On a 5 GB host shared with another
+// workload, the 2.5 GB default refused every run while 2.4 GB was free and a practice desktop used about 1 GB.
+func evalMinFreeBytes() uint64 {
+	mb, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DECURIX_EVAL_MIN_FREE_MB")))
+	if err != nil || mb < evalMinFreeMBFloor {
+		return 0
+	}
+	return uint64(mb) << 20
+}
+
 // idleStopThreshold reads DECURIX_IDLE_STOP_MINUTES, in minutes.
 // internal/idlepause is on by default: unset or invalid means
 // defaultIdleStopMinutes, not disabled. DECURIX_IDLE_STOP_MINUTES=0 (or any
 // non-positive value) is the explicit opt-out - Checker.Run treats a
 // non-positive Threshold as "do nothing" rather than this function needing
 // its own enabled/disabled flag.
+
 func idleStopThreshold() time.Duration {
 	raw := os.Getenv("DECURIX_IDLE_STOP_MINUTES")
 	if raw == "" {
@@ -542,10 +557,11 @@ func main() {
 			Recorder:  llmrecStore,
 			Tasks:     tasksStore,
 			// Each model case's bundle, pulled off its practice desktop before the next case resets it (O-6).
-			Bundles:    &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs, Limit: bundleLimit},
-			Practice:   practiceSvc,
-			Vision:     practiceSvc.Vision,
-			FreeMemory: practiceSvc.FreeMemory,
+			Bundles:      &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs, Limit: bundleLimit},
+			Practice:     practiceSvc,
+			Vision:       practiceSvc.Vision,
+			FreeMemory:   practiceSvc.FreeMemory,
+			MinFreeBytes: evalMinFreeBytes(),
 			// A run --from-worker reads that worker's agent tree and taught state, as Simulate pins them.
 			Workers: desktops,
 		}
