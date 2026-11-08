@@ -817,6 +817,9 @@ The costs that remain in broker mode:
   - A worker can post one, but only of what the person said, to what they were asked.
 - **Reads** of its own judgements, learned rows and knowledge (`GET /api/desktops/judgements`,
   `/api/desktops/learned`, `/api/knowledge`) are reads only, of its own rows. A secret judgement's text is never sent.
+  `?scope=worker` reads the person's own answers on any of the caller's tasks (bounded, newest first): never another
+  worker's, never a derived, worker-made or secret row. On a practice desktop the broker answers it with the scripted
+  expert's replies the runner kept (actor kind `scripted`); nothing the desktop sends makes one.
 - **Who the caller is.** The desktop doors (`containerRoutes`) are on the primary listener only, never the gated one.
   - The caller is identified by its address on its own network (`requestDesktop`, `callerDesktop`). Each desktop is
     on a network of its own, NET_RAW is dropped and the worker is not root, so one desktop cannot speak with

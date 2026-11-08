@@ -264,3 +264,19 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   (`found["cut"]`), and presave compares a cut value only as far as it was read (`records._read_in_part`): a part that
   agrees is undecided and left to the read-back, never "differs". A declared value is never kept cut either
   (`records.MAX_VALUE`, 4000: longer is refused, not silently cut as at 400).
+- **A rule the person taught backed nothing in the next task, and an eval expert's words backed nothing at all**
+  (2026-11-08, learn-v1 bills 3 and 4). Three gaps stacked: the person's words were read for the current task only
+  (`person_record.answers`), so a value derived from a rule taught two tasks before was "backed by nothing a person
+  said"; on a practice desktop the control plane is the broker, which answered 404 to the judgement read while the
+  runner sent each expert reply with no judgement id, so even a reply on the same task backed nothing; and a code among
+  codes sharing their letters ("FND-3" beside "FND-8") could never be picked out by any text, since its only telling
+  part, the figure, is joined to the letters and was dropped as the code's own part. Now: the person's answers on any
+  task of the worker are a source (`person_record.worker_words`, `?scope=worker`), the broker keeps and serves the
+  expert's replies (`Broker.KeepReply`, actor kind `scripted`), and a code written whole picks out its entry
+  (`records._code_written_whole`). Check a provenance rule on the eval's own route too: a source the broker does not
+  serve is silently empty there, and fail-closed hides it.
+- **A saved record declared again under its own number became a second record** (2026-11-08, learn-v1 bill 3). The
+  worker keyed the bill "bill", saved it with a field undeclared, then declared that field under the bill's number;
+  `declare` found saved records by key only, so the ledger held two records for the application's one and the eval's
+  `ledger_readback` failed. A key that is a saved record's own number (an identifier field's value) is that record
+  (`records.saved_by_number`).

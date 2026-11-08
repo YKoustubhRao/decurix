@@ -293,6 +293,27 @@ def saved_record(records, key=None, text=None):
     return None
 
 
+def saved_by_number(records, key):
+    """
+    The record of this task already saved whose own number is `key`: a declared field whose label names a number, a
+    reference or an id (identifier_field) holds it - or None. A declaration keyed by a saved record's own number is
+    that record, whatever key it was saved under. Found live (2026-11-08): a bill saved under the key "bill" was
+    declared again under its bill number, to add the one field the save left undeclared; taken as a new record, the
+    edit's save made the ledger hold two records for the application's one, and the declaration was first stopped as
+    "may be entered already" by the task's own saved record on the page. A key with no digit names no number here.
+    """
+
+    key = " ".join(str(key or "").split())
+    if not re.search(r"\d", key):
+        return None
+    for rec in reversed([r for r in records if r.get("saved_at")]):
+        for label, f in (rec.get("fields") or {}).items():
+            if (isinstance(f, dict) and f.get("intent") and identifier_field(label)
+                    and same_value(str(f["intent"]), key, order="")):
+                return rec
+    return None
+
+
 def saved_on_form(records, form_fields):
     """The record of this task already saved whose own key field - the declared field whose intent is its key - holds
     its key on this form (`form_fields`: (label, value) pairs), or None. Only that field: a payment's "Against bill"
@@ -581,21 +602,38 @@ def _answers_text(task_id=None):
         return ""
 
 
+def _worker_words_text(task_id=None):
+    """The person's own answers on this worker's earlier tasks, as the control plane keeps them (person_record.
+    worker_words): a rule taught once ("region 07 goes to fund FND-3") backs, in every later task, a value that stands
+    in its words. Found live (2026-11-08): a code the worker derived from a rule the person taught two tasks before
+    was refused as backed by nothing a person said, since only the current task's answers were read. Never the
+    worker's own files or notes: a rule it wrote to ~/work backs nothing."""
+
+    try:
+        from decurix_agent import person_record
+        return "\n".join(person_record.worker_words(task_id))
+    except Exception:  # noqa: BLE001 - what cannot be confirmed backs nothing
+        return ""
+
+
 def _free_text(task_id=None):
     """What people wrote for this task, as one text: the request, the person's replies the control plane confirms, the
-    person's words on the skill being run and the organisation's knowledge (given_sources' "free" part)."""
+    person's words on the skill being run and on this worker's earlier tasks, and the organisation's knowledge
+    (given_sources' "free" part)."""
 
-    parts = [task_context.current_request() or "", _answers_text(task_id), _taught_text(), _org_text(task_id)]
+    parts = [task_context.current_request() or "", _answers_text(task_id), _taught_text(), _worker_words_text(task_id),
+             _org_text(task_id)]
     return "\n".join(p for p in parts if p)
 
 
 def given_sources(task_id=None):
     """
     What a picked option may be backed by, as {"free": text, "files": [text]}. Free: the request, the person's replies
-    in this task that the control plane confirms, the person's words on the skill being run (from the control plane),
-    and the organisation's knowledge (people write it; a desktop may only read it). Files: the request's own files,
-    which back a pick only where they state that field (option_beside_label). Never the application's pages, whose
-    option list is the menu; never the worker's own memory, notes or files.
+    in this task that the control plane confirms, the person's words on the skill being run and their answers on this
+    worker's earlier tasks (from the control plane), and the organisation's knowledge (people write it; a desktop may
+    only read it). Files: the request's own files, which back a pick only where they state that field
+    (option_beside_label). Never the application's pages, whose option list is the menu; never the worker's own
+    memory, notes or files.
     """
 
     free = [_free_text(task_id)]
@@ -773,6 +811,24 @@ def _joined_figure(digits, option):
     return bool(re.search(r"[A-Za-z][-/]" + d + r"(?!\d)|(?<!\d)" + d + r"[-/][A-Za-z]", option))
 
 
+def _code_written_whole(option, given, offered=None):
+    """
+    Whether `given` writes an option that is a code (a digit in it: "FND-3", "GST 18%") whole - its letters and digits
+    in order, nothing glued at either end (identity.holds_identifier) - and no longer entry of the list that holds it
+    ("FND-3 Annex" beside "FND-3") is written there too. A code written whole names its entry. Found live
+    (2026-11-08): among codes that share their letters (FND-3, FND-8, FND-9), the only part that tells one apart is its
+    figure, which is joined to the letters and so taken as the code's own part (_joined_figure), never as a word; no
+    text, not even the person's "region 07 goes to FND-3", could back the pick.
+    """
+
+    option = " ".join(str(option or "").split())
+    if not re.search(r"\d", option) or not given or not identity.holds_identifier(given, option):
+        return False
+    longer = [" ".join(str(o).split()) for o in offered or ()
+              if " ".join(str(o).split()).casefold() != option.casefold()]
+    return not any(identity.holds_identifier(o, option) and identity.holds_identifier(given, o) for o in longer if o)
+
+
 def option_backed(option, given, offered=None):
     """
     Whether `given` (a text) picks out `option` among the entries a list offered (`offered`; None when not read).
@@ -796,6 +852,8 @@ def option_backed(option, given, offered=None):
               if " ".join(str(o).split()).casefold() != option.casefold()]
     others = [o for o in others if o]
     if not others and stands_in(option, given):
+        return True
+    if _code_written_whole(option, given, offered):
         return True
     need = mine - set().union(*others) if others else set(mine)
     need = {w for w in need if not (w.isdigit() and _joined_figure(w, option))}
@@ -1127,7 +1185,8 @@ def declare(key, source, fields, scope="", task_id=None):
         raise ComputerError("a record needs its source: --from PATH (the document it comes from) or --from screen")
     # A record this task saved already is not declared again: a second save of it makes a second record (review round
     # 9, B: a task tried again from the start declared and saved its bill twice).
-    done = saved_record(load(task_id), key=key)
+    # (Or the saved record whose own number is this key: the same record, declared under its number.)
+    done = saved_record(load(task_id), key=key) or saved_by_number(load(task_id), key)
     text = _source_text(source)
     # The key on a page of the application this task read before (a list, a record): it may be entered already - the
     # task stops once and asks (review round 9, C: a bill already in the books was entered again).
@@ -1230,6 +1289,9 @@ def declare(key, source, fields, scope="", task_id=None):
                             "only when that is the one this field takes.")
     records = load(task_id)
     if done is not None:
+        if source != done.get("source"):
+            # (A field this declaration adds keeps its own source: the saved record's is another document.)
+            kept = {l: (dict(f, source=source) if f.get("from") == "source" else f) for l, f in kept.items()}
         return _add_to_saved(task_id, records, done, kept)
     records = [r for r in records if not (r.get("key") == key and not r.get("saved_at"))]  # declared again: replaced
     rec = {"key": key, "source": source, "scope": " ".join(str(scope or "").split()), "fields": kept,
@@ -1652,9 +1714,12 @@ def gate_faults(task_id=None, created=None):
 
 
 def declared_sources(task_id=None):
-    """The sources (files) records were declared from, each once."""
+    """The sources (files) records were declared from, each once: a record's, and a field's added from another."""
 
-    return list(dict.fromkeys(r.get("source") for r in load(task_id) if r.get("source") and r["source"] != "screen"))
+    found = []
+    for r in load(task_id):
+        found += [r.get("source")] + [f.get("source") for f in (r.get("fields") or {}).values() if isinstance(f, dict)]
+    return list(dict.fromkeys(s for s in found if s and s != "screen"))
 
 
 def parse_fields(text):

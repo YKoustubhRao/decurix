@@ -269,6 +269,27 @@ What the PY lane left for later (lane-PY.md; PLAN-P2 §9).
   (2026-11-08, "Owed checks run on 2026-11-08"): `py.*` lines in soul's trace one for one with `caller: soul` rows,
   none with `caller: agent`. `py.approval.read` is also made by the agent when it reads a reply (`approval.reading`
   from `engine_questions`, `gated_command`, `final_gate`); those go through soul like any worker-side call.
+  - **Phase 2, `py.judge`: built behind `DECURIX_SOUL_JUDGE=1` (off by default, read per call), parity proven
+    offline (2026-11-08).** `verify.judge` hands soul the evidence as data (`verify.judge_evidence`: texts, values,
+    observations, the files' facts, the documents, pictures as `data:` URLs; Python still reads the files, the screen
+    and the closer look) at `POST /api/llm/judge` (`cmd/soul/judge.go`), and soul words the prompt and reads the answer
+    (`agent/thebot/internal/judge`: `System`, `Messages`, `Decide` - Python's `JUDGE_SYSTEM`, `judge_content`,
+    `_parse` and the not-sure-enough rule, with Python's `str()`/`float()`/`strip()`/`repr()` reproduced). Same call
+    path as `/api/llm/call` (`makeCall`), purpose kept (`py.judge`, `py.judge.spot`), retries and the cut-off retry
+    still `llm_client`'s (`chat_decided`), the error mapping still `verify.judge`'s (soul answers `{error, cut_off}`
+    for an answer it cannot read; unsure, never done). Soul down, an older image (404) or a refusal: today's path.
+    Proof: `agent/thebot/internal/judge/testdata/parity.json` (13 cases, 49+14 answers, fictional), recorded from the
+    unmodified code; `agent/tests/test_judge_parity.py` (today's path still sends those messages and verdicts; the
+    switch sends that evidence and maps soul's decision to the same verdict), `internal/judge` parity_test.go (soul's
+    messages and decisions equal the recorded ones), `cmd/soul` judge_test.go (the provider is sent the same bytes from
+    the evidence as from today's messages via `/api/llm/call`). One known difference: for JSON that does not decode,
+    the `why` quotes Go's decoder, not Python's (still unsure). NaN/Infinity literals and Unicode digits in a
+    confidence decode in Python, not in Go (stricter: unsure). A quirk kept for parity: a confidence of `"nan"` reads
+    as 1.0 in Python's `max(0, min(1, x))`, so `done` with `"nan"` is done on both sides. **Owed before the switch
+    defaults on:** a 5-repeat eval (rule 1) with `DECURIX_SOUL_JUDGE=1` against off on the same suite and image: the
+    same verdict per case and repeat within the run-to-run noise of off vs off, no false done, the same judge tokens
+    per call (prompt and cache share) and `py.judge` rows with `caller: soul`; then delete Python's copy (prompt,
+    `judge_content`, `_parse`) so one copy remains.
 - **Spot judgement of trusted replays** is built (`skill_task._spot`, purpose `py.judge.spot`; a `not_done` records a
   failure) and samples 1 in 5 task ids by default (`DECURIX_SPOT_JUDGE_EVERY`; 0 never, 1 always). Open: measure the
   judge's cost and its catch rate on the L3 matrix before changing it. `learn-v1` exists now (2026-11-08) and holds
@@ -441,7 +462,47 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     and once an arm's agent never became ready in 4 minutes while tests ran beside it on the host (a retry passed).
   - `default+expert --carry-state --repeats 5`: run `eeb05dd4a201cecda` started 2026-11-08 08:28 UTC on the dev control
     plane (image 158b3cdebb0b from 82f2966); its `curve`, and what it says against the bar, are owed here and in
-    evals.md.
+    evals.md. **Cancelled 2026-11-08 09:30 UTC after 7 rows** (the "before"; rows in
+    `evals/results/eeb05dd4a201cecda/rows.jsonl`): bill-1 budget (1.46M in, 73 calls), recon-1 pass (166k, the layout
+    asked), bill-2 asked (too many questions; 582k), recon-2 pass (71k), bill-3 timeout (1.16M), recon-3 pass (67k),
+    bill-4 timeout (1.11M; it asked the invoice number, required, and was answered). Bills 2, 3 and 4 had the right
+    record saved (`mock_records` passed) and still did not end done. Two harness-looking points: on bill 2 the expert
+    gave "don't know" to "Which cost centre should I select for this bill?" although the question names
+    `cost-centre-rule` (trajectory `x0a15bc60469f8d16`); on bills 3 and 4 the final check said the cost centre was
+    backed by nothing "a person said or taught", though the person taught the rule in an earlier case, so a lesson
+    kept across tasks is not counted as provenance (`xf9654c7fe29c258b`, `xce7e9d6e97a9bcaf`).
+    **Fixed 2026-11-08 (uncommitted), three causes found in those trajectories:** (1) only the current task's answers
+    were read: the person's own answers on any task of the same worker are now a source
+    (`person_record.worker_words`, `GET /api/desktops/judgements?scope=worker&kind=answer`, bounded, newest first, the
+    caller's own worker only; [learning-loop.md](learning-loop.md)); (2) on an eval desktop nothing the expert said
+    backed anything, even on its own task: the practice broker answered 404 to the judgement read and the runner sent
+    no judgement id, so bill 3's own reply with the rule and bill 4's invoice number were refused too. The runner now
+    keeps each expert reply on the broker (`Broker.KeepReply`, actor kind `scripted`, forgotten at a reset) and sends
+    its id; (3) no text could back a code among codes sharing their letters (the figure is joined, so the word rule
+    dropped it): a code written whole picks out its entry (`records._code_written_whole`). **The "2 records where 1
+    was expected" (`ledger_readback`):** both bills had one record in the app (`mock_records` passed). Bill 3: the bill
+    was saved under the key "bill" with the cost centre undeclared, then declared again under its own bill number to
+    add that field; `declare` matched saved records by key only, so it was a new record (first stopped as "may be
+    entered already" by the task's own saved page), and the edit's save marked it saved - a harness bug, fixed
+    (`records.saved_by_number`: the field joins the saved record). Bill 4: its declarations were refused (cause 2 and
+    3), the worker saved the bill outside the ledger with `--checked`, then declared it twice under two keys after the
+    save; neither was saved, and the final check rightly held a record no declaration covers. No fix to that check;
+    with the causes above the declaration passes before the save. **Owed:** the next live learn-v1 run, to see bills
+    3 and 4 end done without asking the rule again; the expert's replies are still not in the run record's
+    `judgements` (the broker keeps them in memory only).
+  - **Rerun on today's fixes, in progress 2026-11-08:** images rebuilt from ac20e00 (`decurix-desktop:basic`, `:next`,
+    `:developer`, `:ai` = a8edcd908964; `decurix-tools` unchanged, 28170e9f7e03); dev control plane `decurix-dev`
+    restarted on a binary from ac20e00 (sha256 5939e84a...), volume `decurix-dev-data` kept, brain Kimi-K2.6 set.
+    Calibration `e838100482d961956` (oracle + nothing, `--carry-state --repeats 1`, 09:34 UTC): **oracle 10/10,
+    nothing 0/10** (false done 10/10), no infrastructure or invalid rows, no problems on an oracle row. The
+    5-repeat `default+expert` run, the curve, and the cleanup (`cp-dev.sh stop`, the dev volume, the `before-1107`
+    tags, the buildx builder `decurix-wsl-2048m`) are still owed; the run waits for the cross-task provenance fix.
+  - **Fixed 2026-11-08: the expert's "don't know" to bill 2's cost-centre question.** Matching was right (the question
+    named `cost-centre-rule` by `refers_to`); the expert's model chose null because the fact gives a rule, not "which"
+    ("it explains how, not which"; the question held no GSTIN). `ExpertPrompt` now says a fact gives what is asked when
+    it states it or the rule the person decides it by, a same-subject fact that does not gives nothing, and no fact
+    gives leave to act. Probed on the deployment: that question 1/12 before, the new prompt 93/93 on 22 positives and
+    near misses ([evals.md](evals.md), "The scripted expert"). Suite data unchanged (SHA `c6722c894ced`).
 - **Done: D7.** CLAUDE.md now says dev eval suites with fictional data live in `evals/` and the sealed held-out set stays
   outside the repo.
 - **Calibration L2 needs the live stack.** Offline, `TestCoreSuiteLoads` passes the oracle on 10 of 12 core-v1 cases,
@@ -490,6 +551,8 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   as the control plane recorded it (`person_record.py`), through `GET /api/desktops/judgements?task=` and `?skill=` and
   `GET /api/desktops/learned?kind=field_answer` (`internal/httpapi/desktop_judgements.go`, `tasks.JudgementFieldAnswer`;
   d63f89b, a4ce49c). When the control plane cannot be read, a pick only the person's word backs is not backed (fail closed).
+  Since 2026-11-08 also `?scope=worker`: the person's answers on the worker's earlier tasks back later ones
+  (`person_record.worker_words`; the learn-v1 bullet under EVAL).
   - Not backing anything any more: `<task>.said`, the gone `field-answers.json`, and the skill file.
   - Org knowledge still counts.
 - **Accepted residual: a word of the option in an unrelated phrase of the request.** "the general manager approved

@@ -158,6 +158,16 @@ func (s *Store) JudgementsForSkill(workerID, skill string) ([]Judgement, error) 
 		 ORDER BY at_ns, rowid`, workerID, workerID, skill)
 }
 
+// PersonsWordsForWorker is up to limit of the judgements of one kind on a worker's tasks that a person (or the
+// scripted expert standing in for one) gave themselves - not derived from another, not secret - newest first: what
+// its desktop reads as the person's words on its earlier tasks (agent/decurix_agent/person_record.py worker_words).
+func (s *Store) PersonsWordsForWorker(workerID, kind string, limit int) ([]Judgement, error) {
+	return sqlitedb.QueryAll(s.db, scanJudgement,
+		`SELECT `+judgementColumns+` FROM judgements WHERE worker_id = ? AND kind = ? AND derived_from = ''
+			AND secret = 0 AND actor_kind IN (?, ?) ORDER BY at_ns DESC, rowid DESC LIMIT ?`,
+		workerID, kind, ActorPerson, ActorScripted, limit)
+}
+
 // JudgementsOfKind is a worker's judgements of one kind (what its desktop kept, by kind), oldest first.
 func (s *Store) JudgementsOfKind(workerID, kind string) ([]Judgement, error) {
 	return sqlitedb.QueryAll(s.db, scanJudgement,

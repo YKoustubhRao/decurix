@@ -241,6 +241,21 @@ can't give it to you. Do not make it up: if the task needs it, say it is missing
 guess). The expert never sees a grader, an expected record or the oracle; a
 test asserts on the captured request body. It never answers a secret question.
 
+**What "gives" means** (`ExpertPrompt`, 2026-11-08). A fact gives what a question asks for when its words state it, or
+the rule or method the person decides it by: the worker applies a rule itself, so the fact is chosen even when the
+question lacks what applying it needs. A fact only on the same subject gives nothing, and no fact gives leave to act:
+a question that only asks whether the worker may go ahead gets none. The model replies `{"asks": ..., "fact": ...}`;
+only `fact` is read. Why: the first prompt ("the one fact that answers the question") had Kimi-K2.6 answer null to
+learn-v1 bill 2's "The bill from Inkhaven Printers (IP-0782) does not specify a cost centre ... Which cost centre
+should I select for this bill?" (run `eeb05dd4a201cecda`, trajectory `x0a15bc60469f8d16`; its reasoning: the rule
+"explains how, not which", and the question held no GSTIN), so a lesson asked for again got "don't know". Matching by
+`refers_to` was right there (the question named `cost-centre-rule`); the choice was not. Probed against the deployment
+(22 questions, positives and near misses from learn-v1 and core's `bill-already-entered`): the first prompt chose that
+question's fact 1 time in 12 and gave a fact to "may I click Save bill?" and to a gate-worded approval 9 times in 18;
+the new one was right 93 of 93, and still gives none to a question on the same subject that the fact does not answer
+(which ledger the IGST goes to, the IGST amount, the due date, the supplier's GSTIN, a date's reading).
+`TestTheExpertCountsARuleAndNeverGivesLeave` holds the prompt's two rules.
+
 **Approvals are case data, decided in code** (owner decision 2026-11-08). The expert's model never sees an approval.
 When the gate stops an action the case lists under `approves`, the arm has the expert, and the question is the gate's
 own (its signature checked against the desktop's gate key, `VerifyGateQuestion`), the worker is answered

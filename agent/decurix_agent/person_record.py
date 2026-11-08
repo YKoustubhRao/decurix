@@ -9,12 +9,20 @@ Three reads, each of what the control plane keeps as a human judgement (H-PY-18 
   question it answered. A reply the watcher kept in `<task>.said` backs a pick only when its judgement id is one of
   these and its text's hash is that judgement's: the text used is the control plane's, never the file's.
 - taught(skill): the person's own judgements on this desktop's tasks that taught or ran that skill.
+- worker_words(task): the person's own answers on any task of this desktop's worker, newest first and bounded
+  (?scope=worker): a rule taught in an earlier task ("region 07 goes to fund FND-3") backs the value the worker
+  derives from it in a later one, since the value stands in the rule's words. Read once per task. Never the worker's
+  files or notes.
 - field_answers(): what a person answered about which entry a field takes, kept as the control plane's learned rows
   (kind "field_answer", derived from that answer's judgement), each with the judgement's own text - an option backs a
   later pick only when it is picked out by that text (records._kept_answer).
 - field_units(): what a person answered about whether a field takes its figures in a unit (kind "field_unit", derived
   from their reply to the save's numbered unit question), each with that judgement's text and question - the answer
   is used only when that question holds the question's sentence and the reply is the row's option (unit_answers).
+
+Who counts as the person: a judgement whose actor kind is "person", or "scripted" - the eval's scripted expert, whose
+replies a practice desktop's control plane (the practice broker) keeps and serves in a person's place. Never a worker's
+or a program's, never one derived from another (what a desktop kept), never a secret one.
 
 Fail closed: a control plane that cannot be read, or that has no such read yet, confirms nothing, and a pick that
 rested only on the person's word is then not backed - the person is asked. Never raises.
@@ -40,6 +48,10 @@ TIMEOUT_SECONDS = 5
 # that does not answer costs one wait, not one per pick.
 CACHE_SECONDS = 60
 MAX_ANSWER_BYTES = 2 * 1024 * 1024
+# The actor kinds whose own words are the person's (above).
+PERSON_KINDS = frozenset({"person", "scripted"})
+# How many of the worker's earlier answers are read (newest first): the control plane's default for the read.
+WORKER_WORDS_LIMIT = 100
 
 _cache = {}
 _lock = threading.Lock()
@@ -80,6 +92,7 @@ def _get(path, query, fresh=False):
 def clear_cache():
     with _lock:
         _cache.clear()
+        _worker_read["task"] = None
 
 
 def _persons(rows, task_id=None):
@@ -90,7 +103,7 @@ def _persons(rows, task_id=None):
         if not isinstance(row, dict) or not isinstance(row.get("text"), str) or not row.get("id"):
             continue
         actor = row.get("actor") if isinstance(row.get("actor"), dict) else {}
-        if actor.get("kind") != "person" or row.get("derived_from") or row.get("secret"):
+        if actor.get("kind") not in PERSON_KINDS or row.get("derived_from") or row.get("secret"):
             continue
         if task_id and row.get("task_id") != task_id:
             continue
@@ -143,6 +156,26 @@ def taught(skill):
     return [row["text"] for row in rows if not row.get("skill_name") or row.get("skill_name") == skill]
 
 
+_worker_read = {"task": None}
+
+
+def worker_words(task_id=None):
+    """
+    The person's own answers on any task of this desktop's worker - a reply to a question, one that taught a rule or
+    confirmed a lesson - as the control plane keeps them (texts, newest first, at most WORKER_WORDS_LIMIT; [] when none
+    or unread). Read again when the task changes (else the read is reused for CACHE_SECONDS), so a later task sees
+    what an earlier one was told. Only the control plane's record: never a file or note the worker's user can write.
+    """
+
+    task = task_id or task_context.current() or ""
+    query = {"scope": "worker", "kind": "answer", "limit": str(WORKER_WORDS_LIMIT)}
+    with _lock:
+        fresh, _worker_read["task"] = _worker_read["task"] != task, task
+    answer = _get(JUDGEMENTS_PATH, query, fresh=True) if fresh else _get(JUDGEMENTS_PATH, query)
+    rows = _persons((answer or {}).get("judgements") if isinstance(answer, dict) else None)
+    return [row["text"] for row in rows[:WORKER_WORDS_LIMIT]]
+
+
 def field_answers():
     """[{"label", "host", "option", "source_text", "source_asked", "judgement"}]: the field answers the control plane
     keeps for this desktop, each with the text of the person's judgement it was derived from and the question that
@@ -156,7 +189,7 @@ def field_answers():
             continue
         source = row.get("source") if isinstance(row.get("source"), dict) else {}
         actor = source.get("actor") if isinstance(source.get("actor"), dict) else {}
-        if actor.get("kind") != "person" or not isinstance(source.get("text"), str):
+        if actor.get("kind") not in PERSON_KINDS or not isinstance(source.get("text"), str):
             continue
         try:
             said = json.loads(row.get("text") or "")
@@ -190,7 +223,7 @@ def _learned(kind):
             continue
         source = row.get("source") if isinstance(row.get("source"), dict) else {}
         actor = source.get("actor") if isinstance(source.get("actor"), dict) else {}
-        if actor.get("kind") != "person" or not isinstance(source.get("text"), str):
+        if actor.get("kind") not in PERSON_KINDS or not isinstance(source.get("text"), str):
             continue
         try:
             said = json.loads(row.get("text") or "")

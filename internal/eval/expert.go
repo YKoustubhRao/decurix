@@ -38,8 +38,13 @@ const (
 	ExpertPurpose = "eval.expert"
 )
 
-// ExpertPrompt is the expert's fixed, generic instruction.
-const ExpertPrompt = `A worker doing a task asked the question below. These are the facts the person who gave the task knows, each with an id and what it is about. Reply {"fact": "<id>"} for the one fact that answers the question, or {"fact": null} if none does. Never answer the question yourself.`
+// ExpertPrompt is the expert's fixed, generic instruction. A fact that gives the rule the person decides a thing by
+// answers a question asking for that thing, though the question lacks what applying the rule needs: the first prompt
+// ("the one fact that answers the question") had Kimi-K2.6 refuse such a rule on one worded question 11 times in 12
+// ("it explains how, not which"), so a lesson asked for again was answered "don't know". No fact gives leave to act,
+// so a question that only asks "may I go ahead?" gets none (the first prompt gave a fact to such questions 9 times in
+// 18). Probed 2026-11-08 on 22 questions: 93/93 as meant (docs/evals.md). The "asks" field is the model's own, unread.
+const ExpertPrompt = `A worker doing a task asked the question below. These are the facts the person who gave the task knows, each with an id, what it is about and the person's own words. Choose the one fact whose words give what the question asks for. A fact gives it when its words state what is asked, or the rule or method the person decides it by: the worker applies a rule itself, so choose that fact even when the question does not hold what applying it needs. A fact whose words do not give what is asked gives nothing, though it is on the same subject; and no fact gives leave to act, so a question that only asks whether the worker may go ahead gets none. Reply {"asks": "<what the question asks for, in a few words>", "fact": "<id>"}, or {"asks": "<what it asks for>", "fact": null} when no fact gives it. Never answer the question yourself.`
 
 // modelChanged is the problem a row gets when its calls were not all served by the pinned deployment (D10).
 const modelChanged = "model changed during the run"

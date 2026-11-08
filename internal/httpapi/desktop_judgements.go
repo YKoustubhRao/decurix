@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/YKoustubhRao/decurix/internal/tasks"
@@ -19,6 +20,14 @@ import (
 
 // maxSkillName bounds a skill named in a query.
 const maxSkillName = 128
+
+// The worker-scoped read (?scope=worker): the person's own words on any of the calling desktop's tasks, newest first,
+// at most workerWordsMax rows (workerWordsDefault when ?limit= is not given). Only answers: a reply that taught a rule
+// or confirmed a lesson is an answer; what a desktop kept from one (a lesson, a field_answer) is derived and not sent.
+const (
+	workerWordsDefault = 100
+	workerWordsMax     = 200
+)
 
 // desktopJudgement is one judgement as a desktop is given it.
 type desktopJudgement struct {
@@ -62,7 +71,9 @@ func (s *Server) asDesktopJudgement(j tasks.Judgement) desktopJudgement {
 }
 
 // desktopJudgementsHandler answers GET /api/desktops/judgements?task=<id> (every judgement on one of the calling
-// desktop's tasks; another's is 403) or ?skill=<name> (every judgement on each of its tasks that names that skill).
+// desktop's tasks; another's is 403), ?skill=<name> (every judgement on each of its tasks that names that skill) or
+// ?scope=worker&kind=answer[&limit=N] (the person's own answers on any of its tasks, newest first, bounded: what backs
+// a value in a later task, person_record.worker_words).
 func (s *Server) desktopJudgementsHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodGet) {
 		return
@@ -72,10 +83,22 @@ func (s *Server) desktopJudgementsHandler(w http.ResponseWriter, r *http.Request
 		jsonStatusError(w, http.StatusForbidden, "only a desktop reads its own judgements here")
 		return
 	}
-	task, skill := strings.TrimSpace(r.URL.Query().Get("task")), strings.TrimSpace(r.URL.Query().Get("skill"))
+	q := r.URL.Query()
+	task, skill, scope := strings.TrimSpace(q.Get("task")), strings.TrimSpace(q.Get("skill")), strings.TrimSpace(q.Get("scope"))
 	var rows []tasks.Judgement
 	var err error
 	switch {
+	case scope != "":
+		limit, ok := workerWordsLimit(q.Get("limit"))
+		if scope != "worker" || task != "" || skill != "" || !ok {
+			jsonStatusError(w, http.StatusBadRequest, "scope=worker takes kind=answer and an optional limit, nothing else")
+			return
+		}
+		if kind := strings.TrimSpace(q.Get("kind")); kind != "" && kind != tasks.JudgementAnswer {
+			jsonStatusError(w, http.StatusBadRequest, "scope=worker takes kind=answer and an optional limit, nothing else")
+			return
+		}
+		rows, err = s.Tasks.PersonsWordsForWorker(worker, tasks.JudgementAnswer, limit)
 	case task != "" && skill == "":
 		if !tasks.ValidID(task) {
 			jsonStatusError(w, http.StatusBadRequest, "name a task")
@@ -103,6 +126,20 @@ func (s *Server) desktopJudgementsHandler(w http.ResponseWriter, r *http.Request
 		}
 	}
 	jsonResponse(w, map[string]any{"judgements": out})
+}
+
+// workerWordsLimit is ?limit= of the worker-scoped read: workerWordsDefault when empty, false when it is not a number
+// from 1 to workerWordsMax.
+func workerWordsLimit(raw string) (int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return workerWordsDefault, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > workerWordsMax {
+		return 0, false
+	}
+	return n, true
 }
 
 // desktopLearnedRow is one learned row as its desktop reads it back, with the judgement it was derived from.

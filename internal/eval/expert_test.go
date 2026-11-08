@@ -84,6 +84,28 @@ func TestTheExpertsNoneOrGarbageGetsTheFixedSentence(t *testing.T) {
 	}
 }
 
+// A fact that gives the rule a thing is decided by answers a question asking for that thing (the first prompt had the
+// model refuse a taught rule as "how, not which", so a lesson asked for again got "don't know"); no fact gives leave
+// to act. The reply's "asks" is the model's own and only the fact is read.
+func TestTheExpertCountsARuleAndNeverGivesLeave(t *testing.T) {
+	for _, must := range []string{"the rule or method the person decides it by", "even when the question does not hold what applying it needs",
+		"though it is on the same subject", "no fact gives leave to act", "only asks whether the worker may go ahead", `"fact": null`, "Never answer the question yourself."} {
+		if !strings.Contains(ExpertPrompt, must) {
+			t.Errorf("the expert's prompt lacks %q", must)
+		}
+	}
+	for reply, want := range map[string]string{
+		`{"asks": "which cost centre to select", "fact": "centre"}`: "centre",
+		`{"asks": "leave to click Save", "fact": null}`:             "",
+	} {
+		e := &Expert{Hub: &scriptedHub{replies: []llm.ChatResult{content(reply)}}, Deployment: "big-1"}
+		c, _ := e.ChooseFor(context.Background(), "", "", "Which cost centre?", expertCase.Facts)
+		if c.Fact != want || c.Problem != "" {
+			t.Errorf("%s: %+v", reply, c)
+		}
+	}
+}
+
 func TestTheExpertRetriesWithoutTemperatureOnce(t *testing.T) {
 	hub := &scriptedHub{replies: []llm.ChatResult{
 		{Status: 400, Body: []byte(`{"error": {"message": "Unsupported value: 'temperature' does not support 0"}}`), Deployment: "big-1"},

@@ -650,6 +650,7 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 				var err error
 				if !run.CarryState || i == 0 {
 					err = s.Sandbox.ResetPractice(ctx, d.ContainerID, emptySnapshot)
+					s.Broker.ForgetReplies() // (what an earlier case was told is not the reset desktop's)
 				} else {
 					err = s.Sandbox.SettlePractice(ctx, d.ContainerID)
 				}
@@ -1009,7 +1010,14 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				}
 				asked.Reply = Reply(c, asked.Fact)
 				ev.Questions = append(ev.Questions, asked)
-				if err := s.post(desktop.WithGateNotice(ctx, practice.ReplyGateNotice(taskID, asked.Reply, o.Text, o.Secret)), d, "/request", map[string]string{"content": asked.Reply, "task_id": taskID}); err != nil {
+				// The expert's words are the person's on this desktop: kept where its control plane (the broker) serves
+				// a person's judgements, and sent with their id as the control plane sends a person's reply, so what
+				// they back now and on the worker's later tasks is what a person's reply would back.
+				body := map[string]string{"content": asked.Reply, "task_id": taskID}
+				if id := s.Broker.KeepReply(taskID, o.Text, asked.Reply); id != "" {
+					body["judgement_id"] = id
+				}
+				if err := s.post(desktop.WithGateNotice(ctx, practice.ReplyGateNotice(taskID, asked.Reply, o.Text, o.Secret)), d, "/request", body); err != nil {
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text
 					notDelivered(ev, err, "The expert's reply could not be sent to the worker.")
 					return problems
