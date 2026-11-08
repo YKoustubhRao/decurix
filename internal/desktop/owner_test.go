@@ -23,3 +23,17 @@ func TestTheOwnerLabelSaysWhoseAContainerIs(t *testing.T) {
 		t.Fatalf("a new desktop does not carry its creator: %v", cfg.Labels)
 	}
 }
+
+// A desktop made before the owner label is this control plane's when the agent token it was created with is the one
+// this control plane issues for it - another control plane's secret gives another token.
+func TestALegacyDesktopIsAdoptedByItsAgentToken(t *testing.T) {
+	mine := (&Manager{HostGUISecret: []byte("this plane's secret")}).AgentToken("erpbills")
+	theirs := (&Manager{HostGUISecret: []byte("another plane's secret")}).AgentToken("erpbills")
+	if mine == "" || mine == theirs {
+		t.Fatal("tokens are not per control plane")
+	}
+	env := []string{"PATH=/usr/bin", AgentTokenEnv + "=" + mine}
+	if !tokenIn(env, mine) || tokenIn(env, theirs) || tokenIn([]string{"PATH=/usr/bin"}, mine) {
+		t.Fatal("adoption by agent token is wrong")
+	}
+}

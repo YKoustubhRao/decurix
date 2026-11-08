@@ -3,8 +3,14 @@
 package desktop
 
 import (
+	"context"
+	"crypto/hmac"
 	"log"
+	"strings"
 	"sync"
+	"time"
+
+	"github.com/docker/docker/api/types/container"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
@@ -43,4 +49,46 @@ func LogNotOwned(sweep, id string) {
 	if _, said := notOwnedSaid.LoadOrStore(sweep+"\x00"+id, true); !said {
 		log.Printf("%s: leaving %s alone - this control plane did not create it (no %s label of its own)", sweep, id, OwnerLabel)
 	}
+}
+
+// owned reports whether container c (desktop id) is this control plane's: its owner label says so, or, made before
+// the label, the agent token it was given at creation is the one this control plane issues for id (ownedLegacy).
+func (m *Manager) owned(ctx context.Context, c container.Summary, id string) bool {
+	if c.Labels[OwnerLabel] != "" {
+		return OwnedHere(c.Labels)
+	}
+	if v, ok := m.legacyOwned.Load(c.ID); ok {
+		return v.(bool)
+	}
+	mine := m.ownedLegacy(ctx, c.ID, id)
+	m.legacyOwned.Store(c.ID, mine)
+	return mine
+}
+
+// ownedLegacy adopts a desktop made before OwnerLabel when the agent token in its creation environment is the one
+// this control plane derives for it (AgentToken: an HMAC of the desktop's id under this control plane's own secret),
+// a proof no other control plane can make. Docker cannot label a container after it is made; without this, upgrading
+// left every existing desktop to no idle pause. A container that cannot be read, or has no token, is not adopted.
+func (m *Manager) ownedLegacy(ctx context.Context, containerID, id string) bool {
+	want := m.AgentToken(id)
+	if want == "" {
+		return false
+	}
+	inspectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	inspect, err := m.client.ContainerInspect(inspectCtx, containerID)
+	if err != nil || inspect.Config == nil {
+		return false
+	}
+	return tokenIn(inspect.Config.Env, want)
+}
+
+// tokenIn reports whether env (a creation environment, NAME=value) holds AgentTokenEnv with the value want.
+func tokenIn(env []string, want string) bool {
+	for _, kv := range env {
+		if value, ok := strings.CutPrefix(kv, AgentTokenEnv+"="); ok {
+			return hmac.Equal([]byte(value), []byte(want))
+		}
+	}
+	return false
 }

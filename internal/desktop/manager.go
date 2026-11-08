@@ -104,6 +104,10 @@ type Manager struct {
 
 	// startedMu/startedCache cache Docker's StartedAt timestamp for running
 	// containers, eliminating redundant ContainerInspect RPCs during List.
+	// legacyOwned caches, per container ID, whether a container made before OwnerLabel is this control plane's
+	// (ownedLegacy): read once, never again.
+	legacyOwned sync.Map
+
 	startedMu    sync.Mutex
 	startedCache map[string]string
 
@@ -973,7 +977,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		SharedNetwork:  c.NetworkSettings != nil && onSharedNetwork(id, c.NetworkSettings.Networks),
 		ParentID:       parentID,
 		MissingApps:    m.MissingApps(id),
-		Owned:          OwnedHere(c.Labels),
+		Owned:          m.owned(ctx, c, id),
 	}
 	m.withRest(&d)
 	return d
