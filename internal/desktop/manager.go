@@ -688,6 +688,14 @@ func (m *Manager) listUncached(
 	if err != nil {
 		return nil, err
 	}
+	// Another control plane's desktops are not this one's to show or act on (owner.go).
+	mine := containers[:0]
+	for _, c := range containers {
+		if !ForeignOwner(c.Labels) {
+			mine = append(mine, c)
+		}
+	}
+	containers = mine
 
 	// Each container's own Desktop lands at its own index, written by its
 	// own goroutine only - no shared state, so no lock is needed alongside
@@ -965,6 +973,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		SharedNetwork:  c.NetworkSettings != nil && onSharedNetwork(id, c.NetworkSettings.Networks),
 		ParentID:       parentID,
 		MissingApps:    m.MissingApps(id),
+		Owned:          OwnedHere(c.Labels),
 	}
 	m.withRest(&d)
 	return d

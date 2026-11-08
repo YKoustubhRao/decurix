@@ -163,7 +163,7 @@ func (m *Manager) EnsurePracticeNetwork(ctx context.Context) (netip.Prefix, neti
 			return netip.Prefix{}, netip.Addr{}, err
 		}
 		if _, err = m.client.NetworkCreate(ctx, PracticeNetworkName, network.CreateOptions{
-			Driver: "bridge", Internal: true, Labels: map[string]string{PracticeLabel: "true"},
+			Driver: "bridge", Internal: true, Labels: map[string]string{PracticeLabel: "true", OwnerLabel: ownerID()},
 		}); err != nil {
 			return netip.Prefix{}, netip.Addr{}, fmt.Errorf("create practice network: %w", err)
 		}
@@ -481,7 +481,7 @@ func practiceConfigs(spec PracticeSpec, env, securityOpt []string) (*container.C
 	name := PracticeDesktopID(spec.RunID)
 	return &container.Config{
 			Image: spec.Image, Env: env, Hostname: name,
-			Labels: map[string]string{PracticeLabel: "true", "decurix-practice-run": spec.RunID},
+			Labels: map[string]string{PracticeLabel: "true", "decurix-practice-run": spec.RunID, OwnerLabel: ownerID()},
 		}, &container.HostConfig{
 			NetworkMode: container.NetworkMode(PracticeNetworkName),
 			// The worker's own desktop's options, no-new-privileges included as on every desktop (B-21): the
@@ -909,7 +909,7 @@ func practiceMockConfigs(image, runID string, inherited []string) (*container.Co
 	config.Env = qualificationEnvironment(inherited)
 	config.Entrypoint = []string{"/bin/sh", "-c", "while [ ! -f /work/ready ]; do sleep 0.2; done; exec /usr/bin/python3 /work/mock_app.py --port " + PracticeMockPort + " --fixture /work/fixture.json --state /work/state.json"}
 	config.Cmd = nil
-	config.Labels = map[string]string{PracticeLabel: "true", "decurix-practice-run": runID, "decurix-practice-mock": "true"}
+	config.Labels = map[string]string{PracticeLabel: "true", "decurix-practice-run": runID, "decurix-practice-mock": "true", OwnerLabel: ownerID()}
 	host.NetworkMode = container.NetworkMode(PracticeNetworkName)
 	host.Resources.Memory, host.Resources.MemorySwap = 128<<20, 128<<20
 	pids := int64(32)
@@ -1085,6 +1085,10 @@ func (m *Manager) CleanupPractice(ctx context.Context) error {
 		return err
 	}
 	for _, c := range list {
+		if !OwnedHere(c.Labels) {
+			LogNotOwned("practice cleanup", strings.TrimPrefix(strings.Join(c.Names, ","), "/"))
+			continue
+		}
 		if err := m.client.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !client.IsErrNotFound(err) {
 			return err
 		}
@@ -1100,6 +1104,10 @@ func (m *Manager) CleanupPractice(ctx context.Context) error {
 		m.leavePracticeNetwork(ctx)
 	}
 	for _, n := range nets {
+		if !OwnedHere(n.Labels) {
+			LogNotOwned("practice cleanup", n.Name)
+			continue
+		}
 		if err := m.client.NetworkRemove(ctx, n.ID); err != nil && !client.IsErrNotFound(err) {
 			return err
 		}

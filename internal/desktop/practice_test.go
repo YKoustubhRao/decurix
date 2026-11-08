@@ -99,7 +99,10 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.netExists = true
 		_ = json.NewEncoder(w).Encode(map[string]string{"Id": "net1"})
 	case p == "/networks" && r.Method == "GET":
-		_ = json.NewEncoder(w).Encode([]map[string]string{{"Id": "net1", "Name": PracticeNetworkName}})
+		// One of this control plane's, one another's (OwnerLabel): cleanup removes only its own.
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"Id": "net1", "Name": PracticeNetworkName, "Labels": map[string]string{OwnerLabel: ownerID()}},
+			{"Id": "net-other", "Name": PracticeNetworkName, "Labels": map[string]string{OwnerLabel: "0123456789ab"}}})
 	case strings.HasPrefix(p, "/networks/") && r.Method == "DELETE":
 		w.WriteHeader(204)
 	case strings.HasPrefix(p, "/images/"):
@@ -166,7 +169,10 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"Id": ctr, "Config": map[string]any{"Labels": labels}, "State": map[string]any{"Running": true, "Paused": d.paused[ctr]}, "NetworkSettings": map[string]any{"Networks": map[string]any{PracticeNetworkName: map[string]string{"IPAddress": "172.30.0.5"}}}})
 	case p == "/containers/json":
-		_ = json.NewEncoder(w).Encode([]map[string]string{{"Id": "left-behind"}})
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"Id": "left-behind", "Labels": map[string]string{OwnerLabel: ownerID()}},
+			{"Id": "another-planes", "Labels": map[string]string{OwnerLabel: "0123456789ab"}},
+			{"Id": "made-before-owners"}})
 	case strings.HasSuffix(p, "/exec") && strings.HasPrefix(p, "/containers/"):
 		var body struct {
 			User string
@@ -505,6 +511,12 @@ func TestResetAndCleanupPractice(t *testing.T) {
 	joined = strings.Join(d.calls, "\n")
 	if !strings.Contains(joined, "DELETE /containers/left-behind") || !strings.Contains(joined, "DELETE /networks/net1") {
 		t.Fatalf("cleanup incomplete: %s", joined)
+	}
+	// Another control plane's practice desktop and network, and a container that names no creator, are left alone.
+	for _, other := range []string{"/containers/another-planes", "/containers/made-before-owners", "/networks/net-other"} {
+		if strings.Contains(joined, "DELETE "+other) {
+			t.Fatalf("cleanup removed %s, which this control plane did not create: %s", other, joined)
+		}
 	}
 }
 

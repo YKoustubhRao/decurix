@@ -179,7 +179,7 @@ func (c *Checker) restCandidates(ctx context.Context, rd RoomDesktops, list []de
 	}
 	var out []cand
 	for _, d := range list {
-		if desktop.SanitizeID(d.ID) == self || !c.restable(ctx, rd, d) {
+		if desktop.SanitizeID(d.ID) == self || !d.Owned || !c.restable(ctx, rd, d) {
 			continue
 		}
 		out = append(out, cand{d, c.lastUse(rd, d)})

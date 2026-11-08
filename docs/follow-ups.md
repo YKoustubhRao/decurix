@@ -187,7 +187,7 @@ A second dev control plane started beside the first on the same Docker took the 
 pause (`idlepause`) sees only its own database's activity and paused a desktop mid-task, and each control plane's
 `CleanupPractice` at start removes every practice desktop on the host. Not a product path today (one control plane per
 host), but any rig that runs two (parallel eval lanes) needs both to scope their sweeps to desktops they created (a
-control-plane instance label on the container, checked by idle pause and cleanup). **Open.**
+control-plane instance label on the container, checked by idle pause and cleanup). **Done** 2026-11-08: every desktop and practice container and practice network carries `decurix.owner` = the control plane's instance id (`desktop.OwnerLabel`, `sqlitedb.InstanceID`); `List` leaves out another control plane's, and the idle pause, the rest/stop that makes room and the practice cleanup act only on their own (`Desktop.Owned`), logging once what they leave alone. A desktop made before the label is listed but left to no sweep until it is recreated.
 
 ## A refused outcome leaves its task running (found 2026-11-08, video lane)
 

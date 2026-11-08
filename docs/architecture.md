@@ -156,6 +156,9 @@ internal/idlepause — Checker.Run: a ticker (every 2 min) that pauses a desktop
                       opts out, and it never does more than the Pause/Stop a human's
                       own button does; Busy is asked again under LockDesktop.
                       FastPauseAfter checks a desktop again soon after its task ends.
+                      It acts only on desktops this control plane created
+                      (desktop.OwnerLabel, Desktop.Owned): a second control plane on
+                      the same Docker never pauses, stops or sweeps another's.
                       room.go (lightweight L2): a desktop paused for StopAfter
                       (DECURIX_IDLE_STOP_AFTER_MINUTES, 30) is stopped; and MakeRoom,
                       desktop.Manager's RoomMaker, runs before every start (not a wake:
