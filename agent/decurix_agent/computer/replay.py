@@ -1660,12 +1660,32 @@ def run(program, params=None, start=1, report=None, ladder=None):
         store.update(kept)
 
 
+# The most values a run's record of what it entered keeps, and the longest of each.
+MAX_ENTERED = 200
+ENTERED_CHARS = 200
+
+
+def entered_value(step, values, secret_params=()):
+    """What a step that ran put into a field, from this run's values: a typed step's or a chosen option's value, as
+    one string; None for any other step, a secret parameter's, an empty one, or one that reads as a credential."""
+
+    if step.get("kind") not in ("type", "select") or not step.get("param") or step["param"] in secret_params:
+        return None
+    value = values.get(step["param"])
+    if isinstance(value, list) or value is None:
+        return None
+    value = " ".join(str(value).split())
+    if not value or privacy.credential_in(value):
+        return None
+    return value[:ENTERED_CHARS]
+
+
 def _run_program(program, params=None, start=1, report=None, ladder=None):
     """
     Run a program from step `start` and say how it ended: {"outcome",
     "text", "step", "resume_from", "reason", "evidence", "done",
     "verified", "unverified", "total", "missing", "session", "options",
-    "healed", "judged"}.
+    "healed", "judged", "entered"}.
 
     With a `ladder` (escalation.Ladder) a control that is not where it was
     recorded is healed, grounded by the engine or offered to a person as
@@ -1696,6 +1716,15 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
             values[param["name"]] = param.get("default") or ""
 
     counts = {"done": 0, "verified": 0, "unverified": 0, "skipped": 0, "detoured": 0}
+    # What the steps that ran typed or chose, from this run's values (not secret ones): the run's own record of what it
+    # entered, given back however it ends (entered_values), so a halted run's earlier entries are credited.
+    secret_params = {p["name"] for p in program.get("params") or [] if p.get("secret")}
+    entered = []
+
+    def note_entered(step):
+        value = entered_value(step, values, secret_params)
+        if value is not None and value not in entered and len(entered) < MAX_ENTERED:
+            entered.append(value)
 
     # The window an "open this app" step brought up: {"window", "step", "already"}.
     raised = {}
@@ -1718,7 +1747,7 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
             options=options or [], healed=len(ladder.healed) if ladder else 0,
             judged=len(ladder.judged) if ladder else 0, trail=list(ladder.trail) if ladder else [],
             repairs=ladder.summary() if ladder else "", model_calls=ladder.model_calls if ladder else 0,
-            reopen=reopen,
+            reopen=reopen, entered=list(entered),
             # What this run typed differently came before this step: what it
             # clicked may be laid out differently (another search's results).
             after_change=bool(step and changed_at is not None and step["n"] > changed_at),
@@ -1813,6 +1842,7 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
                 # The step's action happened and what came after it went wrong: it is not healed, retried or resumed
                 # as if it had not. A step that commits may or may not have taken effect - checked, never redone.
                 counts["done"] += 1
+                note_entered(step)
                 if step.get("consequential") or _step_commits(step):
                     return finish(RECONCILIATION_REQUIRED, step, reason=halt.reason, evidence=halt.evidence)
                 return finish(HALTED, step, reason=halt.reason, resume_from=step["n"], evidence=halt.evidence)
@@ -1855,6 +1885,7 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
             return finish(NEEDS_APPROVAL, step, reason=text, resume_from=step["n"])
 
         counts["done"] += 1
+        note_entered(step)
         if result.get("unconfirmed"):
             counts["unverified"] += 1
             report(f"Step {step['n']}: what was clicked was found by its picture alone, which another record's row "

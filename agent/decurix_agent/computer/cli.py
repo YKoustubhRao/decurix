@@ -1,11 +1,12 @@
 import argparse
+import json
 import os
 import re
 import sys
 import time
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, broker, cdp, core, door, replay, shown, skill_engine, skills
+from decurix_agent.computer import approval, broker, cdp, core, door, privacy, replay, shown, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -705,15 +706,33 @@ def _load_program(session_id):
         raise ComputerError(f"there is no recording {session_id!r} here. Run `gui recordings` to list them.")
 
 
+# The line a replay's output gives its own record of what its steps entered (replay.entered_value), as JSON: what a
+# caller credits as entered however the run ended (TheBot's coverage check: a halted run had typed its first figures).
+ENTERED_MARKER = "ENTERED_BY_REPLAY:"
+
+
+def _entered_line(result):
+    """The ENTERED_MARKER line for a replay's result, or "" when its steps entered nothing. Withheld like any output."""
+
+    entered = [str(v) for v in result.get("entered") or [] if str(v).strip()]
+    if not entered:
+        return ""
+    line = privacy.safe_text(json.dumps(entered, ensure_ascii=False))
+    return "" if line == privacy.HELD_BACK else f"{ENTERED_MARKER} {line}"
+
+
 def _print_replay(result, command=None):
     """Print how a replay ended, and exit with what `gui` exit codes mean. `command` is what runs it again."""
 
     outcome = result["outcome"]
     again = f"{command or 'gui replay ' + result['session']} --from {result['resume_from']}"
+    entered = _entered_line(result)
 
     if outcome == replay.NEEDS_APPROVAL:
         print(f"{approval.MARKER} {result['text']}")
         print(f"Once it is approved, continue with: {again}")
+        if entered:
+            print(entered)
         return EXIT_NEEDS_APPROVAL
 
     print(f"{outcome}: {result['text']}")
@@ -722,6 +741,8 @@ def _print_replay(result, command=None):
         print(f"Ask the human to do that step, then continue with: {again}")
     elif outcome == replay.HALTED and result.get("resume_from"):
         print(f"To carry on after putting it right: {again}")
+    if entered:
+        print(entered)
 
     if outcome == replay.VERIFIED:
         return EXIT_OK

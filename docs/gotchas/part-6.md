@@ -213,6 +213,14 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   worker's apps an accessibility bus, with only a "NoReply" warning per app in the log. Start the worker's session bus
   without DISPLAY and start the accessibility bus on it before giving DISPLAY to its activations; do not run a desktop
   manager as the screen user instead (its menus start programs as that user, past the gate).
+- **A plan's "with your OK first" lived only in the question's prose** (live trial, 2026-11-08). The operator's plan
+  question said "Then, each with your OK first: Press Save bill"; the gate asks only for Send/Pay-like controls, so the
+  worker pressed Save bill after its own pre-save check and the person was never asked. A promise made to a person must
+  be data the executor reads: the plan's commits now carry their control and the gui command holds that press for the
+  gate (`DECURIX_PLAN_ASK_FIRST`, `core._plan_hold`). And a variable the screen side must see is read by its literal
+  name (`os.environ.get("NAME")`): the broker passes only names the agent's code names that way, so a constant would
+  have dropped it in broker mode. In the same trial a halted `gui do` was not credited with the figures it had typed
+  (soul read only "Typed ..." lines): a replay now gives back its own `entered` list however it ends.
 - **A widget on the worker's accessibility bus is the worker's word, box included** (broker mode, 2026-11-07). Once
   the screen broker reads the worker's bus, the worker can lay a made-up "Cancel" over the browser's "Pay"; a press by
   its box lands on the browser while the gate is asked about "Cancel". Act on such a widget only where the window shown

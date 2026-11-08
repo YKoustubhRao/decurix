@@ -978,4 +978,5 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): The base image's Xvnc has no SECURITY extension, so it cannot give out an untrusted X cookie
 - [part-6.md](gotchas/part-6.md): The browser's download bubble moves the next action's time
 - [part-6.md](gotchas/part-6.md): An untrusted X client gets nothing of the root window: no property write, no event
+- [part-6.md](gotchas/part-6.md): A plan's "with your OK first" lived only in the question's prose; a halted replay was not credited with what it typed
 - [part-6.md](gotchas/part-6.md): A widget on the worker's accessibility bus is the worker's word, box included

@@ -1143,6 +1143,9 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	st.noteLedger(command, res)
 	st.noteScreenDocs(command, res.Output)
 	st.noteTaught(command, res)
+	// A replay's own record of what its steps entered, however it ended - a halted one had typed its first figures
+	// (before the approval check below: a replay stopped at a held save had entered the rest).
+	st.noteReplayEntered(command, res.Output)
 	if name := taughtRunName(command); name != "" && !st.hasTaught(name) && st.Hosted {
 		// A taught task run straight away (gui do NAME) still has its teaching: read it, as a fact for the reviewer
 		// (found live, 2026-10-23: the lesson held a rule the run needed; the worker never printed
@@ -1336,6 +1339,10 @@ func (st *operatorState) guiEnv() []string {
 	}
 	if st.turnID != "" {
 		env = append(env, "DECURIX_TURN_ID="+st.turnID)
+	}
+	// The presses the plan put to the person told them are made with their OK first (plan.go).
+	if ask := st.planAskFirst(); ask != "" {
+		env = append(env, ask)
 	}
 	return env
 }

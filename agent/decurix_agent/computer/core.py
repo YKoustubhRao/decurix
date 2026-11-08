@@ -1572,6 +1572,51 @@ class AskFirst(str):
 # none for them (replay.run sets it for the run): the person's own, never "in no source".
 TAUGHT_VALUES = set()
 
+# The steps the plan of the work, as it was put to the person, makes "with your OK first" (TheBot's operator sets it
+# on every gui command of a goal whose plan said so: plan.go, guiEnv): a JSON list with one entry per such step, the
+# words of the control it is made with, or "" when the plan did not know them.
+PLAN_ASK_FIRST_ENV = "DECURIX_PLAN_ASK_FIRST"
+
+
+def _plan_ask_first():
+    """The controls the agreed plan makes with the person's OK first (PLAN_ASK_FIRST_ENV); [] when none. A value that
+    cannot be read stands for a step whose control is not known: every committing press is held (unsure is asked)."""
+
+    # (Read by its literal name: the screen broker passes a caller's variable only when the agent's code names it.)
+    raw = os.environ.get("DECURIX_PLAN_ASK_FIRST", "").strip()
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return [""]
+    if not isinstance(value, list):
+        return [""]
+    return [" ".join(v.split()) if isinstance(v, str) else "" for v in value]
+
+
+def _plan_hold(control):
+    """
+    Why a committing press (control: what _commit_check found it commits with, or None) is put to the person: the
+    plan of the work they were shown says its step is made with their OK first, and the gate does not ask for it on its
+    own (a local form's Save). Found live (2026-11-08): a plan read "Then, each with your OK first: Press Save bill",
+    and the worker pressed Save bill after its own pre-save check, never asking - the person was told one thing and
+    the worker did another. Held when a step's control names this one or this one names it as a whole phrase
+    (approval.names_control), or a step's control is not known, or this control has no name. None otherwise.
+    """
+
+    if control is None:
+        return None
+    steps = _plan_ask_first()
+    if not steps:
+        return None
+    label = " ".join(str(control.get("name") or "").split())[:60]
+    if not label or any(not step or approval.names_control(step, control) or approval.names_control(label, {"name": step})
+                        for step in steps):
+        return (f'the plan of the work you agreed to makes "{label}" with your OK first' if label
+                else "the plan of the work you agreed to makes this press with your OK first")
+    return None
+
 
 def _taught_value(value):
     """Whether a typed value is one the replay running now took from the person's demonstration (TAUGHT_VALUES)."""
@@ -2464,7 +2509,7 @@ def _commit_keys(keys):
     return (any(c in ("return", "enter", "kp_enter") for c in combos), any(c == "ctrl+s" for c in combos))
 
 
-def _commit_check(kind, element, keys, before, checked=False, text=None, listing=True):
+def _commit_check(kind, element, keys, before, checked=False, text=None, listing=True, pressed=None):
     """
     The pre-save checks (_form_check: a record entered twice, a placeholder, an invented or unsourced value, the
     declared record's ledger, the listing of a full form) for every action that commits what a form or a page holds,
@@ -2474,7 +2519,14 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
     action, or "" to go on. Found in review (2026-11-02): the checks ran only for a single `gui click` on a CDP
     <form type=submit>, so a double-click, --see, the act tool, an AT-SPI press, an Enter and every button an
     application draws with divs (the `gui record` ledger among them) went past them.
+
+    pressed: a list the control this action commits with is appended to (the element, or the form's submit control an
+    Enter or a Ctrl+S stands for), whatever the checks decide - the press the plan of the work may hold (_plan_hold).
     """
+
+    def committing(control):
+        if pressed is not None:
+            pressed.append(control)
 
     if kind in ("click", "double_click") and element is not None:
         form = cdp.submit_form_fields(element, min_fields=1, unreadable=cdp.UNREADABLE) \
@@ -2485,6 +2537,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
             else:
                 # A button whose form could not be read may submit one: the checks cannot be made, so a person looks
                 # first (review 2026-11-03, D-26 - "no form" and "could not read" were the same None).
+                committing(element)
                 label = " ".join(str(element.get("name") or "").split())[:60]
                 return AskFirst(f'the form "{label}" may submit could not be read, so the checks made before a save '
                                 "could not be made - look at what it holds before it goes")
@@ -2495,6 +2548,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
                 and not approval.DIALOG_IN_PATH.search(element.get("path") or "") \
                 and approval.press_effect(element) != "asks":
             return ""
+        committing(element)
         return _form_check(element, checked=checked, found=form or _page_fields(before, element), listing=listing)
     typed_enter = kind == "type" and bool(text) and "\n" in text and element is not None
     if kind != "key" and not typed_enter:
@@ -2512,6 +2566,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
             form = dict(form, fields=[f for f in form.get("fields") or [] if f[0] != label]
                         + ([[label, line[:80]]] if line.strip() and not privacy.secret_field(field) else []))
         submit = {"name": form.get("submit") or "Submit", "ref": "", "path": field.get("path") or ""}
+        committing(submit)
         return _form_check(submit, found=form, listing=listing, confirm=(
             "Enter would send it, and an Enter is not how a full form is sent: press the form's own submit control "
             "(gui click REF), which lists the form once more and is confirmed with --checked."))
@@ -2520,6 +2575,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
         # form is the Save control's, since a page saved only by its keys has no control to confirm it on.)
         save_control = {"name": "Save", "ref": "", "path": (field or {}).get("path") or "",
                         "group": (field or {}).get("group")}
+        committing(save_control)
         return _form_check(save_control, found=_page_fields(before, field), listing=False)
     return ""
 
@@ -4508,12 +4564,18 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if check_form:
         # Every committing action an engine or a replay takes, however it is pressed (_commit_check). A replay's
         # (check_form="replay") listing of today's values is put to the person instead (AskFirst).
+        pressed = []
         held = _commit_check(kind, element, keys, before, checked=check_form == "checked", text=text,
-                             listing="ask" if check_form == "replay" else True)
+                             listing="ask" if check_form == "replay" else True, pressed=pressed)
         if isinstance(held, AskFirst):
             require = str(held)
         elif held:
             refused("pre_save", held)
+        # A press the plan of the work told the person is made with their OK first is put to them, as the gate puts
+        # its own (_plan_hold).
+        promised = _plan_hold(pressed[0] if pressed else None)
+        if promised:
+            require = f"{promised}; {require}" if require else promised
 
     # Enter that submits a form is a press on its submit control, and is asked for when that press would be
     # (_enter_submits).

@@ -611,10 +611,17 @@ Seen, not fixed (none is specific to broker mode; they belong in follow-ups):
   unit tests. The live run made no `py.escalation` call (the operator's `gui do` runs its ladder without a model).
 - **A plan's "each with your OK first: Press Save bill" was not kept.** The press went through on the pre-save self
   check, without the person. The review raised it, and the final gate took the worker's screen evidence. The approval
-  gate does not count a local form's save as consequential; the same holds in the default mode.
+  gate does not count a local form's save as consequential; the same holds in the default mode. *Fixed in the working
+  tree (2026-11-08):* the plan's commits carry their control, a plan put to the person sets `DECURIX_PLAN_ASK_FIRST` on
+  the goal's gui commands, and `core.act` puts such a press to the gate (`_plan_hold`); the broker passes the variable
+  (read by its literal name). It is the worker's own promise, not part of the boundary: a worker that drops the
+  variable presses unasked, as it can with direct input.
 - **soul's coverage check does not credit a halted `gui do`** for the values its earlier steps typed (it credits a
   failed command only for `Typed "..."` in its output). So "invoice2.pdf (read; none of its figures went into what was
-  entered)" was left open for the person on a run that had entered them.
+  entered)" was left open for the person on a run that had entered them. *Fixed in the working tree (2026-11-08):* a
+  replay's result carries `entered` (its steps' typed and chosen values, never a secret parameter's), `gui do` /
+  `gui replay` print it as one `ENTERED_BY_REPLAY: [...]` line however the run ended, and soul credits it from a
+  command that is one `gui do` or `gui replay` (`noteReplayEntered`).
 - **The screen user can read the worker's home by path** (`/home/headless` is 0755). A person typing
   `file:///home/headless/work/bills.html` into the browser opened it directly. This is no way in for the worker:
   handed files are still read only from descriptors, and nothing the worker names is opened by its name. But the
