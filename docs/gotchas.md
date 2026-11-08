@@ -999,3 +999,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A demonstration's corrections were learned as part of the procedure
 - [part-6.md](gotchas/part-6.md): A taught task could never be trusted, so it never got cheaper
 - [part-6.md](gotchas/part-6.md): A demonstration's empty row, added and deleted, would delete a real line
+- [part-6.md](gotchas/part-6.md): A save the person had to repeat was learned as two saves and a press on a notice

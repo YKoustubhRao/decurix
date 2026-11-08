@@ -351,3 +351,10 @@ Kimi never declared one, so every verdict rested on the model, no run counted, a
 doing every field by hand (48-98 turns, 1.3-4.2M tokens a bill). An instruction in the prompt is not a guarantee:
 what the harness needs for correctness, code does (`skill_task._declare_taught_record`). And a PDF table cell wrapped
 over lines is still the document's value (`binding.wrapped_in`); the exact-text check dropped every bill's item.
+
+### A save the person had to repeat was learned as two saves and a press on a notice
+
+The demonstration's first Ctrl+S was refused (a "missing fields" notice), the person closed the notice with an unnamed
+button and saved again. Learned as steps, a replay's first save holds, nothing appears, and the replay stops at the press
+meant for the notice. The same commit pressed twice with only that dismissal between is now kept once, the last
+(`learning._drop_retried_commits`).

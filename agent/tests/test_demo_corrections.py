@@ -197,7 +197,7 @@ class NotCorrections(unittest.TestCase):
 ITEM_3, CHECK_3 = [390, 337, 216, 43], [319, 350, 14, 14]
 
 
-def empty_row_demo(entered_in_row_3=False, delete=True):
+def empty_row_demo(entered_in_row_3=False, delete=True, notice=False):
     """Two lines entered; a Tab out of the last field makes a third, empty row (controls appear); Escape in it; a save;
     then the person ticks row 3 and deletes it, and saves again. The live shape of 2026-11-08."""
 
@@ -219,7 +219,14 @@ def empty_row_demo(entered_in_row_3=False, delete=True):
     add("key", at("combobox", "Item", ITEM_3, row=3), keys=["Escape"])
     if entered_in_row_3:
         add("type", at("combobox", "Item", ITEM_3, row=3), text="Paper")
-    add("key", at("combobox", "Item", ITEM_3, row=3), keys=["ctrl+s"])
+    if notice:
+        # The save is refused: a notice appears, and the person closes it with an unnamed button.
+        add("key", at("combobox", "Item", ITEM_3, row=3), keys=["ctrl+s"],
+            expect={"appeared": [{"role": "heading", "name": "Missing Fields"}]})
+        add("click", field("button", "", box=[900, 120, 20, 20], path='site books.test > button ""[4]',
+                           window_title="New Bill - Chromium"))
+    else:
+        add("key", at("combobox", "Item", ITEM_3, row=3), keys=["ctrl+s"])
     if delete:
         add("click", at("checkbox", "", CHECK_3, row=3), expect={"appeared": [{"role": "button", "name": "Delete row"}]})
         add("click", at("button", "Delete row", [310, 395, 87, 26]))
@@ -272,6 +279,42 @@ class EmptyRows(unittest.TestCase):
             param["varies"] = True
         group = skills.repeated_rows(skill)
         self.assertEqual(len(group["rows"]), 2)
+
+
+class RetriedCommits(unittest.TestCase):
+    """A save the person had to make again (its notice closed, nothing entered between) is kept once, the last."""
+
+    def test_a_refused_save_and_the_press_that_closed_its_notice_are_left_out(self):
+        skill = learning.build([empty_row_demo(notice=True)])
+        keys = [s for s in skill["steps"] if s["kind"] == "key" and s.get("keys") == ["ctrl+s"]]
+        self.assertEqual(len(keys), 1, rows_in(skill))
+        self.assertFalse([s for s in skill["steps"] if s["kind"] == "click" and not (s.get("target") or {}).get("name")
+                          and (s.get("target") or {}).get("role") == "button"], rows_in(skill))
+        self.assertEqual(skill["steps"][-1]["keys"], ["ctrl+s"])
+        self.assertTrue(any("twice" in n for n in skill["tidied"]), skill["tidied"])
+
+    def test_a_save_that_showed_nothing_is_not_taken_for_a_refused_one(self):
+        skill = learning.build([empty_row_demo()])
+        self.assertEqual(len([s for s in skill["steps"] if s["kind"] == "key" and s.get("keys") == ["ctrl+s"]]), 2)
+
+    def build(self, between):
+        events = [on_form(0, "type", at("textbox", "Supplier Invoice No", NUMBER), text="A1"),
+                  on_form(1, "key", at("textbox", "Supplier Invoice No", NUMBER), keys=["ctrl+s"],
+                          expect={"appeared": [{"role": "heading", "name": "Missing Fields"}]})]
+        events += [on_form(2 + k, *e[:2], **e[2]) for k, e in enumerate(between)]
+        events.append(on_form(2 + len(between), "key", None, keys=["ctrl+s"]))
+        return learning.build([(META, events)])
+
+    def test_anything_done_between_the_two_keeps_both(self):
+        named = ("click", at("button", "Add row", [310, 320, 71, 26]), {})
+        entry = ("type", at("textbox", "Supplier Invoice Date", DATE), {"text": "01-10-2026"})
+        for between in ([named], [entry]):
+            skill = self.build(between)
+            self.assertEqual(len([s for s in skill["steps"] if s.get("keys") == ["ctrl+s"]]), 2, between)
+
+    def test_a_different_commit_after_is_no_retry(self):
+        skill = self.build([("key", None, {"keys": ["Return"]})])
+        self.assertEqual(len([s for s in skill["steps"] if s.get("keys") == ["ctrl+s"]]), 2)
 
 
 if __name__ == "__main__":

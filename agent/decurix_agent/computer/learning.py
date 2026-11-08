@@ -117,7 +117,8 @@ def build(sources, name=None):
     tidied = []
     for meta, events in sources:
         program = replay.compile_program(meta, events)
-        for note in _tidy(program, events) + _drop_corrections(program) + _drop_empty_rows(program):
+        for note in (_tidy(program, events) + _drop_corrections(program) + _drop_empty_rows(program)
+                     + _drop_retried_commits(program)):
             if note not in tidied:
                 tidied.append(note)
         if program["steps"]:
@@ -634,6 +635,74 @@ def _drop_empty_rows(program):
         step["n"] = n
         if step.get("param") in params:
             params[step["param"]]["step"] = n
+    program["steps"] = kept
+    return notes
+
+
+def _same_commit(a, b):
+    """Whether two commit steps are the same press: the same keys, or a press on the same named control."""
+
+    if a["kind"] != b["kind"]:
+        return False
+    if a["kind"] == "key":
+        keys = lambda s: ["".join(str(k).lower().split()) for k in s.get("keys") or []]  # noqa: E731
+        return keys(a) == keys(b)
+    ta, tb = a.get("target") or {}, b.get("target") or {}
+    return bool(ta.get("name")) and (ta.get("role"), ta.get("name")) == (tb.get("role"), tb.get("name"))
+
+
+def _only_dismissed(step, first):
+    """Whether a step between a commit and its retry did nothing but take away what the commit showed: a scroll, or a
+    press on no named control that made nothing appear, on the same window and page."""
+
+    if (step.get("window") or "") != (first.get("window") or ""):
+        return False
+    page, mine = (first.get("url") or "").split("#")[0], (step.get("url") or "").split("#")[0]
+    if page and mine and page != mine:
+        return False
+    if step["kind"] == "scroll":
+        return True
+    target = step.get("target") or {}
+    return (step["kind"] == "click" and not step.get("param") and not target.get("name")
+            and ((target.get("role") or "button").lower() not in FIELD_ROLES) and not step.get("expect"))
+
+
+def _drop_retried_commits(program):
+    """
+    Take out, in place, a commit the person had to make again: the same commit pressed twice, the first making
+    something appear (a notice that the save could not be made) and nothing between the two but presses that took it
+    away and scrolls - nothing entered, no named control pressed. The first press and what dismissed its notice are
+    left out; the last commit stays. Left in, a replay's first commit holds, nothing appears, and the replay stops at
+    the press meant for a notice that is not there. Decided from what the recording saw, never from words.
+
+    Found live (2026-11-08): a bill's first Ctrl+S showed a "missing fields" notice (an empty table row), the person
+    closed it with an unnamed button, deleted the row and saved again.
+    """
+
+    steps = program["steps"]
+    drop, notes = set(), []
+    for i, step in enumerate(steps):
+        if i in drop or not replay._step_commits(step) \
+                or not any(c.get("type") == "element" for c in step.get("expect") or []):
+            continue
+        for j in range(i + 1, len(steps)):
+            if replay._step_commits(steps[j]):
+                if _same_commit(step, steps[j]) and j > i + 1:
+                    drop.update(range(i, j))
+                    notes.append(f"you did \"{replay._summary(step)}\" twice, closing what the first showed; "
+                                 "only the last is kept")
+                break
+            if not _only_dismissed(steps[j], step):
+                break
+
+    if not notes:
+        return []
+    params = {p["name"]: p for p in program["params"]}
+    kept = [s for i, s in enumerate(steps) if i not in drop]
+    for n, s in enumerate(kept, 1):
+        s["n"] = n
+        if s.get("param") in params:
+            params[s["param"]]["step"] = n
     program["steps"] = kept
     return notes
 
