@@ -196,7 +196,7 @@ class ASavedRecordDeclaredUnderItsNumber(Ledger):
         self.assertEqual(records.gate_faults(TASK, created=1), [])
 
     def test_a_field_the_last_page_did_not_show_says_how_to_read_it_back(self):
-        # Found live (2026-11-08, learn-v1 bill 2): told only "declare those again", the worker tried a page's title and
+        # Found live (2026-11-08, a bill in an eval run): told only "declare those again", the worker tried a page's title and
         # URL as --from and then misdescribed its own declaration; four reviews held it until the case timed out.
         rec, _ = records.declare("invoice", str(self.bill), {"Invoice no.": "INV-0001", "Total": "3,540.00"})
         self.save(rec, "Invoice INV-0001 Total 3,540.00")

@@ -378,7 +378,7 @@ def _add_to_saved(task_id, records, done, kept):
              + ", ".join(f"{l}={f['intent']}" for l, f in new.items())]
     missing = [l for l in new if l not in seen]
     if missing:
-        # Found live (2026-11-08, learn-v1 bill 2): told only "declare those again", the worker tried a page's title
+        # Found live (2026-11-08, a bill in an eval run): told only "declare those again", the worker tried a page's title
         # and its URL as --from, then said in its report it had declared "from the screen" when it had not, and four
         # reviews held that against it until the case timed out.
         lines.append("NOT shown on the page the task looked at last: " + ", ".join(missing) + ". Open the saved record "
@@ -1138,7 +1138,7 @@ def _elsewhere_text(task_id=None):
 def _backings(kept, task_id, order):
     """Note on each field not taken from the record's source which given place its value stands in - the person's
     words (this task's replies, what they taught, their answers on the worker's earlier tasks), the organisation's
-    knowledge, or the request - as `backed_by`, for the ledger to show. Found live (2026-11-08, learn-v1 bill 1): the
+    knowledge, or the request - as `backed_by`, for the ledger to show. Found live (2026-11-08, a bill in an eval run): the
     ledger said only "from bill.pdf", and three reviews in a row held a cost centre the person's rule gave as cited
     from the PDF, until the case ran out of time. A value standing in none of them (a page read, an entry of the
     application's list) gets none."""

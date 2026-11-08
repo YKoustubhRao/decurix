@@ -190,7 +190,7 @@ class TheSourcesUnitIsKept(Base):
     def test_the_request_backs_a_unit_too(self):
         with mock.patch.object(task_context, "current_request", lambda: "Make the tax template at 18% GST."):
             rec, _ = self.declare("Tax template: Output GST\n")
-        self.assertEqual(rec["fields"]["Rate"], {"intent": "18%", "from": "seen"})
+        self.assertEqual(rec["fields"]["Rate"], {"intent": "18%", "from": "seen", "backed_by": "the request"})
 
     def test_a_source_with_no_unit_is_unchanged(self):
         rec, _ = self.declare("Tax template: Output GST\nRate: 18\n")
