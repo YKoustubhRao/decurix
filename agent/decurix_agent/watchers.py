@@ -721,6 +721,10 @@ def answer_waiting(path, content, already_marked=False):
             workflow_task.cancel_active()
         if state.paused_replay is not None:
             target, args = replay_task.resume, (content, outcome)
+        elif date_answer and skill_task.ask_again():
+            # The reply answered the date (or unit) question that went out in place of the run's own: that question
+            # is asked again, never answered with the note about the date.
+            return
         else:
             target, args = skill_task.resume, (content, outcome)
     elif workflow_task.awaiting_start():

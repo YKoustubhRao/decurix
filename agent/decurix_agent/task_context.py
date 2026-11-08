@@ -612,8 +612,15 @@ def ask_date_order(task_id, side, value):
 def date_question(task_id=None):
     """The date-order question a save of the task waits on, or None."""
 
-    found = _context(task_id or current()).get("date_question") if (task_id or current()) else None
-    return found if isinstance(found, dict) and found.get("side") in SIDES else None
+    task_id = task_id or current()
+    found = _context(task_id).get("date_question") if task_id else None
+    if not isinstance(found, dict) or found.get("side") not in SIDES:
+        return None
+    # Settled since it was raised (the organisation's order came with a later request, or a person answered it): no
+    # question. Found live (2026-11-08): a task run again under the same id asked an earlier attempt's date question in
+    # place of its plan, though the organisation's order had arrived with the request.
+    known = app_date_order(task_id) if found["side"] == "app" else answered_order(task_id, "source")
+    return None if known else found
 
 
 def date_question_text(question):

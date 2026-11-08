@@ -454,8 +454,22 @@ def _pause(run, kind, text, ask_kind="query", secret=False, **extra):
     parameter's own "secret"), so the person's whole reply is withheld wherever it is kept (X-6) - from structure,
     never from the question's words."""
 
-    state.paused_skill = dict({"mode": "run", "kind": kind, "run": run}, **extra)
+    state.paused_skill = dict({"mode": "run", "kind": kind, "run": run, "asked": text, "ask_kind": ask_kind,
+                               "secret": bool(secret)}, **extra)
     ask_for_query(text, kind=ask_kind, engine=SKILL_ENGINE, secret=bool(secret))
+
+
+def ask_again():
+    """Put a paused run's own question to the person again (the date-order question went out in its place, and the
+    reply answered that one only). False when no run's question is paused. Found live (2026-11-08): the watcher's note
+    about the date reply was taken as the answer to the run's plan, and the plan was handed to the model as changed."""
+
+    paused = state.paused_skill or {}
+    if paused.get("mode") != "run" or not paused.get("asked"):
+        return False
+    ask_for_query(paused["asked"], kind=paused.get("ask_kind") or "query", engine=SKILL_ENGINE,
+                  secret=bool(paused.get("secret")))
+    return True
 
 
 def _prepare(run):
