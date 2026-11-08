@@ -378,9 +378,13 @@ def _add_to_saved(task_id, records, done, kept):
              + ", ".join(f"{l}={f['intent']}" for l, f in new.items())]
     missing = [l for l in new if l not in seen]
     if missing:
-        lines.append("NOT shown on the page the task looked at last: " + ", ".join(missing) + ". Open the saved record, "
-                     "look at it, and declare those again to read them back; correct the saved record if they are "
-                     "wrong - never enter it again.")
+        # Found live (2026-11-08, learn-v1 bill 2): told only "declare those again", the worker tried a page's title
+        # and its URL as --from, then said in its report it had declared "from the screen" when it had not, and four
+        # reviews held that against it until the case timed out.
+        lines.append("NOT shown on the page the task looked at last: " + ", ".join(missing) + ". Open the saved record "
+                     "and look at it (gui observe), then run the same declaration again - the same --from, the "
+                     "record's document, not the page: what is read back is what the page you looked at last shows. "
+                     "Correct the saved record if they are wrong - never enter it again.")
     return rec, lines
 
 
@@ -420,7 +424,10 @@ def _source_text(source):
         return office.read_document(source)["text"]
     except Exception as exc:  # noqa: BLE001 - what cannot be read is said
         raise ComputerError(f"cannot read the record's source {source}: {exc}. --from names the document the record "
-                            "comes from (a file) or screen. A value the person gave you in a reply needs no file: "
+                            "comes from (a file), or the word screen for values read off what the screen showed - "
+                            "never a page's title or address. A record saved already is read back from the page you "
+                            "looked at last whatever --from says: declare it again from its document. A value the "
+                            "person gave you in a reply needs no file: "
                             "declare the record from its document, and their reply backs that value. A file you write "
                             "their words into backs nothing.")
 

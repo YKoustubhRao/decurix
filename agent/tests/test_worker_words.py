@@ -195,6 +195,22 @@ class ASavedRecordDeclaredUnderItsNumber(Ledger):
         self.assertIn(str(note), records.declared_sources(TASK))
         self.assertEqual(records.gate_faults(TASK, created=1), [])
 
+    def test_a_field_the_last_page_did_not_show_says_how_to_read_it_back(self):
+        # Found live (2026-11-08, learn-v1 bill 2): told only "declare those again", the worker tried a page's title and
+        # URL as --from and then misdescribed its own declaration; four reviews held it until the case timed out.
+        rec, _ = records.declare("invoice", str(self.bill), {"Invoice no.": "INV-0001", "Total": "3,540.00"})
+        self.save(rec, "Invoice INV-0001 Total 3,540.00")
+        note = self.root / "note.txt"
+        note.write_text("Notes: Paid by cheque 4471\n", encoding="utf-8")
+        self.looks = ["Invoices list INV-0001"]
+        _, lines = records.declare("INV-0001", str(note), {"Notes": "Paid by cheque 4471"})
+        hint = "\n".join(lines)
+        self.assertIn("NOT shown on the page the task looked at last: Notes", hint)
+        self.assertIn("(gui observe), then run the same declaration again - the same --from, the record's document", hint)
+        with self.assertRaises(ComputerError) as caught:
+            records.declare("INV-0001", "http://app/invoices/4", {"Notes": "Paid by cheque 4471"})
+        self.assertIn("never a page's title or address", str(caught.exception))
+
     def test_the_same_fields_again_under_the_number_are_refused_not_a_second_record(self):
         rec, _ = records.declare("invoice", str(self.bill), {"Invoice no.": "INV-0001", "Total": "3,540.00"})
         self.save(rec, "Invoice INV-0001 Total 3,540.00")
