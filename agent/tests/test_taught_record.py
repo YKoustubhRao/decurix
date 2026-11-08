@@ -65,6 +65,7 @@ class TheTaughtRecord(unittest.TestCase):
         self.declared = []
         patches = [
             mock.patch.object(skill_task.task_context, "current_files", return_value=["/home/headless/work/bill.pdf"]),
+            mock.patch.object(skill_task.binding, "referenced_files", return_value=[]),
             mock.patch.object(skill_task.records, "_source_text", return_value=BILL),
             mock.patch.object(skill_task.records, "declare",
                               side_effect=lambda key, source, fields, **kw: self.declared.append((key, source, fields))
@@ -91,6 +92,13 @@ class TheTaughtRecord(unittest.TestCase):
     def test_a_date_is_declared_as_the_document_writes_it(self):
         skill_task._declare_taught_record(self.run_for())
         self.assertEqual(self.declared[0][2]["Supplier Invoice Date"], "03-Oct-2026")
+
+    def test_a_document_named_in_the_requests_words_is_its_source(self):
+        """Found live (2026-11-08): "Enter this bill ...: ~/work/BILL_14.pdf" brought no file, and nothing was declared."""
+
+        with mock.patch.object(skill_task.task_context, "current_files", return_value=[]),                 mock.patch.object(skill_task.binding, "referenced_files", return_value=["/home/headless/work/BILL_14.pdf"]):
+            self.assertEqual(skill_task._declare_taught_record(self.run_for()), "NW-2026-118")
+        self.assertEqual(self.declared[0][1], "/home/headless/work/BILL_14.pdf")
 
     def test_a_value_the_document_does_not_hold_is_left_out_not_declared(self):
         values = dict(filled_values(), supplier="Someone Else Pvt Ltd")
@@ -137,6 +145,7 @@ class ARunWithItsDocumentInHand(unittest.TestCase):
             mock.patch.object(skill_task, "_engine_can_drive", return_value=True),
             mock.patch.object(skill_task.learning, "start_checks", return_value=[]),
             mock.patch.object(skill_task.task_context, "current_files", return_value=["/home/headless/work/bill.pdf"]),
+            mock.patch.object(skill_task.binding, "referenced_files", return_value=[]),
             mock.patch.object(skill_task.records, "_source_text", return_value=BILL),
             mock.patch.object(skill_task.records, "declare", lambda key, source, fields, **kw: ({"key": key}, [])),
             mock.patch.object(skill_task.progress, "emit"),

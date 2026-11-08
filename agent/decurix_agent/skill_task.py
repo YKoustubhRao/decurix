@@ -889,9 +889,16 @@ def _declare_taught_record(run):
 
     run["declared"] = ""
     try:
-        files = [str(p) for p in (task_context.current_files() or [])
-                 if Path(str(p)).suffix.lower() in DOCUMENT_SUFFIXES]
+        # The request's documents: the files it brought and those it names by path - the same the fill read its values
+        # from (binding.referenced_files). Found live (2026-11-08): a bill named in the request's words ("...:
+        # ~/work/BILL_14.pdf") brought no file, so nothing was declared and the run went to the model.
+        files = []
+        for p in list(task_context.current_files() or []) + binding.referenced_files(str(run.get("context") or "")):
+            p = str(p)
+            if Path(p).suffix.lower() in DOCUMENT_SUFFIXES and p not in files:
+                files.append(p)
         if len(files) != 1:
+            log(f"Skill {run['skill']['name']}: no record declared - the request has {len(files)} documents, not one")
             return ""  # which document a record comes from is not code's to choose among several
         # Only what stands in the document or the request: a declaration refuses whole over one value nothing backs.
         given = records._source_text(files[0]) + "\n" + str(run.get("context") or "")
@@ -904,6 +911,8 @@ def _declare_taught_record(run):
                 fields[label] = written or v
         key = next((v for label, v in fields.items() if records.identifier_field(label)), "")
         if not key or len(fields) < MIN_DECLARED_FIELDS:
+            log(f"Skill {run['skill']['name']}: no record declared - " + ("no field names a number" if not key else
+                f"only {len(fields)} field(s) stand in the document"))
             return ""
         _rec, lines = records.declare(key, files[0], fields)
     except Exception as exc:  # noqa: BLE001 - not declared: the run goes on as it would have, and says why in the log
