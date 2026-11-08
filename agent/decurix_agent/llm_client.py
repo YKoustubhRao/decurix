@@ -6,6 +6,12 @@ CONTROL_PLANE_URL/api/llm/chat and the control plane adds the key. That is
 what lets an agent with a shell and a browser use a strong model without
 being able to leak the credential behind it.
 
+Soul makes the call when it can (soul_call, plan rule 3): through its own
+provider, so the call has soul's trace line, tags and prompt-cache key like
+soul's own. Straight to the proxy only when soul cannot (not running, an
+older image, a test) - and always in the approval gate, which never depends
+on a process of the worker's user.
+
 `available()` says whether this desktop has a hosted model to ask:
 DECURIX_LLM names its provider ("claude", "azure" or "openai" - any
 OpenAI-compatible server the control plane was given; "1", from desktops
@@ -22,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import config, usage
+from decurix_agent import config, soul_call, usage
 from decurix_agent.logging_utils import log
 
 PROVIDER = {"1": "azure"}.get(
@@ -130,18 +136,35 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
         body["reasoning_effort"] = effort
     data = json.dumps(body).encode("utf-8")
     answer, last, waited = None, None, 0.0
+    # Soul has no tools to offer a call (no caller passes any): such a call goes straight to the proxy.
+    through_soul = not tools and soul_call.usable()
 
     for attempt in range(MAX_ATTEMPTS):
         wait = None
-        request = urllib.request.Request(
-            CHAT_URL, data=data, method="POST",
-            headers={"Content-Type": "application/json", **tag_headers(purpose)},
-        )
+        began = time.monotonic()
 
         try:
+            if through_soul:
+                try:
+                    answer = _soul_answer(messages, model, max_tokens, temperature, response_format, purpose)
+                    break
+                except soul_call.Unusable:
+                    through_soul = False  # this call, from here on, goes the way it always went
+
+            request = urllib.request.Request(
+                CHAT_URL, data=data, method="POST",
+                headers={"Content-Type": "application/json", **tag_headers(purpose)},
+            )
             with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
                 answer = json.loads(response.read().decode("utf-8"))
             break
+
+        except soul_call.Failed as exc:
+            # The provider failed behind soul: mapped exactly as the proxy's own answer is below.
+            last = LLMError(f"the hosted model answered {exc.status}: {exc.detail}")
+            if exc.status not in RETRY_STATUSES:
+                raise last
+            wait = retry_after(exc.headers)
 
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:600]
@@ -152,11 +175,16 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
             wait = retry_after(exc.headers)
 
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            last = LLMError(f"could not reach the hosted model through the control plane: {exc}")
+            via = "soul" if through_soul else "the control plane"
+            last = LLMError(f"could not reach the hosted model through {via}: {exc}")
 
         if wait is None:
             wait = min(2 ** attempt * 2, 60)
         wait += random.uniform(0, 2)  # desktops throttled together do not all retry in the same second
+        if through_soul:
+            # Soul already asked again within the call's deadline (a 429 as long as it allowed, a 5xx a few times):
+            # the time it spent counts against this budget too, so a call is never retried twice over.
+            waited += time.monotonic() - began
 
         if waited + wait > RETRY_BUDGET_SECONDS:
             break
@@ -191,6 +219,21 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
         return chat(messages, tools=tools, model=model, max_tokens=EMPTY_RETRY_TOKENS, temperature=temperature,
                     response_format=response_format, purpose=purpose)
     return message, spent
+
+
+def _soul_answer(messages, model, max_tokens, temperature, response_format, purpose):
+    """One call through soul (soul_call), as the proxy's OpenAI-shaped answer: the rest of chat() reads it unchanged.
+    Counted once, by chat() (usage.add): soul counts a call it makes for the agent in no job of its own."""
+
+    got = soul_call.call("hosted", messages, purpose=purpose, max_tokens=max_tokens, timeout=TIMEOUT_SECONDS,
+                         temperature=temperature, response_format=response_format, model=model)
+    spent = got.get("usage") or {}
+    return {
+        "choices": [{"message": {"role": "assistant", "content": got.get("text") or ""},
+                     "finish_reason": "length" if got.get("truncated") else "stop"}],
+        "usage": {"prompt_tokens": spent.get("prompt_tokens"), "completion_tokens": spent.get("completion_tokens"),
+                  "prompt_tokens_details": {"cached_tokens": spent.get("cached_tokens")}},
+    }
 
 
 def cached_tokens(spent):

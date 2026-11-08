@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -88,6 +89,8 @@ type openaiChatRequest struct {
 	Stop        []string        `json:"stop,omitempty"`
 	Effort      string          `json:"reasoning_effort,omitempty"`
 	CacheKey    string          `json:"prompt_cache_key,omitempty"`
+	// ResponseFormat is Options.ResponseFormat, sent as it is; absent when the call names none.
+	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
 }
 
 // noCacheKey is set once a provider refused prompt_cache_key: it is not sent again.
@@ -180,6 +183,9 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 		Stop:        opts.Stop,
 		Effort:      o.Effort,
 		CacheKey:    cacheKey(msgs),
+	}
+	if opts.ResponseFormat != "" && json.Valid([]byte(opts.ResponseFormat)) {
+		reqBody.ResponseFormat = json.RawMessage(opts.ResponseFormat)
 	}
 	do := func(req *http.Request) (*http.Response, error) { return rateLimitedRequest(o.Client, req) }
 	headers := o.headers(ctx, opts.Purpose)

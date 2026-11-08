@@ -119,6 +119,11 @@ Paths are under the worker's home:
   With no proxy rows (a local brain the proxy never sees), the calls are soul's trace's call lines
   (`source: "soul_trace"`, no bodies, `deployment` = the model soul asked for, `caller: "soul"`, a failed call's
   problems `["failed"]`).
+  Since 2026-11-08 the Python agent's calls are made by soul too (`/api/llm/call`, [harnesses.md](harnesses.md)), so
+  on a hosted brain their proxy rows say `caller: "soul"` with the agent's own `py.*` purpose, and on a local brain
+  they are trace call lines like soul's own. A proxy row with a `py.*` purpose and `caller: "agent"` is a call that
+  went straight to the proxy because soul could not make it (an older desktop, soul not running); `caller: "gate"` is
+  the approval gate's, which never goes through soul.
 - **models** and **usage** are summed from `calls`.
 - **labels.eval** is read back from the eval rows (`runs.Sources.Evals`, `eval.Store.EvalLabel`): the row whose
   `trajectory_id` is this execution, else a row of this task that names no trajectory (its bundle could not be
@@ -268,6 +273,10 @@ The turn is the same one soul sends the proxy (`X-Decurix-Turn`) and gives each 
 three records join on it. A trace call's `prompt_sha256` is the SHA-256 of Go's JSON of soul's `[]llm.Message`, not of
 the bytes the provider was sent; a proxy row's is over the stored message hashes. The two can never be compared: join
 on the turn.
+
+A call soul made for the Python agent (`/api/llm/call`) is a `call` line like any other, with the agent's purpose
+verbatim (`py.judge`, `py.escalation.ground`, ...). Its `turn` and `job` are those of the command that asked
+(`DECURIX_TURN_ID`, e.g. a `gui` step's grounder), empty when the agent asked outside any command (the final check).
 
 What soul writes or serves keeps no secret value (C14): a job's own values (`secrets` on `/api/chat`, plus those of
 the paused job it resumes) and what soul knows by structure (a value given after a credential's name, a value typed

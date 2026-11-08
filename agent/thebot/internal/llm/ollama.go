@@ -114,6 +114,35 @@ type ollamaChatRequest struct {
 	Stream    bool            `json:"stream"`
 	Options   map[string]any  `json:"options,omitempty"`
 	KeepAlive string          `json:"keep_alive,omitempty"`
+	// Format is Options.ResponseFormat as Ollama takes it (ollamaFormat); absent when the call names none.
+	Format json.RawMessage `json:"format,omitempty"`
+}
+
+// ollamaFormat is an OpenAI response_format object as Ollama's "format": "json" for a json_object, the schema itself
+// for a json_schema, nothing for anything else (text, or JSON that does not parse).
+func ollamaFormat(responseFormat string) json.RawMessage {
+	if responseFormat == "" {
+		return nil
+	}
+	var f struct {
+		Type       string `json:"type"`
+		JSONSchema struct {
+			Schema json.RawMessage `json:"schema"`
+		} `json:"json_schema"`
+	}
+	if json.Unmarshal([]byte(responseFormat), &f) != nil {
+		return nil
+	}
+	switch f.Type {
+	case "json_object":
+		return json.RawMessage(`"json"`)
+	case "json_schema":
+		if len(f.JSONSchema.Schema) > 0 && json.Valid(f.JSONSchema.Schema) {
+			return f.JSONSchema.Schema
+		}
+		return json.RawMessage(`"json"`)
+	}
+	return nil
 }
 
 type ollamaChatResponse struct {
@@ -195,6 +224,7 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 		Stream:    true,
 		Options:   ollamaOpts,
 		KeepAlive: keepAlive,
+		Format:    ollamaFormat(opts.ResponseFormat),
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {

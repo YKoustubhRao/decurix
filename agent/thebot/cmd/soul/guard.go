@@ -64,7 +64,10 @@ func (s *server) refusal(r *http.Request) (int, string) {
 			// one anyone on the Docker network could run commands here.
 			return http.StatusUnauthorized, noTokenRefusal
 		}
-		if !bearerMatches(r.Header.Get("Authorization"), token) {
+		auth := r.Header.Get("Authorization")
+		// The call key opens the one route it is for (llmcall.go): a model call, never a job, reply or memory.
+		byCallKey := r.URL.Path == llmCallPath && s.callKey != "" && bearerMatches(auth, s.callKey)
+		if !byCallKey && !bearerMatches(auth, token) {
 			return http.StatusUnauthorized, "this desktop's agent token is required"
 		}
 	}

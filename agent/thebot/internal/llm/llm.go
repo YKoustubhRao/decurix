@@ -129,6 +129,11 @@ type Options struct {
 	// in a header (X-Decurix-Purpose) and in soul's trace, never in the request body. Required at every call site
 	// (purpose_test.go); a call without one goes out as PurposeUntagged and is logged once per call site.
 	Purpose string
+	// ResponseFormat is an OpenAI response_format object as JSON ({"type":"json_object"}, or a json_schema one), or ""
+	// for none. A string, not raw bytes, so Options stays comparable. The OpenAI provider sends it as it is; Ollama
+	// takes it as its "format" (ollamaFormat). Set only by the Python agent's calls through soul (/api/llm/call):
+	// soul's own calls leave it empty, so their request bodies are byte-identical to before.
+	ResponseFormat string
 }
 
 type Provider interface {

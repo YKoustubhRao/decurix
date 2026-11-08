@@ -5,7 +5,7 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import config, usage
+from decurix_agent import config, soul_call, usage
 from decurix_agent.logging_utils import log
 
 
@@ -403,7 +403,29 @@ def ask_once(system, prompt, *, purpose):
     """
 
     log(f"ollama: one question ({purpose})")
-    return ollama_request([
+    messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": prompt},
-    ])
+    ]
+    # Soul asks the model when it can (soul_call, plan rule 3): through its own Ollama provider, its concurrency limit
+    # (one call at a time on a CPU host, so this question no longer evicts the prefix soul's own turn had loaded) and
+    # its trace - which, for a local model the proxy never sees, is the only record of the call. The same options as
+    # ollama_request's: num_ctx 8192, temperature 0.2, NUM_PREDICT, STOP_SEQUENCES.
+    if soul_call.usable():
+        ensure_model_resident()  # a cold model is loaded first, patiently and out loud, as ollama_request does
+        try:
+            answer = soul_call.call("local", messages, purpose=purpose, max_tokens=NUM_PREDICT, temperature=0.2,
+                                    stop=STOP_SEQUENCES, timeout=REQUEST_TIMEOUT_SECONDS)
+        except soul_call.Unusable:
+            pass  # asked the way it always was, below
+        except soul_call.Failed as exc:
+            raise RuntimeError(f"Ollama request failed (through soul): {exc}")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"Could not reach soul for the model: {exc}")
+        else:
+            spent = answer.get("usage") or {}
+            usage.set_model(config.OLLAMA_MODEL)
+            usage.add(input_tokens=spent.get("prompt_tokens"), output_tokens=spent.get("completion_tokens"),
+                      cost_usd=0)  # counted here, once: soul counts a call it makes for the agent in no job
+            return answer["text"]
+    return ollama_request(messages)

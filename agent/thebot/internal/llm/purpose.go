@@ -77,6 +77,24 @@ var purposes = map[string]bool{
 	PurposeEmbed: true, PurposeUntagged: true,
 }
 
+// agentPurposeShape is the form of the Python agent's own purposes (py.* or legacy.*, the set
+// agent/tests/test_purpose_tags.py holds), within the proxy's purpose form.
+var agentPurposeShape = regexp.MustCompile(`^(py|legacy)\.[a-z0-9_.]{1,44}$`)
+
+// ValidAgentPurpose reports whether p is of the Python agent's own purpose form: never one of soul's own purposes, so
+// the record never shows the agent's question as, say, soul's operator turn.
+func ValidAgentPurpose(p string) bool { return agentPurposeShape.MatchString(p) }
+
+// AgentPurpose is the purpose of a call soul makes for the Python agent (/api/llm/call): the agent's own py.* or
+// legacy.* purpose, verbatim, or PurposeUntagged for anything else. The one way a purpose that is not a constant above
+// reaches an Options literal (purpose_test.go allows it and nothing else).
+func AgentPurpose(p string) string {
+	if ValidAgentPurpose(p) {
+		return p
+	}
+	return PurposeUntagged
+}
+
 // purposeShape is the proxy's accepted form of a purpose (PLAN-P2 C1).
 var purposeShape = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,47}$`)
 

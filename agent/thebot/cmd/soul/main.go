@@ -271,6 +271,8 @@ type server struct {
 	tracer *trace.Writer
 	// secrets is every secret value a job was told this process (C14): the memory API's second wall.
 	secrets secretSet
+	// callKey opens /api/llm/call and nothing else (llmcall.go's newCallKey); "" for none.
+	callKey string
 }
 
 // pausedJobTTL is how long a paused job waits for its reply before the next
@@ -828,6 +830,7 @@ func (s *server) mux() http.Handler {
 	mux.HandleFunc("/api/skills/", s.handleSkillAction)
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/jobs/", s.handleJobs)
+	mux.HandleFunc(llmCallPath, s.handleLLMCall)
 	// The UI itself - embedded in the binary (see web/embed.go), served at
 	// "/". This is the ONLY thing this loopback server exists to serve to
 	// a browser; everything else is the JSON/SSE API the UI's own JS calls.
@@ -1079,6 +1082,15 @@ func main() {
 	s.storesOff = storesOff
 	s.embeddings = embeddingsOf(embedder)
 	s.tracer = trace.New(filepath.Join(ws.Root(), "traces"))
+	// The key the worker's own commands (the gui tool's model calls) reach /api/llm/call with (llmcall.go).
+	if cfg.AgentToken != "" {
+		key, path := newCallKey(), callKeyPath(cfg.WorkspaceRoot)
+		if err := writeCallKey(path, key); err != nil {
+			log.Printf("[soul] could not write the call key to %s: %v (the worker's commands ask the proxy directly)", path, err)
+		} else {
+			s.callKey = key
+		}
+	}
 
 	// Binds all interfaces (0.0.0.0), not just 127.0.0.1 - a real bug
 	// caught running this inside a container: a process bound to

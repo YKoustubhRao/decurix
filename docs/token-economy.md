@@ -189,7 +189,12 @@ What that means here, in order of safety:
    brain today, which is how the parity runs are made. Routing *within* a task (this call to the local model, that one
    to the hosted) needs the per-call kind and a place to record each kind's checked results. The kind is now on every
    call (soul's `llm.Options.Purpose`, Python's `py.*` tags, recorded by `internal/llmrec`); the place for each kind's
-   checked results is the next piece, and it is a measurement before it is a feature.
+   checked results is the next piece, and it is a measurement before it is a feature. Since 2026-11-08 every call,
+   Python's too, is made by soul (`/api/llm/call`, [harnesses.md](harnesses.md)): one provider chain is the one place
+   such a routing would go, Python's calls now carry soul's `prompt_cache_key` (they sent none) and wait in soul's
+   concurrency limit (on a CPU host a grounder's question no longer evicts the prefix soul's own turn had loaded, and
+   both send the same Ollama options), and a local brain's `py.*` calls have a trace line, where before nothing but
+   the agent's log saw them.
 
 Money is the third priority. Nothing here moves until the per-document replay is clean and measured, because the
 replay removes more model turns than any handover could cheapen.

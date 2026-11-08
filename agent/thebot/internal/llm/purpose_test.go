@@ -102,6 +102,9 @@ func TestEveryOptionsLiteralNamesItsPurpose(t *testing.T) {
 					t.Errorf("%s: an llm.Options literal sets no Purpose", where)
 					return true
 				}
+				if agentPurposeCall(purpose) {
+					return true // the Python agent's own purpose, checked by AgentPurpose (/api/llm/call)
+				}
 				if name := purposeConstName(purpose, inLLM); name == "" || consts[name] == "" {
 					t.Errorf("%s: Purpose is not one of purpose.go's constants", where)
 				}
@@ -143,6 +146,32 @@ func purposeConstName(e ast.Expr, inLLM bool) string {
 		}
 	}
 	return ""
+}
+
+// agentPurposeCall reports whether e is a call of llm.AgentPurpose.
+func agentPurposeCall(e ast.Expr) bool {
+	call, ok := e.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "llm" && sel.Sel.Name == "AgentPurpose"
+}
+
+func TestAgentPurposeIsTheAgentsOwnOrUntagged(t *testing.T) {
+	for p, want := range map[string]string{
+		"py.judge": "py.judge", "py.escalation.ground": "py.escalation.ground", "legacy.x": "legacy.x",
+		PurposeOperatorTurn: PurposeUntagged, "": PurposeUntagged, "py.": PurposeUntagged, "PY.judge": PurposeUntagged,
+		"py.judge\nX-Evil: 1": PurposeUntagged, "py." + strings.Repeat("a", 45): PurposeUntagged,
+	} {
+		if got := AgentPurpose(p); got != want {
+			t.Errorf("AgentPurpose(%q) = %q, want %q", p, got, want)
+		}
+	}
 }
 
 // recordingProvider keeps the options of each call it is given.
