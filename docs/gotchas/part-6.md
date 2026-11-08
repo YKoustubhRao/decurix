@@ -302,8 +302,9 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   no row, the worker added that row citing the check, and the second judge - shown the rule only through the worker's
   citation - passed the seven-row file. The check is shown the person's words on the worker's earlier tasks with
   their questions, and the worker sent back is told the person's words hold over the check's finding.
-- **A host app's viewer count could reach its helper out of order** (2026-11-08, CI: `TestTheHelpersCaptureFollowsTheViewers`
-  saw 1,0,2,1,0). `winhost.syncViewers` counted under the session's lock and sent after releasing it, so two changes at
+- **A host app's viewer count could reach its helper out of order** (2026-11-08, found reading the code while chasing
+  the CI flake 1,0,2,1,0 in `TestTheHelpersCaptureFollowsTheViewers` - which was itself the test's log shared by two
+  fake helpers, the warm one's readiness ping between the viewers; the test now reads one helper's lines). `winhost.syncViewers` counted under the session's lock and sent after releasing it, so two changes at
   once sent their counts in either order and the helper could be left told 0 with a person watching: its capture stops
   and their screen freezes. The count and its send are one step now (`viewersSend`). A count, a state or a version sent
   to another process after its lock is released can arrive stale; send it under a lock of its own.

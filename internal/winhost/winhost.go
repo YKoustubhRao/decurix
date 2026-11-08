@@ -1238,7 +1238,8 @@ func (s *Session) holdWatching(on bool) {
 // syncViewers tells the helper how many people are watching, which is all it needs to know to capture or to rest.
 // The count and its send are one step (viewersSend): counted under the lock and sent after it, two changes at once (the
 // start letting go of its hold, a viewer arriving) sent their counts in either order, and the helper could be left
-// told 0 with a person watching - its capture stopped and their screen froze (CI caught the sequence 1,0,2,1,0).
+// told 0 with a person watching - its capture stopped and their screen froze (a race seen in reading the code; the
+// CI sequence 1,0,2,1,0 that led to it was the test's shared log, TestTheHelpersCaptureFollowsTheViewers).
 func (s *Session) syncViewers() {
 	s.viewersSend.Lock()
 	defer s.viewersSend.Unlock()
