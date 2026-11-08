@@ -58,8 +58,9 @@ gone with that folder.
    the save is refused once per scope with what the window shows instead, then let through with an advisory line.
 4. **Questions that the screen answers** (built: soul `screen_answer.go`, `answeredOnScreen`) - a HELP whose quoted
    words or codes stand in the newest listing of an open window is sent back once with the lines that show them. A
-   document read or the ledger is not searched. Questions for names the application lists, and asks to be allowed to
-   continue, are pushed back too (`asksAppNamesRe`, `asksToContinueRe`).
+   document read or the ledger is not searched. A question naming a list a listed window shows (a field's options, a
+   table's column) whose entries are names is sent back once with that list (`listOnScreen`, a fact of the listing,
+   never the question's words; 2026-11-08). Asks to be allowed to continue are pushed back too (`asksToContinueRe`).
 5. **Runner that never loses a run to itself** (built outside the repository, in `decurix-tests/wide/iteration.py`;
    that folder is lost, and nothing in the repository does this today) - preflight (ports, worker ready, mock state,
    folder manifest, memory, no other runner, code hash in the worker), infra failures classified and retried once on a
@@ -120,8 +121,8 @@ the task needs is asked for directly (`declinedAdvice`). A reply that opens with
 held while a listed form is unconfirmed; an approved click whose ref is gone finds its element again by role and
 name (`_same_named`).
 
-**Questions the harness answers itself.** A question for names the application lists, and a HELP asking to be
-allowed to continue, are pushed back (`asksAppNamesRe`, `asksToContinueRe`). A written-out sum is checked only when
+**Questions the harness answers itself.** A question naming a list a listed window shows (`listOnScreen`, since
+2026-11-08 a fact of the listing), and a HELP asking to be allowed to continue (`asksToContinueRe`), are pushed back. A written-out sum is checked only when
 its operator stands on the terms' line - a bullet dash is not a minus (`verify.false_sums`).
 
 **The trace.** Each command's output is kept bounded, a failed command's head and tail; a review's points are listed.

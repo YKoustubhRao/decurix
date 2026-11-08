@@ -668,7 +668,8 @@ type operatorState struct {
 	// was shown whole, and CycleAsk that one went round again after that (cycle.go).
 	RecentRuns  []ranCommand `json:",omitempty"`
 	CycleNudges int          `json:",omitempty"`
-	// OnScreenNudged: a question quoting what a listing shows was pushed back once (screen_answer.go); RecordLedger is
+	// OnScreenNudged: a question quoting what a listing shows was pushed back once, NamesNudged: one naming a list a
+	// listing shows (screen_answer.go); RecordLedger is
 	// the record ledger as gui records last printed it, read before a review (knowledge.go).
 	OnScreenNudged bool     `json:",omitempty"`
 	NamesNudged    bool     `json:",omitempty"`
@@ -1925,12 +1926,15 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: continueNudge})
 				continue
 			}
-			if !st.NamesNudged && !humanOnlyRe.MatchString(value) && asksAppNamesRe.MatchString(value) {
-				// A name, label or option the application holds is read from its own list, never asked (screen_answer.go).
-				st.NamesNudged = true
-				rc.Logf("operator", "asked the person for names the application lists - pushing back once")
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: appNamesNudge})
-				continue
+			if !st.NamesNudged && !humanOnlyRe.MatchString(value) {
+				// A question naming a list a listed window shows, whose entries are names, is answered there - a fact
+				// of the listing, not of the question's words (screen_answer.go, N-W3-3).
+				if passage := listOnScreen(value, st.Listings); passage != "" {
+					st.NamesNudged = true
+					rc.Logf("operator", "asked the person for names a list on the screen shows - pushing back once")
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(listOnScreenNudge, passage)})
+					continue
+				}
 			}
 			if !st.OnScreenNudged && !humanOnlyRe.MatchString(value) {
 				// A question that quotes what the newest listing of a window shows is answered there (screen_answer.go).
