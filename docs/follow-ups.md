@@ -251,8 +251,9 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
 
 ## Phase 2: control plane
 
-- **Untagged model calls are flagged, not refused** (D3). `DECURIX_LLM_REQUIRE_PURPOSE=1` refuses them; make it the
-  default only after a clean live round shows 0 `untagged` on `/api/llm/calls/stats` (L0, L3).
+- **Done: untagged model calls are refused by default** (D3). The live round of 2026-11-08 (a broker-mode desktop with a
+  hosted brain: tasks, a demonstration, teaching, a replay) showed 58 calls, 0 untagged and 0 invalid (soul 41, the agent
+  17). `DECURIX_LLM_REQUIRE_PURPOSE=0` lets them through for desktops made before.
 - **The delete flush can time out** (90 s). A run not pulled by then is named in the log ("... that run's recording,
   ledger and notes are lost") and the delete goes on: the one case where a label can be lost. Measure live how long a
   flush takes; consider refusing the delete instead while unpulled runs remain.

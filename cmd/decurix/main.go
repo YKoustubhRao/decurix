@@ -443,7 +443,9 @@ func main() {
 	server.Devices = pairedDevices
 	server.DB = db
 	server.DateOrder = dateOrderFromEnv()
-	server.RequirePurpose = os.Getenv("DECURIX_LLM_REQUIRE_PURPOSE") == "1"
+	// On by default since the live round of 2026-11-08 showed 0 untagged calls in 58 (soul, the agent, the gate);
+	// DECURIX_LLM_REQUIRE_PURPOSE=0 turns it off for desktops made before calls said what they were for.
+	server.RequirePurpose = os.Getenv("DECURIX_LLM_REQUIRE_PURPOSE") != "0"
 	server.SkillHub = must(skillhub.NewStore(db))
 	server.Knowledge = must(knowledge.NewStore(db))
 	server.Handoffs = server.NewHandoffService(must(handoff.NewStore(db)))

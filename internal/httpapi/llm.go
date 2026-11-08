@@ -297,7 +297,7 @@ func (s *Server) checkTaskTag(t *proxyTags, worker string, fromDesktop bool) {
 }
 
 // untaggedRefusal is the answer to an untagged call when DECURIX_LLM_REQUIRE_PURPOSE is on.
-const untaggedRefusal = "say what this call is for (X-Decurix-Purpose)"
+const untaggedRefusal = "this model call does not say what it is for (X-Decurix-Purpose): the desktop's agent is older than this Decurix; recreate the desktop, or set DECURIX_LLM_REQUIRE_PURPOSE=0 on the control plane"
 
 // errBrain is a create request's harness or brain refused, in words for the
 // person who chose it.
