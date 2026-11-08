@@ -895,7 +895,13 @@ def _declare_taught_record(run):
             return ""  # which document a record comes from is not code's to choose among several
         # Only what stands in the document or the request: a declaration refuses whole over one value nothing backs.
         given = records._source_text(files[0]) + "\n" + str(run.get("context") or "")
-        fields = {label: v for label, v in _taught_fields(run).items() if records.stands_in(v, given)}
+        fields = {}
+        for label, v in _taught_fields(run).items():
+            # A date is declared as the document writes it (binding.date_in): the value is how the form takes it, and
+            # the save compares the form with the document under each side's order.
+            written = binding.date_in(v, [given])
+            if written or records.stands_in(v, given):
+                fields[label] = written or v
         key = next((v for label, v in fields.items() if records.identifier_field(label)), "")
         if not key or len(fields) < MIN_DECLARED_FIELDS:
             return ""

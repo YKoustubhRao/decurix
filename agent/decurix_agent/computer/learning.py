@@ -970,6 +970,26 @@ def _generalise(steps):
     return params
 
 
+def _rows_of_a_table(steps, span):
+    """
+    Whether the repetitions of a candidate loop are the lines of one table on one form: every repetition's entries go
+    into a single table row (a path's `row N`; the first row may carry none) and no two repetitions into the same row.
+    Those are entered once per line of the document by the rows of the form (skills.repeated_rows, skills.fit, which
+    write out as many rows as the document has), never folded as a loop: found live (2026-11-08), a bill's second line
+    began with "Add row" and its first did not, the first was taken as the loop's shorter copy, and `each` dropped
+    line 1's quantity and rate and fixed every quantity at the demonstration's 1. A loop over documents - a whole form
+    per repetition, its entries in several rows or in none - is not this.
+    """
+
+    rows = []
+    for s in span:
+        mine = {_row_of(steps[k]) for k in s if _entry(steps[k])}
+        if len(mine) != 1:
+            return False
+        rows.append(next(iter(mine)))
+    return len(set(rows)) == len(rows)
+
+
 def _find_loops(steps, demos):
     """
     Blocks of steps repeated, with different text typed each time: [{"id", "length", "reps", "blocks": [[step ids] per
@@ -1047,6 +1067,8 @@ def _find_loops(steps, demos):
             taken |= s
         for gap in gaps:
             taken |= set(gap)
+        if _rows_of_a_table(steps, span):
+            continue  # a table's lines: entered per line of the document by skills.repeated_rows / fit, not a loop
         blocks = [[steps[k]["id"] for k in sorted(s)] for s in span]
         between = [[steps[k]["id"] for k in gap[:len(gap) - prefix]] for gap in gaps]
         loops.append({"length": length + prefix, "reps": len(reps), "blocks": blocks, "between": between, "enabled": None})

@@ -341,6 +341,14 @@ def withheld(text):
     return _withheld(text)
 
 
+# Answers that say who is asking, where or when - not that this note is wrong - and can change: tried again like an
+# unreachable control plane (kept, then sent again for up to RESEND_FOR_SECONDS). Found live (2026-11-08): a guard
+# refused a desktop's callbacks with 403 for an address range it should have freed; the outcome was let go after its
+# least form was refused too, and the task stayed "running" until the desktop was deleted. A 400, 409, 413 or 422 is
+# the control plane's no to the note itself (409: the task is not open on this desktop) and is let go as before.
+NOT_YET_CODES = frozenset({401, 403, 404, 408, 425, 429})
+
+
 def _post_querytext(payload):
     """POST one note to the control plane: ("sent", ""), ("refused", why) for its own no, or ("unreachable", why)."""
 
@@ -356,7 +364,7 @@ def _post_querytext(payload):
                 return "sent", ""
             return "unreachable", f"control plane returned HTTP {response.status}"
     except urllib.error.HTTPError as exc:
-        return ("unreachable" if exc.code >= 500 else "refused"), str(exc)
+        return ("unreachable" if exc.code >= 500 or exc.code in NOT_YET_CODES else "refused"), str(exc)
     except Exception as exc:  # noqa: BLE001 - every way of not getting through is "not yet"
         return "unreachable", str(exc)
 

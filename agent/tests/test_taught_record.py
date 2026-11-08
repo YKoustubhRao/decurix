@@ -20,7 +20,7 @@ import test_recordings  # noqa: F401 - stubs decurix_agent.config first
 from decurix_agent import guidance, skill_task, state
 from decurix_agent.computer import skills
 
-BILL = ("TAX INVOICE  Northwind Traders Ltd  Invoice No: NW-2026-118  Date: 03-10-2026\n"
+BILL = ("TAX INVOICE  Northwind Traders Ltd  Invoice No: NW-2026-118  Date: 03-Oct-2026\n"
         "1  Copier paper A4   20  x 250.00   5,000.00")
 
 
@@ -87,6 +87,10 @@ class TheTaughtRecord(unittest.TestCase):
         self.assertEqual(fields["Supplier Invoice No"], "NW-2026-118")
         self.assertEqual(fields["Supplier"], "Northwind Traders Ltd")
         self.assertNotIn("Typed text", fields)  # an address the demonstration kept, no fact of the document
+
+    def test_a_date_is_declared_as_the_document_writes_it(self):
+        skill_task._declare_taught_record(self.run_for())
+        self.assertEqual(self.declared[0][2]["Supplier Invoice Date"], "03-Oct-2026")
 
     def test_a_value_the_document_does_not_hold_is_left_out_not_declared(self):
         values = dict(filled_values(), supplier="Someone Else Pvt Ltd")

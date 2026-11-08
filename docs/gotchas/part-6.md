@@ -358,3 +358,14 @@ The demonstration's first Ctrl+S was refused (a "missing fields" notice), the pe
 button and saved again. Learned as steps, a replay's first save holds, nothing appears, and the replay stops at the press
 meant for the notice. The same commit pressed twice with only that dismissal between is now kept once, the last
 (`learning._drop_retried_commits`).
+
+### A bill's table lines were folded as a loop, and its dates were never the document's
+
+Two blockers found by dry-running the new taught-task route on the real ERPNext demonstration before a live run spent
+30 minutes on them. (1) Line 2 began with "Add row" and line 1 did not, so the loop finder took line 1 for the shorter
+first copy of a per-document loop; `each` dropped line 1's quantity and rate and fixed every quantity at the demo's 1.
+Repetitions whose entries each go into one table row, no two into the same row, are now no loop
+(`learning._rows_of_a_table`): the form's rows (`skills.repeated_rows`, `fit`) write out one per document line. (2) The
+bill writes "09-Oct-2026", the form takes "09-10-2026": the fill's strict check dropped every bill's date, so every run
+went to the model. A digit date is now held when one of its readings (the application's order when known) is a date the
+document writes, and the record declares the document's own token (`binding.date_in`).

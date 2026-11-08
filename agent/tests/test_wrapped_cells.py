@@ -41,5 +41,32 @@ class AWrappedCell(unittest.TestCase):
         self.assertTrue(binding.held_by("7000", [BILL]))
 
 
+class ADateWrittenAnotherWay(unittest.TestCase):
+    """A digit date filled the way the field takes it is held by the document's date written another way
+    (binding.date_in): found live (2026-11-08), "09-Oct-2026" filled as "09-10-2026" was dropped from every bill."""
+
+    BILL = "TAX INVOICE  Invoice No: TC/2026/0455   Date: 09-Oct-2026   Due: 08-Nov-2026"
+
+    def test_the_reading_that_names_the_documents_date_holds_it(self):
+        self.assertTrue(binding.held_by("09-10-2026", [self.BILL]))
+        self.assertEqual(binding.date_in("09-10-2026", [self.BILL]), "09-Oct-2026")
+        self.assertEqual(binding.date_in("10-09-2026", [self.BILL]), "09-Oct-2026")  # month first: the same day
+
+    def test_a_date_the_document_does_not_write_is_not_held(self):
+        self.assertFalse(binding.held_by("11-10-2026", [self.BILL]))
+        self.assertEqual(binding.date_in("Copier paper", [self.BILL]), "")
+
+    def test_two_readings_naming_two_dates_of_the_document_hold_neither(self):
+        both = "Bill date 09-Oct-2026, delivered 10-Sep-2026"
+        self.assertEqual(binding.date_in("09-10-2026", [both]), "")
+
+    def test_the_applications_order_when_known_decides_the_reading(self):
+        from unittest import mock
+        from decurix_agent import task_context
+        with mock.patch.object(task_context, "app_date_order", return_value="month"):
+            self.assertEqual(binding.date_in("09-10-2026", [self.BILL]), "")  # Sep 10: not this bill's date
+            self.assertEqual(binding.date_in("10-09-2026", [self.BILL]), "09-Oct-2026")
+
+
 if __name__ == "__main__":
     unittest.main()

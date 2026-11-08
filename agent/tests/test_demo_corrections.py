@@ -317,5 +317,19 @@ class RetriedCommits(unittest.TestCase):
         self.assertEqual(len([s for s in skill["steps"] if s.get("keys") == ["ctrl+s"]]), 2)
 
 
+class TableRowsAreNoLoop(unittest.TestCase):
+    """The lines of one table (each repetition's entries in one row, no two in the same row) are the rows of the form,
+    written out per line of the document (skills.repeated_rows / fit), never a loop to fold: found live (2026-11-08),
+    line 2 began with "Add row" and line 1 did not, and folding them dropped line 1's quantity and rate."""
+
+    def test_two_lines_of_a_bill_are_no_loop_and_stay_two_rows(self):
+        skill = learning.build([empty_row_demo()])
+        self.assertEqual(skill["loops"], [])
+        for param in skill["params"]:
+            param["varies"] = True
+        self.assertEqual(len(skills.repeated_rows(skill)["rows"]), 2)
+        self.assertEqual(len([s for s in skill["steps"] if s.get("param")]), 4, "both lines keep every field")
+
+
 if __name__ == "__main__":
     unittest.main()

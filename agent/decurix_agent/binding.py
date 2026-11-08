@@ -560,7 +560,41 @@ def held_by(value, texts):
         return any(_plain(n) == plain.lstrip("-") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", joined))
     if re.search(r"(?<!\w)" + re.escape(plain) + r"(?!\w)", joined) is not None:
         return True
+    if date_in(value, texts):
+        return True
     return wrapped_in(plain, joined)
+
+
+DATE_ORDERS = ("day", "month")
+
+
+def date_in(value, texts):
+    """
+    The date token of the texts a digit date value names, or "": the value is written the way the field takes it (the
+    application's order, when known, else either), the texts as the documents write their dates (a month by name, or
+    digits in the source's order). "" when the value is no date, matches no date of the texts, or its two readings match
+    two different dates written there (which one is meant is not code's to say). Found live (2026-11-08): a bill's
+    "09-Oct-2026" filled as "09-10-2026" - how the form takes it - was "in nothing this run was given", every bill's date
+    was dropped, and the model entered every bill by hand.
+    """
+
+    from decurix_agent import task_context, values
+    from decurix_agent.computer import records
+
+    if not values.parse_date(value):
+        return ""
+    app = task_context.app_date_order()
+    readings = {values.as_iso(value, order) for order in ((app,) if app in DATE_ORDERS else DATE_ORDERS)} - {None}
+    if not readings:
+        return ""
+    source = task_context.source_date_order()
+    found = {}
+    for text in texts:
+        for m in records._DATE_TOKEN.finditer(text or ""):
+            iso = values.as_iso(m.group(0), source)
+            if iso in readings:
+                found.setdefault(iso, m.group(0))
+    return next(iter(found.values())) if len(found) == 1 else ""
 
 
 # How far apart a wrapped value's words may stand: its own length this many times, plus the slack below. A table cell

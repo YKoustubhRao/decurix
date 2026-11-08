@@ -195,7 +195,7 @@ When the control plane refuses a desktop's outcome with 403 (here an infra fault
 since fixed in `practice.SubnetCache`), the agent lets the kept outcome go for good after its short form is refused too
 (`messaging.resend_unsent`), and the task stays `running` in the control plane, blocking the desktop until it is deleted
 (the task then reads `abandoned`). A refusal the desktop cannot tell from an infra fault should be kept and retried with
-backoff, or the task marked failed by the control plane, never left running. **Open.**
+backoff, or the task marked failed by the control plane, never left running. **Done** 2026-11-08: `messaging.NOT_YET_CODES` (401, 403, 404, 408, 425, 429) are tried again like an unreachable control plane, kept and resent for up to a day; 400, 409, 413 and 422 stay the control plane's no to the note itself.
 
 ## Live checks after the next build
 

@@ -34,6 +34,15 @@ class TheControlPlanesAnswer(unittest.TestCase):
         self.assertEqual(self.answered(400), "refused")
         self.assertEqual(self.answered(503), "unreachable")
 
+    def test_an_answer_about_who_or_when_is_tried_again_not_let_go(self):
+        """A 403 from a guard (found live 2026-11-08: a freed address range still refused) left the task running for
+        good once the outcome was let go."""
+
+        for code in (401, 403, 404, 408, 429):
+            self.assertEqual(self.answered(code), "unreachable", code)
+        for code in (400, 409, 413, 422):
+            self.assertEqual(self.answered(code), "refused", code)
+
 
 class UnsentOutcomes(unittest.TestCase):
 
