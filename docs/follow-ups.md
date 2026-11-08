@@ -498,14 +498,41 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     nothing 0/10** (false done 10/10), no infrastructure or invalid rows, no problems on an oracle row. The
     5-repeat `default+expert` run, the curve, and the cleanup (`cp-dev.sh stop`, the dev volume, the `before-1107`
     tags, the buildx builder `decurix-wsl-2048m`) are still owed.
-  - **The "after" run, in progress 2026-11-08:** HEAD 9038515 (the expert prompt, the broker serving the expert's
+  - **The "after" run, done as a baseline 2026-11-08:** HEAD 9038515 (the expert prompt, the broker serving the expert's
     replies, scope=worker provenance, the cut-read, unset-choice and refusal-loop fixes). Images rebuilt from a
     `git archive` of HEAD (`decurix-desktop:basic`, `:next`, `:developer`, `:ai` = e00bd82ce61e; `decurix-tools`
     unchanged, 28170e9f7e03); `decurix-dev` restarted on a binary from the same archive (sha256 68315fea4223...),
     volume `decurix-dev-data` kept. Brain Kimi-K2.6 / gpt-5.4-mini on `AZURE_KEY_1` (the before run's; key 3,
     `AZURE_KEY_2`, still answers 401 on every route). Run **`eaa791e6bd0cff5fa`** (`default+expert --carry-state
     --repeats 5`) started 10:30 UTC; watch with `py -3 evals/run.py --cp http://127.0.0.1:18080 table
-    eaa791e6bd0cff5fa`.
+    eaa791e6bd0cff5fa`. First six rows (repeat 1), all pass: bill-1 608k in (before: budget at 1.46M), recon-1 172k,
+    bill-2 1.04M, recon-2 75k, bill-3 330k, recon-3 66k. **Paused for the owner at 11:20 UTC** on two harness points
+    seen in bill-2 (`x8d5d51639a38fd33`), the run itself left going:
+    - A "don't know" reply travels to later tasks with no question. The method learned from bill 1
+      (`methods.py:158`, "The person said about this plan: ...") carries bill-1's reply to the plan question ("I don't
+      know that ... Do not make it up: if the task needs it, say it is missing.") into bill 2's prompts and its
+      independent review (call `c0e29be653fa6bbe6`, purpose `review`, input blob `492afed814b8...`). That input has no
+      section for this task's own replies: the rule the person gave shows only inside a cited passage. The review
+      then said "the person explicitly stated they do not know the cost centre" and called a value the person did
+      give fabricated. The case passed only after the expert answered that review question with the rule again.
+    - There is no way to declare a value from the person's reply. `gui record --from "human reply"` failed (not a
+      file), so the worker wrote the person's rule to `~/work/cost-centre-rule.txt` and declared from that file, a
+      source of its own making (the check caught it). It would have passed as `seen` with `--from bill.pdf`, since
+      the reply holds "CC-27", but nothing says so.
+    - The run record lacks the expert's replies. Every trajectory of the run has `questions` and `judgements`
+      empty, and `GET /api/judgements?task=tfdc005bf26753cc6` is empty, though the broker serves both replies on
+      that task (`/api/desktops/judgements?task=` from the desktop). `recordExpertReply` logged no error. Fixed in
+      7aebc2a.
+    **Ended by the owner after repeat 3** (cancelled 14:12 UTC; 30 rows): 22/30 pass (Wilson lower bound 0.56),
+    against 3/7 before. Bills 11/15 (before 0/4); reconciliations 11/15 with 4 false done. `curve`: neither kind meets
+    the bar (bills: 988k then 536k tokens, but questions that are not required rose from 0.7 to 0.9; recons: 100%
+    then 67% with 4 false done). All 8 failures are the harness's and HEAD fixes each: recon-5 r2 `xcb425599da9f1c9e`
+    (82495c2), bill-1 r3 `x643d67b7c0e709ac` (82495c2, b797a0f), bill-2 r3 `xccb1b2b6e6045634` (ae332a0), bill-3 r3
+    `x3275c004d0ccfc5c` (82495c2, 135771b), recon-3 r3 `xc6b1e64d2526879f`, recon-4 r3 `x8aac58f7c6d4dfc2` and
+    recon-5 r3 `xead09eed0df85a94` (be2ebfe, 82495c2), bill-5 r3 `xba5fe22d81ee9442` (b797a0f, 82495c2). Table and
+    per-failure evidence: [evals.md](evals.md), "Baseline for 9038515". Rows in
+    `evals/results/eaa791e6bd0cff5fa/rows.jsonl`. Next: the validation on HEAD, as two runs one after the other
+    (`default+expert`, then `default+expert+soul`), never two practice desktops at once.
   - **Fixed 2026-11-08: the expert's "don't know" to bill 2's cost-centre question.** Matching was right (the question
     named `cost-centre-rule` by `refers_to`); the expert's model chose null because the fact gives a rule, not "which"
     ("it explains how, not which"; the question held no GSTIN). `ExpertPrompt` now says a fact gives what is asked when

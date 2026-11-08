@@ -440,6 +440,62 @@ and on bill 4 it declared "as per covering letter" as the bill number instead of
 "Phase 2: evals"). `curve` now says "not met" for a kind no later case passed (it said "met" for these bills: cheaper
 failures).
 
+**Baseline for 9038515** (2026-11-08, run `eaa791e6bd0cff5fa`, `default+expert --carry-state`, three repeats of the
+five planned. The owner cancelled it after repeat 3 because the rest would only repeat failures already fixed on
+HEAD. Image `decurix-desktop` e00bd82ce61e and the dev control plane, both from a `git archive` of 9038515.
+Kimi-K2.6 / gpt-5.4-mini on `AZURE_KEY_1`, the before run's key; key 3 answered 401. Suite SHA `c6722c894ced`. The
+before run is `eeb05dd4a201cecda` on 82f2966: one repeat, cancelled after 7 rows, with no approval answered as
+asked):
+
+| # | case | pass (Wilson lo) | false done | questions req / other | tokens in (median; r1, r2, r3) | before (r1) |
+|---|---|---|---|---|---|---|
+| 1 | bill-1 | 2/3 (0.21) | 0/3 | 2.3 / 0.7 | 868k; 608k, 868k, 903k | budget, 1.46M |
+| 2 | recon-1 | 3/3 (0.44) | 0/3 | 1.0 / 0.3 | 172k; 172k, 121k, 349k | pass, 166k |
+| 3 | bill-2 | 2/3 (0.21) | 0/3 | 0.7 / 1.3 | 887k; 1.04M, 367k, 887k | asked (6 questions), 582k |
+| 4 | recon-2 | 3/3 (0.44) | 0/3 | 0.0 / 0.7 | 235k; 75k, 235k, 371k | pass, 71k |
+| 5 | bill-3 | 2/3 (0.21) | 0/3 | 0.7 / 1.0 | 330k; 330k, 163k, 611k | timeout, 1.16M |
+| 6 | recon-3 | 2/3 (0.21) | 1/3 | 0.0 / 0.0 | 69k; 66k, 69k, 252k | pass, 67k |
+| 7 | bill-4 | 3/3 (0.44) | 0/3 | 1.7 / 0.7 | 547k; 326k, 735k, 547k | timeout, 1.11M |
+| 8 | recon-4 | 2/3 (0.21) | 1/3 | 0.0 / 0.3 | 111k; 112k, 70k, 111k | - |
+| 9 | bill-5 | 2/3 (0.21) | 0/3 | 0.0 / 0.7 | 368k; 368k, 226k, 959k | - |
+| 10 | recon-5 | 1/3 (0.06) | 2/3 | 0.0 / 0.0 | 105k; 66k, 145k, 105k | - |
+
+The total is 22/30 (Wilson lower bound 0.56), against 3/7 before.
+
+**By kind (`curve`):**
+- **Bills:** pass 67% on bill 1, then 75% on bills 2 to 5. Tokens fell from 988k to 536k (in plus out). Questions
+  that are not required rose from 0.7 to 0.9, so the bar is not met. Every bill that failed had its record saved
+  right (`mock_records` passed); it timed out before saying done.
+- **Reconciliations:** pass 100% on recon 1, then 67%. Tokens fell from 198k to 140k. Four later rows were false
+  done, so the bar is not met.
+
+**Against the before run:** bills went from 0 passes in 4 to 11 in 15. Bill 4 now asks for the missing invoice number
+and passes 3/3. Repeat 1 is the closest comparison: 10/10, bills 608k then 326k to 1.04M, against 3/7 before.
+
+**Every failure is a harness failure, and HEAD fixes each one:**
+
+| row | trajectory | what happened | fixed in |
+|---|---|---|---|
+| recon-5 r2 | `xcb425599da9f1c9e` | False done. The judge, not shown the layout the person taught, called the correct 6-row file not done; the worker added a 7th row and the next judge passed it. | 82495c2 |
+| bill-1 r3 | `x643d67b7c0e709ac` | Timeout. Reviews demanded the cost centre be re-sourced from "the human reply", which `gui record` could not cite. | 82495c2, b797a0f |
+| bill-2 r3 | `xccb1b2b6e6045634` | Timeout. The read-back hint did not say how; the worker tried a title and a URL as `--from`, then misreported its declaration, and four reviews held it. | ae332a0 |
+| bill-3 r3 | `x3275c004d0ccfc5c` | Timeout. Reviews said the worker never asked for the cost centre (HELP), though it had asked and was answered. | 82495c2, 135771b |
+| recon-3 r3 | `xc6b1e64d2526879f` | False done. The learned method held recon 1's plan answer ("don't know") and its first idea of the output (a balance workbook), not the layout given later. No call saw the layout; the judge passed the workbook. | be2ebfe, 82495c2 |
+| recon-4 r3 | `x8aac58f7c6d4dfc2` | False done, as recon-3 r3. | be2ebfe, 82495c2 |
+| bill-5 r3 | `xba5fe22d81ee9442` | Timeout. The worker wrote the person's rule to `~/work/gstin-rule.txt` to declare from it, and reviews held the source. | b797a0f, 82495c2 |
+| recon-5 r3 | `xead09eed0df85a94` | False done, as recon-3 r3. | be2ebfe, 82495c2 |
+
+**Costs that did not fail a row:**
+- The plan question's "don't know", carried by the method as "said about this plan" (135771b): bill 2 in repeat 1
+  (1.04M; its review called the person's rule made up). It was in bills 3 to 5 of repeat 1 too, which passed without
+  a visible cost. Recon 2 in repeat 3 (371k) asked again because of it and was answered.
+- No way to back a value with the reply (b797a0f): bill 1 in repeat 2 (868k; it wrote the rule to a file and declared
+  from it).
+
+**Read:** the lesson does carry across tasks. Later bills mostly asked nothing required, and the rule reached the
+record. The cost and the misses came from how the person's words were kept and shown to the checks. The next run on
+HEAD is the validation.
+
 ## Adding a case (fails before, passes after)
 
 Rule 1: a behaviour change ships with a case that fails before it and passes after, plus a matrix with at least 5
