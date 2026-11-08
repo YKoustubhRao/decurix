@@ -142,6 +142,8 @@ type Request struct {
 	Reading *skills.Reading
 	// PlanAgreed is the host's word that the request is a stage of a plan the person agreed (skills.RunContext).
 	PlanAgreed bool
+	// EarlierSaid is the person's replies on the task before this request, each with its question (skills.RunContext).
+	EarlierSaid []skills.Said
 }
 
 type Scheduler struct {

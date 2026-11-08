@@ -897,6 +897,7 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 	st.PrefixLen = len(st.Messages)
 	st.Request = subtask.Step
 	st.PlanAgreed = rc.PlanAgreed
+	st.seedEarlierSaid(rc.EarlierSaid)
 	st.notePersonLinks(subtask.Step)
 	// Only what earlier steps read or ran is a source a typed value may be traced to: a model's own reply (a chat
 	// answer, a summary of web pages) is shown above as context, never noted as seen (skills.go, MetaModelReply).

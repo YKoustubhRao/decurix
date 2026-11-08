@@ -288,3 +288,11 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   that starts a holder of a secret looks its commands up on the system's PATH and starts the holder by absolute path;
   a secret reaches its holder in a file it reads once it is non-dumpable, never in an environment
   (gate-boundary.md, "The agent token's two holders").
+- **A reply carried without its question read as the person's standing word, and a sent-back job lost every reply**
+  (2026-11-08, learn-v1 bill 2). A learned method kept the person's answer to bill 1's plan question alone ("I don't
+  know that ... Do not make it up"), and bill 2's worker and review read it as said about bill 2; the review called a
+  cost centre the person gave in bill 2 made up. Bill 2's final check had sent it back, and the new job started a goal
+  of its own in soul, so its review had no "what the person said" at all. A person's word travels with the question it
+  answered (`methods.keep` keeps `{asked, said}`), and every job carries the task's confirmed replies (`earlierSaid`).
+  The worker also had no way to back a typed value with a reply: it wrote the reply into a file of its own to declare
+  from. The person's confirmed words are now among what a declared value may stand in (`records._elsewhere_text`).

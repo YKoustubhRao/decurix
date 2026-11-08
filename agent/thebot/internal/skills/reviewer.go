@@ -89,6 +89,30 @@ func (st *operatorState) personWords() []string {
 	return personSaid(st.Messages)
 }
 
+// seedEarlierSaid starts a goal with the person's replies on this task from before its job (RunContext.EarlierSaid),
+// kept as a reply in the goal is: with what it answered (PersonSaid, the review's "what the person said"), and its
+// words a source a typed value may come from (the reply alone, never the question, which is the worker's). Found live
+// (2026-11-08): a bill the final check sent back started a new goal, and its review, shown no reply of the person's,
+// judged the cost centre they gave as backed by nothing.
+func (st *operatorState) seedEarlierSaid(said []Said) {
+	for i, s := range said {
+		if i == MaxEarlierSaid {
+			break
+		}
+		reply := strings.TrimSpace(truncateText(s.Said, MaxEarlierSaidText))
+		if reply == "" {
+			continue
+		}
+		line := reply
+		if asked := strings.TrimSpace(s.Asked); asked != "" {
+			line = "Asked: " + truncateText(asked, 600) + "\n  They said: " + reply
+		}
+		st.PersonSaid = append(st.PersonSaid, line)
+		st.noteSeen(reply)
+		st.addUnit("person", "the person's reply", reply)
+	}
+}
+
 // tailText is the last n bytes of s (from a whole character), marked as cut.
 func tailText(s string, n int) string {
 	if len(s) <= n {

@@ -112,7 +112,23 @@ type RunContext struct {
 	// PlanAgreed is the host's word (a flag in the job request, never text in it) that this request is a stage of a
 	// plan the person already agreed: the goal puts no plan of its own to them (plan.go).
 	PlanAgreed bool
+	// EarlierSaid is the person's replies on this task before this job, each with the question it answered, as the
+	// host's control plane confirms them (Python's person_record.answers): a later job of the task - one the final
+	// check sent back - starts a goal of its own, and without them its review had no "what the person said".
+	EarlierSaid []Said
 }
+
+// Said is one reply of the person's with the question it answered.
+type Said struct {
+	Asked string `json:"asked"`
+	Said  string `json:"said"`
+}
+
+// Bounds on the replies a job is sent (EarlierSaid).
+const (
+	MaxEarlierSaid     = 20
+	MaxEarlierSaidText = 4000
+)
 
 // Reading is what the host read a reply to an approval as - the one reading every part of the worker acts on (the
 // agent's approval.reading): Decision "yes" (granted now), "if" (granted only once Condition holds), "no", or

@@ -54,6 +54,22 @@ class Methods(unittest.TestCase):
         self.assertIn("challan is in the cash ledger", said)
         self.assertIn("2 earlier checked run(s)", said)
 
+    def test_an_answer_is_kept_with_the_question_it_answered(self):
+        # Found live (2026-11-08): an answer kept alone reached the next task as the person's standing word about it.
+        methods.note_job(job_with(dict(PLAN, ask="OK to enter the bills as planned, each with your OK first?",
+                                       personSaid="I don't know that, so I can't give it to you.")))
+        methods.keep("File Udupi Traders' September return on the portal from their workbook")
+        said = methods.context("File Karavali Stores' October return on the portal from their workbook")
+        self.assertIn('Asked on an earlier run: "OK to enter the bills as planned, each with your OK first?" - the '
+                      'person answered: "I don\'t know that, so I can\'t give it to you."', said)
+        self.assertNotIn("The person said about this plan", said)
+
+    def test_an_answer_kept_before_questions_were_kept_still_reads(self):
+        methods.note_job(job_with(PLAN))
+        methods.keep("File Udupi Traders' September return on the portal from their workbook")
+        said = methods.context("File Karavali Stores' October return on the portal from their workbook")
+        self.assertIn("client chat for anything cancelled", said)
+
     def test_a_new_task_forgets_the_last_ones_plan(self):
         methods.note_job(job_with(PLAN))
         methods.begin()

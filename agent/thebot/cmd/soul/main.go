@@ -540,6 +540,10 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// puts no plan of its own to them. A flag in the request body, never a marker read from the request's text,
 		// which can hold pasted content (review T-32).
 		PlanAgreed bool `json:"planAgreed"`
+		// EarlierSaid is the person's replies on this task before this request, each with the question it answered, as
+		// the host's control plane confirms them: a later job of the task starts a goal of its own and keeps them
+		// (skills.RunContext.EarlierSaid). Bounded there.
+		EarlierSaid []skills.Said `json:"earlierSaid"`
 		// TaskID is the control plane's task this request belongs to (PLAN-P2 C2). It tags every model call and command
 		// of the job (llm.WithTags) and names its trace; one not of llm.TaskIDShape is ignored.
 		TaskID string `json:"taskId"`
@@ -589,7 +593,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	history := s.sessions.History(body.SessionID)
 
 	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history,
-		Reading: body.ApprovalReading, PlanAgreed: body.PlanAgreed}
+		Reading: body.ApprovalReading, PlanAgreed: body.PlanAgreed, EarlierSaid: body.EarlierSaid}
 	if paused := s.takePaused(body.SessionID); paused != nil {
 		// The paused job's prompt is withheld by its own values and this request's, before it is cut or quoted.
 		pausedSecrets := withheld.Clean(append(append([]string{}, body.Secrets...), paused.Secrets...))
@@ -832,6 +836,7 @@ func (s *server) mux() http.Handler {
 	mux.HandleFunc("/api/jobs/", s.handleJobs)
 	mux.HandleFunc(llmCallPath, s.handleLLMCall)
 	mux.HandleFunc(llmJudgePath, s.handleLLMJudge)
+	mux.HandleFunc(llmEscalationPath, s.handleLLMEscalation)
 	// The UI itself - embedded in the binary (see web/embed.go), served at
 	// "/". This is the ONLY thing this loopback server exists to serve to
 	// a browser; everything else is the JSON/SSE API the UI's own JS calls.

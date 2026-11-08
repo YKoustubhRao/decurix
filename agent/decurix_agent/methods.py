@@ -29,6 +29,8 @@ MAX_METHODS = 200
 _VALUE = re.compile(r"\d[\d,./-]*\d")
 # What one method keeps of the person's words about its plan, newest last.
 MAX_SAID = 5
+# How much of the question a kept answer answered is kept with it.
+MAX_ASKED = 600
 
 _lock = threading.Lock()
 _run = {"plan": None}
@@ -113,7 +115,13 @@ def keep(request):
         "outputs": [_without_values(s) for s in plan.get("outputs") or [] if str(s).strip()],
         "commits": [_without_values(s) for s in plan.get("commits") or [] if str(s).strip()],
     }
+    # The person's answer is kept with the question it answered (the plan as it was put to them): found live
+    # (2026-11-08), an answer kept alone - "I don't know that, so I can't give it to you ..." to the plan's question -
+    # reached the next task's worker and its review as the person's standing word about it, and the review called a
+    # value the person did give in that task made up.
     said = _without_values(plan.get("personSaid"))
+    if said:
+        said = {"asked": _without_values(plan.get("ask"))[:MAX_ASKED], "said": said}
     method = find(request)
     if method is None:
         if len(_all()) >= MAX_METHODS:
@@ -155,5 +163,10 @@ def context(request):
     if plan.get("commits"):
         lines.append("- Then, each with the person's OK: " + "; then ".join(plan["commits"]))
     for said in method.get("said") or []:
-        lines.append(f'- The person said about this plan: "{said}"')
+        if isinstance(said, dict):
+            # Asked then, about that run: their answer is to that question, not about this request's values.
+            asked = said.get("asked") or "the plan of the work"
+            lines.append(f'- Asked on an earlier run: "{asked}" - the person answered: "{said.get("said")}"')
+        else:
+            lines.append(f'- The person said about this plan: "{said}"')
     return "\n".join(lines)
