@@ -202,6 +202,21 @@ class TheEarlierTasksWords(unittest.TestCase):
         self.assertIn("holds on this task too", judged)
         self.assertNotIn("this task's own answer", judged)   # this task's are said_this_task's
 
+    def test_an_answer_given_again_is_shown_once_and_an_older_rule_is_not_crowded_out(self):
+        from decurix_agent import guidance, person_record
+
+        def row(i, task, asked, text):
+            return {"id": f"j_{i:016x}", "task_id": task, "kind": "answer", "actor": {"kind": "scripted"},
+                    "text": text, "asked": asked, "derived_from": "", "secret": False}
+        repeated = [row(i, f"t-{i}", "Which cost centre?", "Use CC- and the supplier's state code.") for i in range(1, 30)]
+        oldest = row(99, "t-99", "Which layout?", self.RULE)
+        person_record.clear_cache()
+        with mock.patch.object(person_record, "_get", return_value={"judgements": repeated + [oldest]}), \
+                mock.patch.object(person_record.task_context, "current", return_value="t-current"):
+            shown = guidance.said_on_earlier_tasks()
+        self.assertEqual(shown.count("Use CC- and the supplier's state code."), 1)
+        self.assertIn(self.RULE, shown)
+
     def test_none_or_an_unreadable_control_plane_adds_nothing(self):
         from decurix_agent import guidance, person_record
         person_record.clear_cache()

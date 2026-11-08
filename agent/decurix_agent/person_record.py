@@ -53,7 +53,7 @@ PERSON_KINDS = frozenset({"person", "scripted"})
 # How many of the worker's earlier answers are read (newest first): the control plane's default for the read.
 WORKER_WORDS_LIMIT = 100
 # The earlier tasks' answers the final check is shown (worker_said), newest first.
-WORKER_SAID_LIMIT = 12
+WORKER_SAID_LIMIT = 20
 
 _cache = {}
 _lock = threading.Lock()
@@ -195,10 +195,16 @@ def worker_said(task_id=None, limit=WORKER_SAID_LIMIT):
     """
 
     task = task_id or task_context.current() or ""
-    out = []
+    out, said = [], set()
     for row in _worker_rows(task_id):
         if row.get("task_id") == task:
             continue
+        # The same answer given again (the same question, the same words) is one: a rule repeated on every task of a
+        # kind would otherwise crowd the older, different ones out of the few shown.
+        key = (" ".join(str(row.get("asked") or "").split()).lower(), " ".join(row["text"].split()).lower())
+        if key in said:
+            continue
+        said.add(key)
         out.append({"asked": str(row.get("asked") or ""), "text": row["text"], "task_id": str(row.get("task_id") or "")})
         if len(out) >= limit:
             break

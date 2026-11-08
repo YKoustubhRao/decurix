@@ -216,7 +216,7 @@ def said_this_task():
 
 # What the final check is shown of each earlier answer (characters), and of them all.
 _EARLIER_ANSWER_CHARS = 800
-_EARLIER_ALL_CHARS = 6000
+_EARLIER_ALL_CHARS = 8000
 
 
 def said_on_earlier_tasks():
