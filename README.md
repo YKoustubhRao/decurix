@@ -134,6 +134,7 @@ What is built, grouped by area. Each line links the doc that explains it; [`docs
 * The **Tasks** page breaks down autonomy by engine, worker and task type, with the most common reasons a person had to step in
 * Each run has a run record (`decurix.trajectory/v1`) joining what the model saw and said, what the worker did, and what the checks and people decided ([trajectory.md](docs/trajectory.md))
 * Evals: `evals/run.py` runs a suite of cases against one or more arms, several repeats each, in isolated practice desktops, graded in Go from what the work saved ([evals.md](docs/evals.md))
+* A learning curve (`learn-v1`, `evals/run.py curve`): repeats of the same kinds of work with state carried between cases, so a run shows whether a worker passes later cases with fewer tokens and fewer questions once it has been taught ([evals.md](docs/evals.md))
 * **Readiness** (`/readiness/<worker>`): a saved script earns an owner-enabled scope by passing an owner-reviewed suite in an offline container; **Simulate** drafts practice cases from what a worker was taught ([readiness.md](docs/readiness.md), [simulation.md](docs/simulation.md))
 
 **Workforce**
