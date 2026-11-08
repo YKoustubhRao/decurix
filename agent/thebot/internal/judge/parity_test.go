@@ -134,13 +134,3 @@ func TestSoulDecidesAsPythonDoes(t *testing.T) {
 		})
 	}
 }
-
-func TestPythonsFloatRepr(t *testing.T) {
-	for f, want := range map[float64]string{1: "1.0", 100: "100.0", 1e16: "1e+16", 1e15: "1000000000000000.0",
-		0.0001: "0.0001", 0.00001: "1e-05", 1.5e-7: "1.5e-07", 1e100: "1e+100", -2.5: "-2.5", 0.30000000000000004: "0.30000000000000004",
-		123456789.125: "123456789.125"} {
-		if got := pyFloatRepr(f); got != want {
-			t.Errorf("repr(%v) = %q, want %q", f, got, want)
-		}
-	}
-}

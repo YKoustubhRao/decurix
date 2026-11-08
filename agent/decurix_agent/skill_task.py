@@ -118,16 +118,35 @@ def _ask_model(system, prompt, purpose="py.skill.ask"):
     return harness.ask_model(system, prompt, purpose=purpose)
 
 
+def _ask_decided(system, prompt, evidence, *, purpose):
+    """
+    One of the ladder's questions for soul to word and read itself (escalation.soul_escalates): soul's decision route
+    is handed the question's evidence (soul_call.escalation), and the engine's chain is harness.ask_model's
+    (harness.ask_decided). (text, decision); the decision is None when soul could not make the call and `prompt` -
+    today's - was asked instead.
+    """
+
+    from decurix_agent import harness, soul_call
+
+    def via_soul(brain, **call):
+        return soul_call.escalation(brain, evidence, purpose=purpose, **call)
+
+    return harness.ask_decided(system, prompt, via_soul, purpose=purpose)
+
+
 def _ladder(skill):
     """
     The escalation ladder for one run: healing always, the engine as second
     opinion only when it is up (a run must not wait on a backend that is still
-    starting - the person is a better rung than a stalled request).
+    starting - the person is a better rung than a stalled request). With
+    DECURIX_SOUL_ESCALATION=1 (read here, once a run) soul words and reads its
+    questions (escalation.soul_escalates); off, they are today's alone.
     """
 
     ready = getattr(state, "backend_ready", False) and escalation.MODEL_CALLS > 0
     return escalation.Ladder(ask_model=_ask_model if ready else None, goal=skill.get("title") or skill.get("name") or "",
-                             explanation=skill.get("explanation") or "")
+                             explanation=skill.get("explanation") or "",
+                             ask_decided=_ask_decided if ready and escalation.soul_escalates() else None)
 
 
 def handles(content):

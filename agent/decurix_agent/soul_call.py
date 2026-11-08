@@ -15,7 +15,9 @@ When soul cannot make a call - it is not running (an old desktop, a test), its i
 this call, there is no token or key - the caller goes the way it always went, and that is logged once per process.
 
 Phase 2 moves decisions, purpose by purpose: judge() hands soul the final check's evidence as data at /api/llm/judge,
-and soul words the prompt and reads the answer (agent/thebot internal/judge; verify.soul_judges, DECURIX_SOUL_JUDGE).
+and soul words the prompt and reads the answer (agent/thebot internal/judge; verify.soul_judges, DECURIX_SOUL_JUDGE);
+escalation() does the same for the escalation ladder's questions at /api/llm/escalation (internal/escalation;
+escalation.soul_escalates, DECURIX_SOUL_ESCALATION).
 
 The approval gate never asks soul (in_gate): it is another user's process, and it must not depend on, or believe an
 answer from, a process of the worker's user. Its calls (approval.read_choice under IN_GATE) go straight to the proxy
@@ -35,6 +37,8 @@ from decurix_agent.logging_utils import log
 CALL_PATH = "/api/llm/call"
 # The final check, decided by soul from its evidence (cmd/soul judge.go).
 JUDGE_PATH = "/api/llm/judge"
+# The escalation ladder's questions, decided by soul from their evidence (cmd/soul escalation.go).
+ESCALATION_PATH = "/api/llm/escalation"
 # Soul writes its call key here at start (agent/thebot cmd/soul llmcall.go: callKeyPath), 0600, the worker's own.
 KEY_FILE = "soul-call.key"
 # After soul was found not running, how long calls go their own way before soul is tried again (it may start later).
@@ -61,7 +65,7 @@ class Failed(Exception):
         self.headers = headers
 
 
-_state = {"down_until": 0.0, "absent": False, "noted": False, "judge_absent": False}
+_state = {"down_until": 0.0, "absent": False, "noted": False, "judge_absent": False, "escalation_absent": False}
 
 
 def in_gate():
@@ -177,6 +181,29 @@ def judge(evidence, *, purpose, max_tokens, timeout, look=(), closer="", model=N
     payload.update({"temperature": None, "response_format": None, "stop": [],
                     "evidence": evidence, "look": list(look or []), "closer": closer or ""})
     answer = _post(JUDGE_PATH, payload, timeout, "judge_absent")
+    if not isinstance(answer.get("decision"), dict):
+        raise Failed(502, f"soul answered no decision: {json.dumps(answer)[:200]}")
+    return answer
+
+
+def escalation(brain, evidence, *, purpose, max_tokens, timeout, temperature=None, stop=None, model=None):
+    """
+    One of the escalation ladder's questions made by soul (plan rule 3, phase 2): soul words the prompt from
+    `evidence` (escalation.py's *_evidence; the question is the purpose's, py.escalation.<kind>), makes the call as
+    /api/llm/call does on `brain` with these limits, and reads the answer (internal/escalation Decide). Answers as
+    call() does plus "decision" (escalation.from_soul checks it). Raises as call() does; Unusable when soul has no such
+    route (asked again only by a new process).
+    """
+
+    if _state["escalation_absent"]:
+        raise Unusable("soul has no escalation route")
+    payload = _base(brain, purpose, max_tokens, timeout, model)
+    # The call's own fields as today's question sends them through call() (llm_client.ask_once: no temperature,
+    # format or stop; ollama_client.ask_once: its temperature and stop sequences), so the provider is sent the same
+    # request (cmd/soul escalation_test.go compares the bytes).
+    payload.update({"temperature": temperature, "response_format": None, "stop": list(stop or []),
+                    "evidence": evidence})
+    answer = _post(ESCALATION_PATH, payload, timeout, "escalation_absent")
     if not isinstance(answer.get("decision"), dict):
         raise Failed(502, f"soul answered no decision: {json.dumps(answer)[:200]}")
     return answer

@@ -6,6 +6,8 @@ import (
 	"math"
 	"regexp"
 	"strings"
+
+	"thebot/internal/pyread"
 )
 
 // The judge's verdicts (verify.py DONE, NOT_DONE, UNSURE, CANNOT), and the least confidence a done needs to stay done.
@@ -79,31 +81,31 @@ func Parse(text string) (Verdict, *ParseError) {
 	loc := object.FindStringIndex(text)
 	if loc == nil {
 		if strings.Contains(text, "{") {
-			return Verdict{}, &ParseError{Message: "the check's answer was cut off before it ended: " + pyReprString(head(text, 200)), CutOff: true}
+			return Verdict{}, &ParseError{Message: "the check's answer was cut off before it ended: " + pyread.ReprString(pyread.Head(text, 200)), CutOff: true}
 		}
-		return Verdict{}, &ParseError{Message: "the check did not answer in JSON: " + pyReprString(head(text, 200))}
+		return Verdict{}, &ParseError{Message: "the check did not answer in JSON: " + pyread.ReprString(pyread.Head(text, 200))}
 	}
-	data, err := decodePy(text[loc[0]:loc[1]])
+	data, err := pyread.Decode(text[loc[0]:loc[1]])
 	if err != nil {
 		return Verdict{}, &ParseError{Message: err.Error()}
 	}
-	if data.kind != 'o' {
+	if data.Kind != 'o' {
 		// Never: the text matched is "{...}", which decodes only as an object.
 		return Verdict{}, &ParseError{Message: "the check's answer is not a JSON object"}
 	}
 	v := Verdict{Look: []string{}}
-	given, ok := data.get("verdict")
-	v.Verdict = strings.ReplaceAll(strings.ToLower(pyStrip(pyStrOr(given, ok))), " ", "_")
+	given, ok := data.Get("verdict")
+	v.Verdict = strings.ReplaceAll(strings.ToLower(pyread.Strip(pyread.StrOr(given, ok))), " ", "_")
 	switch v.Verdict {
 	case Done, NotDone, Unsure, Cannot:
 	default:
 		v.Verdict = Unsure
 	}
-	// float(data.get("confidence", 0)), 0 when it is no number or no finite one ("nan", "inf": verify._parse reads
+	// float(data.Get("confidence", 0)), 0 when it is no number or no finite one ("nan", "inf": verify._parse reads
 	// those as 0 too, never as a sure done), then clamped to 0..1.
 	confidence := 0.0
-	if c, ok := data.get("confidence"); ok {
-		if f, ok := pyFloatOf(c); ok && !math.IsNaN(f) && !math.IsInf(f, 0) {
+	if c, ok := data.Get("confidence"); ok {
+		if f, ok := pyread.Float(c); ok && !math.IsNaN(f) && !math.IsInf(f, 0) {
 			confidence = f
 		}
 	}
@@ -115,33 +117,33 @@ func Parse(text string) (Verdict, *ParseError) {
 	if low > v.Confidence {
 		v.Confidence = low
 	}
-	seen, ok := data.get("seen")
-	v.Seen = head(strings.Join(pySplit(pyStrOr(seen, ok)), " "), 400)
-	why, ok := data.get("why")
-	v.Why = head(strings.Join(pySplit(pyStrOr(why, ok)), " "), 400)
-	if look, ok := data.get("look"); ok && look.kind == 'l' {
-		for _, t := range look.items {
-			s := pyStr(t)
-			if pyStrip(s) == "" {
+	seen, ok := data.Get("seen")
+	v.Seen = pyread.Head(strings.Join(pyread.Split(pyread.StrOr(seen, ok)), " "), 400)
+	why, ok := data.Get("why")
+	v.Why = pyread.Head(strings.Join(pyread.Split(pyread.StrOr(why, ok)), " "), 400)
+	if look, ok := data.Get("look"); ok && look.Kind == 'l' {
+		for _, t := range look.Items {
+			s := pyread.Str(t)
+			if pyread.Strip(s) == "" {
 				continue
 			}
 			if len(v.Look) == MaxLook {
 				break
 			}
-			v.Look = append(v.Look, head(strings.Join(pySplit(s), " "), 80))
+			v.Look = append(v.Look, pyread.Head(strings.Join(pyread.Split(s), " "), 80))
 		}
 	}
 	// The files whose change the request did not ask for: names only (strings), or nothing. Only the gate decides
 	// what they point at (source_guard.named_in).
-	if back, ok := data.get("put_back"); ok && back.kind == 'l' {
-		for _, t := range back.items {
-			if t.kind != 's' || pyStrip(t.str) == "" {
+	if back, ok := data.Get("put_back"); ok && back.Kind == 'l' {
+		for _, t := range back.Items {
+			if t.Kind != 's' || pyread.Strip(t.Str) == "" {
 				continue
 			}
 			if len(v.PutBack) == MaxPutBack {
 				break
 			}
-			v.PutBack = append(v.PutBack, head(strings.Join(pySplit(t.str), " "), 300))
+			v.PutBack = append(v.PutBack, pyread.Head(strings.Join(pyread.Split(t.Str), " "), 300))
 		}
 	}
 	return v, nil

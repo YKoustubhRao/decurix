@@ -3364,6 +3364,74 @@
    }
   },
   {
+   "name": "confidence_control_char",
+   "text": "{\"verdict\": \"done\", \"confidence\": \"\\u001c0.9\", \"seen\": \"x\", \"why\": \"y\"}",
+   "decision": {
+    "verdict": "unsure",
+    "confidence": 0.0,
+    "seen": "x",
+    "why": "not sure enough (0.00): y",
+    "look": []
+   },
+   "judged": {
+    "verdict": "unsure",
+    "confidence": 0.0,
+    "seen": "x",
+    "why": "not sure enough (0.00): y"
+   }
+  },
+  {
+   "name": "confidence_arabic_digits",
+   "text": "{\"verdict\": \"done\", \"confidence\": \"\\u0660.\\u0669\", \"seen\": \"x\", \"why\": \"y\"}",
+   "decision": {
+    "verdict": "done",
+    "confidence": 0.9,
+    "seen": "x",
+    "why": "y",
+    "look": []
+   },
+   "judged": {
+    "verdict": "done",
+    "confidence": 0.9,
+    "seen": "x",
+    "why": "y"
+   }
+  },
+  {
+   "name": "confidence_em_space",
+   "text": "{\"verdict\": \"done\", \"confidence\": \"0.9\\u2003\", \"seen\": \"x\", \"why\": \"y\"}",
+   "decision": {
+    "verdict": "done",
+    "confidence": 0.9,
+    "seen": "x",
+    "why": "y",
+    "look": []
+   },
+   "judged": {
+    "verdict": "done",
+    "confidence": 0.9,
+    "seen": "x",
+    "why": "y"
+   }
+  },
+  {
+   "name": "confidence_huge_int",
+   "text": "{\"verdict\": \"done\", \"confidence\": 999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999, \"seen\": \"x\", \"why\": \"y\"}",
+   "decision": {
+    "verdict": "unsure",
+    "confidence": 0.0,
+    "seen": "x",
+    "why": "not sure enough (0.00): y",
+    "look": []
+   },
+   "judged": {
+    "verdict": "unsure",
+    "confidence": 0.0,
+    "seen": "x",
+    "why": "not sure enough (0.00): y"
+   }
+  },
+  {
    "name": "prose_around",
    "text": "Looking at the screen.\n```json\n{\"verdict\": \"done\", \"confidence\": 0.9, \"seen\": \"a\", \"why\": \"b\"}\n```\nDone.",
    "decision": {

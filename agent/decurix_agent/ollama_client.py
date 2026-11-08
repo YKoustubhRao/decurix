@@ -429,3 +429,31 @@ def ask_once(system, prompt, *, purpose):
                       cost_usd=0)  # counted here, once: soul counts a call it makes for the agent in no job
             return answer["text"]
     return ollama_request(messages)
+
+
+def ask_decided(system, prompt, via_soul, *, purpose):
+    """
+    ask_once for a question soul words and reads itself (plan rule 3, phase 2; harness.ask_decided): (text, decision).
+    `via_soul(brain, **call)` is soul's decision route for it, asked on the local brain with ask_once's options. When
+    soul cannot make it (soul_call.Unusable), the question is ask_once's - today's - and the decision is None.
+    """
+
+    if soul_call.usable():
+        log(f"ollama: one question ({purpose}), worded and read by soul")
+        ensure_model_resident()
+        try:
+            answer = via_soul("local", max_tokens=NUM_PREDICT, temperature=0.2, stop=STOP_SEQUENCES,
+                              timeout=REQUEST_TIMEOUT_SECONDS)
+        except soul_call.Unusable:
+            pass  # asked the way it always was, below
+        except soul_call.Failed as exc:
+            raise RuntimeError(f"Ollama request failed (through soul): {exc}")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"Could not reach soul for the model: {exc}")
+        else:
+            spent = answer.get("usage") or {}
+            usage.set_model(config.OLLAMA_MODEL)
+            usage.add(input_tokens=spent.get("prompt_tokens"), output_tokens=spent.get("completion_tokens"),
+                      cost_usd=0)  # counted here, once, as ask_once counts it
+            return answer["text"], answer["decision"]
+    return ask_once(system, prompt, purpose=purpose), None

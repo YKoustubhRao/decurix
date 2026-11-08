@@ -291,6 +291,18 @@ def ask_once(system, prompt, *, purpose):
     return (message.get("content") or "").strip()
 
 
+def ask_decided(system, prompt, via_soul, *, purpose):
+    """
+    ask_once for a question soul words and reads itself (plan rule 3, phase 2; harness.ask_decided): (text, decision).
+    `via_soul(max_tokens)` is soul's decision route for it; when soul cannot make the call, ask_once's messages go as
+    ask_once sends them (chat_decided) and the decision is None - the caller reads the text itself.
+    """
+
+    message, _ = chat_decided(via_soul, [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                              max_tokens=1500, purpose=purpose)
+    return (message.get("content") or "").strip(), message.get("decision")
+
+
 def image_part(png_bytes=None, path=None, mime="image/png"):
     """An image as a chat content part, from bytes or a file."""
 

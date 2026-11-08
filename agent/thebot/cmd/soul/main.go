@@ -836,6 +836,7 @@ func (s *server) mux() http.Handler {
 	mux.HandleFunc("/api/jobs/", s.handleJobs)
 	mux.HandleFunc(llmCallPath, s.handleLLMCall)
 	mux.HandleFunc(llmJudgePath, s.handleLLMJudge)
+	mux.HandleFunc(llmEscalationPath, s.handleLLMEscalation)
 	// The UI itself - embedded in the binary (see web/embed.go), served at
 	// "/". This is the ONLY thing this loopback server exists to serve to
 	// a browser; everything else is the JSON/SSE API the UI's own JS calls.

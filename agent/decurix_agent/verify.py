@@ -169,7 +169,7 @@ def outcome(verdict=None, problems=(), not_made=(), error=None):
         seen = " ".join(str(x) for x in (given.get("seen"), given.get("why")) if x)
         try:
             sure = float(given["confidence"]) >= DONE_CONFIDENCE if "confidence" in given else True
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             sure = False
         # The judge's own answer: a confident done passed, a not done or cannot failed, anything else was not made.
         judged = (verdicts.PASS if name == DONE and sure else
@@ -201,7 +201,7 @@ def _outcome(verdict, problems, not_made, error):
     if name == DONE:
         try:
             sure = float(given["confidence"]) >= DONE_CONFIDENCE if "confidence" in given else True
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             sure = False
         if sure:
             return {"status": DONE, "checked": True, "kind": "final", "why": said[:600]}
@@ -792,7 +792,7 @@ def _parse(text):
         verdict = UNSURE
     try:
         confidence = float(data.get("confidence", 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # (an integer past a float's range raises OverflowError)
         confidence = 0.0
     # A confidence that is no finite number ("nan", "inf") is none: max/min would read NaN as 1.0, a done "sure"
     # on a nonsense answer (found 2026-11-08 while moving the judge into soul).

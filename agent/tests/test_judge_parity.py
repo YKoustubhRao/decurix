@@ -156,6 +156,13 @@ ANSWERS = [
     ("confidence_list", '{"verdict": "done", "confidence": [0.9], "seen": "x", "why": "y"}'),
     ("confidence_missing", '{"verdict": "done", "seen": "x", "why": "y"}'),
     ("confidence_exponent", _verdict("done", 9.5e-1, "x", "y")),
+    # float() exactly as Python reads it (2026-11-08): a control character before the digits is no number, other
+    # scripts' digits and white space are, and an integer past a float's range raises OverflowError (no number).
+    ("confidence_control_char", json.dumps({"verdict": "done", "confidence": chr(0x1c) + "0.9", "seen": "x", "why": "y"})),
+    ("confidence_arabic_digits", json.dumps({"verdict": "done", "confidence": chr(0x660) + "." + chr(0x669),
+                                             "seen": "x", "why": "y"})),
+    ("confidence_em_space", json.dumps({"verdict": "done", "confidence": "0.9" + chr(0x2003), "seen": "x", "why": "y"})),
+    ("confidence_huge_int", '{"verdict": "done", "confidence": ' + "9" * 321 + ', "seen": "x", "why": "y"}'),
     ("prose_around", "Looking at the screen.\n```json\n" + _verdict("done", 0.9, "a", "b") + "\n```\nDone."),
     ("seen_why_spacing", _verdict("done", 0.9, "  the   form\n\tis saved  ", "line one\nline two\u00a0end")),
     ("seen_why_long", _verdict("done", 0.9, "देखा " * 120, "why " * 150)),

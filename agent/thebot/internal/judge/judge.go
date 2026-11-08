@@ -5,7 +5,9 @@
 //
 // Today's path is Python's own (agent/decurix_agent/verify.py: JUDGE_SYSTEM, judge_content, _parse), and while the
 // switch (DECURIX_SOUL_JUDGE) is off by default both exist: every text here is byte for byte Python's, and the reading
-// of an answer follows Python's (its str(), float(), strip() and repr()). testdata/parity.json, recorded from the
+// of an answer follows Python's (its str(), float(), strip() and repr(): internal/pyread, shared with
+// internal/escalation; this package reads JSON with pyread.Decode and float() with pyread.FloatOf, as it always has).
+// testdata/parity.json, recorded from the
 // Python code, proves it (parity_test.go here, agent/tests/test_judge_parity.py there); a change to either side
 // changes both and regenerates the corpus.
 package judge
@@ -14,6 +16,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"thebot/internal/pyread"
 )
 
 // The bounds of what the judge is shown and may answer (verify.py's MAX_TASK_CHARS, MAX_LOOK, MAX_PUT_BACK).
@@ -85,9 +89,9 @@ func Content(ev Evidence) []Part {
 	// The task is the stage's instruction AND what the caller adds after it - the person's binding answers, the
 	// system's own read-back, the code checks' evidence, the other stages' context (cut at 1,500 characters once,
 	// everything after a long instruction never reached the judge).
-	body := pyStrip(ev.Task)
-	if n := runeCount(body); n > MaxTaskChars {
-		body = head(body, MaxTaskChars) + fmt.Sprintf("\n[cut here: %d more characters not shown]", n-MaxTaskChars)
+	body := pyread.Strip(ev.Task)
+	if n := pyread.Len(body); n > MaxTaskChars {
+		body = pyread.Head(body, MaxTaskChars) + fmt.Sprintf("\n[cut here: %d more characters not shown]", n-MaxTaskChars)
 	}
 	lines := []string{"The task as asked: " + body}
 	if len(ev.Values) > 0 {
@@ -105,7 +109,7 @@ func Content(ev Evidence) []Part {
 			}
 		}
 		if len(typed) > 0 {
-			lines = append(lines, "This run's values: "+head(strings.Join(typed, "; "), 3000))
+			lines = append(lines, "This run's values: "+pyread.Head(strings.Join(typed, "; "), 3000))
 		}
 		if len(lookedUp) > 0 {
 			// Apart from the values to compare, and never as "k = v": with "item = Office Mesh Chairs" among the run's
@@ -113,31 +117,31 @@ func Content(ev Evidence) []Part {
 			lines = append(lines, "Things this run had to find in the application's own lists and choose (NOT values to "+
 				"compare by name - the worker searched and took the existing record of each thing, and a "+
 				"record has its own name; judge only whether the record taken is that kind of thing): "+
-				head(strings.Join(lookedUp, "; "), 2000))
+				pyread.Head(strings.Join(lookedUp, "; "), 2000))
 		}
 	}
 	if ev.Criteria != "" {
 		lines = append(lines, "What the person who taught this task said about it (and what done looks like): "+
-			head(pyStrip(ev.Criteria), 6000))
+			pyread.Head(pyread.Strip(ev.Criteria), 6000))
 	}
 	if ev.Steps != "" {
 		// The demonstration's steps, not "what the worker did": their clicks on list entries name the demonstration's
 		// own choices.
 		lines = append(lines, "The steps of the person's demonstration, which this run followed with its own values (a click "+
 			"on a list entry here names the DEMONSTRATION's choice, not this run's - what this run chose "+
-			"is in the tools' record below): "+head(pyStrip(ev.Steps), 2000))
+			"is in the tools' record below): "+pyread.Head(pyread.Strip(ev.Steps), 2000))
 	}
 	if len(ev.Observed) > 0 {
 		lines = append(lines, "What the worker's tools did and read off the screen during this task, as it happened (observed, "+
 			"not claimed - a report that matches these is backed by them; a look at the screen listed here "+
 			"shows what was on it at that moment, a page since closed included):\n"+
-			tail(strings.Join(ev.Observed, "\n"), 24000))
+			pyread.Tail(strings.Join(ev.Observed, "\n"), 24000))
 	}
 	if ev.Found != "" {
 		// Facts of their own, never inside the person's words (there they read as one more claim).
 		lines = append(lines, "Facts the harness checked in code on this desktop just now (exact; not the worker's claim and not "+
 			"the person's words - a part of the result these settle IS settled, judge it from them):\n"+
-			head(pyStrip(ev.Found), 4000))
+			pyread.Head(pyread.Strip(ev.Found), 4000))
 	}
 	if ev.ScreenText != "" {
 		lines = append(lines, "The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "+
@@ -148,7 +152,7 @@ func Content(ev Evidence) []Part {
 	if claim == "" {
 		claim = "(nothing)"
 	}
-	lines = append(lines, "What the worker reports: "+head(pyStrip(claim), 4000))
+	lines = append(lines, "What the worker reports: "+pyread.Head(pyread.Strip(claim), 4000))
 	if ev.Produced != "" {
 		lines = append(lines, "The files the worker wrote during this task, as they read NOW (the result itself - the report "+
 			"must agree with them):\n"+ev.Produced)

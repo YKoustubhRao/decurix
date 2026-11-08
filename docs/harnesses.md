@@ -97,3 +97,21 @@ The operator's guards read a command line as the shell runs it (`shellSegments`)
   a refusal). Until the switch defaults on, both copies exist and one recorded corpus holds them byte for byte
   (`internal/judge/testdata/parity.json`; `agent/tests/test_judge_parity.py --write` regenerates it after a deliberate
   change to both). The gate is untouched.
+  **Second, the escalation ladder's four questions (`py.escalation.ground`, `.judge`, `.detour`, `.point`), behind
+  `DECURIX_SOUL_ESCALATION=1` (off by default; read once per skill run, `skill_task._ladder`).** Their system texts,
+  prompts and readings live in `internal/escalation` (`Prepare`, `Question.Messages`, `Question.Decide`); Python's
+  `escalation.Ladder` builds each question's evidence as data (`_ground_evidence` and the evidence of the other three:
+  the ranked candidates, the screen as `elements.render` writes it, the OCR lines of the recording's frames and of the
+  screen now) and keeps the tools and what it does with a decision (the trail, asking a person, leaving steps out).
+  `POST /api/llm/escalation` (`cmd/soul/escalation.go`) takes a call's fields with `evidence` in place of messages, the
+  question named by the purpose; refuses evidence with a field it does not know; makes the call as `/api/llm/call`
+  does, on the call's brain; and answers with `decision`: `{choice, confidence, verdict: chosen|doubt|none}` for
+  ground and point, `{achieved, confidence}` for judge, `{verdict: skip|keep|unsure, confidence, reason}` for detour.
+  `escalation.from_soul` checks it (a choice outside the list, or a verdict its confidence does not carry, is an
+  engine that could not be asked - fail closed). The chain is `harness.ask_model`'s (`harness.ask_decided`: the hosted
+  model through `llm_client.ask_decided`, a local one through `ollama_client.ask_decided` with its own options), and
+  wherever soul cannot make the call the question is today's. In broker mode the screen side's ladder sends the
+  evidence with its ask and the agent answers with soul's decision beside the text (`screen_call._answer`). The reading
+  follows Python exactly - `json.loads` with NaN and Infinity, `int()` and `float()` of Unicode digits, their
+  OverflowError (`internal/pyread`, shared with `internal/judge`); `internal/escalation/testdata/parity.json` and
+  `agent/tests/test_escalation_parity.py --write` hold the two copies to one corpus.
