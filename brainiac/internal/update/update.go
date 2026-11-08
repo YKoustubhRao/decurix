@@ -13,15 +13,18 @@
 //  5. check every changed role with answers code can verify (a canary) and
 //     stage the plan that passed (update-staged.json beside lock.next.json).
 //     A model that fails is set aside for 30 days and the next best is tried.
-//  6. Promote, a person's command, switches to the staged plan, keeping the
-//     old lock as lock.prev.json; a newer llama.cpp the plan needs moves with
-//     it. A running serve follows lock.json.
+//  6. Promote switches to the staged plan, keeping the old lock as
+//     lock.prev.json; a newer llama.cpp the plan needs moves with it. A
+//     person at the machine calls it, or, on an appliance only, a release
+//     signed with the release key that names the staged lock, after a local
+//     parity eval of it passed (release.go). A running serve follows lock.json.
 //
 // Ratings rest on independent leaderboards, never on a person's opinion or
 // a maker's own card alone (a card only says what the maker calls its model). The canary does not
 // judge quality - it catches a model that does not load, cannot see, or
-// answers in the wrong template - which is why a person, or in future a
-// signed release, decides whether the box's judgement model changes.
+// answers in the wrong template - which is why a person, or a signed release
+// backed by a local parity eval, decides whether the box's judgement model
+// changes.
 package update
 
 import (
@@ -747,11 +750,14 @@ func (c *cycle) alreadyStaged(changes []Change) bool {
 // ErrNothingStaged is a promote with no checked plan waiting.
 var ErrNothingStaged = errors.New("no checked plan is staged: run `brainiac update --apply` first")
 
-// Promote is a person switching to the staged plan: lock.next.json becomes
-// lock.json (the old one is kept as lock.prev.json), a newer llama.cpp the
-// plan needs becomes the pin, and downloads no kept lock uses are deleted.
-// It refuses a lock.next.json that is not the one that passed its check.
-func Promote(st *store.Store, now time.Time) (*install.Lock, Staged, error) {
+// Promote switches to the staged plan: lock.next.json becomes lock.json
+// (the old one is kept as lock.prev.json), a newer llama.cpp the plan needs
+// becomes the pin, and downloads no kept lock uses are deleted. It is the
+// only place a staged plan becomes served. It refuses a lock.next.json that
+// is not the one that passed its check, and is allowed only to a person at
+// this machine (opt.ByHand, never on an appliance) or to a signed release
+// naming that lock whose local parity eval passed (releaseGate, O-3.6).
+func Promote(st *store.Store, now time.Time, opt PromoteOptions) (*install.Lock, Staged, error) {
 	var s Staged
 	if err := st.ReadJSON(StagedFile, &s); err != nil {
 		return nil, s, ErrNothingStaged
@@ -768,6 +774,9 @@ func Promote(st *store.Store, now time.Time) (*install.Lock, Staged, error) {
 	if err != nil {
 		return nil, s, err
 	}
+	if err := releaseGate(st, s, cur, &next, opt); err != nil {
+		return nil, s, err
+	}
 	c := &cycle{st: st, now: now, lock: cur, logf: func(string, ...any) {}}
 	if err := c.promote(&next, next.Plan); err != nil {
 		return nil, s, err
@@ -782,7 +791,10 @@ func Promote(st *store.Store, now time.Time) (*install.Lock, Staged, error) {
 			return &next, s, fmt.Errorf("switched, but the llama.cpp pin could not be saved: %w", err)
 		}
 	}
-	_ = os.Remove(st.Path(StagedFile))
+	// The release and its parity eval named this lock; they are spent.
+	for _, f := range []string{StagedFile, ReleaseFile, ReleaseFile + ".sig", ParityFile} {
+		_ = os.Remove(st.Path(f))
+	}
 	state := ReadState(st)
 	state.History = append(state.History, Event{At: now.UTC(), Outcome: OutcomePromoted, Why: s.Why, Changes: s.Changes})
 	if n := len(state.History); n > 50 {

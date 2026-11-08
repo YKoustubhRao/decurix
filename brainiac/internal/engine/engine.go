@@ -134,6 +134,11 @@ type Options struct {
 	Logger *log.Logger
 	// Catalog is the catalog with the operator's overlay; nil uses the shipped one.
 	Catalog *catalog.Catalog
+	// Residency is the server's, shared by every engine it serves in turn
+	// (NewServerResidency): a new engine keeps running the models whose
+	// recipe did not change. nil gives the engine its own (a canary, a
+	// one-off), which it empties when it closes.
+	Residency *Residency
 }
 
 // Engine runs requests on the installed models.
@@ -144,6 +149,10 @@ type Engine struct {
 	units    map[string]*unit
 	byRole   map[string]*unit
 	res      *Residency
+	ownRes   bool     // res is this engine's alone, not a server's
+	gen      uint64   // this engine's generation in res
+	procs    []string // the shared process objects it registered in res
+	procOnce sync.Once
 	wk       *worker.Worker
 	cache    *cache.Cache
 	traces   *trace.Store
@@ -204,7 +213,13 @@ func (e *Engine) Retire(logf func(string, ...any)) {
 	e.refMu.Unlock()
 	// What no request holds now is freed at once, so the engine that
 	// replaced this one has the memory while a long answer finishes here.
-	e.res.UnloadIdle()
+	// In a server's residency that is only what this engine still owns:
+	// the models the new engine adopted keep running.
+	if e.ownRes {
+		e.res.UnloadIdle()
+	} else {
+		e.res.unloadIdle(e.owns)
+	}
 	e.refMu.Lock()
 	var wait chan struct{}
 	if e.refs > 0 {
@@ -263,26 +278,41 @@ func New(opt Options) (*Engine, error) {
 	// A program Brainiac installed may fall back to its directory in the
 	// sandbox when its ELF cannot be read; nothing else may.
 	isolate.SetInstallRoots(opt.Store.Path("bin"), opt.Store.Venv())
+	e.res, e.ownRes = opt.Residency, opt.Residency == nil
+	if e.ownRes {
+		e.res = NewResidency(map[string]float64{}, census.LiveAvailableGB)
+	}
+	e.gen = e.res.nextGeneration()
+	var sw *sharedProc
+	workerRecipe := ""
 	if opt.Lock.Python != "" && opt.Lock.WorkerScript != "" {
 		// The worker's own venv is writable because its OCR package may fetch
 		// its default models there on first use; its temp files stay in the store.
 		tmp := opt.Store.Path("tmp")
 		_ = os.MkdirAll(tmp, 0o700)
-		e.wk = worker.New(opt.Lock.Python, opt.Lock.WorkerScript, []string{"OMP_NUM_THREADS=" + fmt.Sprint(threads), "TMPDIR=" + tmp,
+		env := []string{"OMP_NUM_THREADS=" + fmt.Sprint(threads), "TMPDIR=" + tmp,
 			// OpenCV refuses to decode a picture larger than Brainiac would.
-			"OPENCV_IO_MAX_IMAGE_PIXELS=" + fmt.Sprint(MaxPixels)})
-		e.wk.Logf = func(f string, a ...any) { lg.Printf("worker: "+f, a...) }
+			"OPENCV_IO_MAX_IMAGE_PIXELS=" + fmt.Sprint(MaxPixels)}
+		wk := worker.New(opt.Lock.Python, opt.Lock.WorkerScript, env)
+		wk.Logf = func(f string, a ...any) { lg.Printf("worker: "+f, a...) }
 		if opt.Config.Sandbox != config.SandboxOff {
 			pol := isolate.ForProgram(opt.Lock.Python, []string{filepath.Dir(opt.Lock.WorkerScript), opt.Store.Path("models")}, []string{opt.Store.Venv(), tmp})
-			e.wk.Sandbox = &pol
+			wk.Sandbox = &pol
 		}
-		e.wk.Required = opt.Config.Sandbox == config.SandboxRequired
+		wk.Required = opt.Config.Sandbox == config.SandboxRequired
+		// An engine built for a new plan uses the worker already running
+		// when nothing that starts it changed.
+		workerRecipe = "worker:" + fingerprint(opt.Lock.Python, fileSig(opt.Lock.Python), opt.Lock.WorkerScript, fileSig(opt.Lock.WorkerScript),
+			env, wk.Sandbox, wk.Required)
+		wp := e.res.share(workerRecipe, &workerProc{wk: wk, sw: &sharedProc{p: wk}}, func() { _ = wk.Stop() }).(*workerProc)
+		e.procs = append(e.procs, workerRecipe)
+		e.wk, sw = wp.wk, wp.sw
 	}
 	e.cat = opt.Catalog
 	if e.cat == nil {
 		e.cat, _ = catalog.Default()
 	}
-	e.units, e.byRole = buildUnits(opt.Lock, e.cat, opt.Config.OllamaURL, opt.Store.Path("logs"), threads, e.wk)
+	e.units, e.byRole = buildUnits(opt.Lock, e.cat, opt.Config.OllamaURL, opt.Store.Path("logs"), threads, e.wk, sw)
 	if e.cat != nil {
 		for _, u := range e.units {
 			if m, ok := e.cat.Model(u.model); ok {
@@ -297,6 +327,7 @@ func New(opt Options) (*Engine, error) {
 			u.llama.Required = opt.Config.Sandbox == config.SandboxRequired
 		}
 	}
+	e.shareUnits(opt.Config.OllamaURL, workerRecipe)
 	e.rt = buildRouter(e.cat, opt.Store.Path(RouterExamplesFile))
 	e.evals = &evalCache{path: opt.Store.Path("evals.json")}
 	e.outcomes = evals.OpenOutcomes(opt.Store.Path(OutcomesFile))
@@ -310,11 +341,61 @@ func New(opt Options) (*Engine, error) {
 			budgets[b.Pool] = b.BudgetGB
 		}
 	}
-	e.res = NewResidency(budgets, census.LiveAvailableGB)
+	e.res.setBudgets(budgets)
 	if r := opt.Config.Remote; r != nil {
 		e.remote, e.rname = remoteChatter(r, opt.Config.RemoteKey())
 	}
+	if !e.ownRes {
+		var mine []loadable
+		for _, u := range e.units {
+			mine = append(mine, u)
+		}
+		if kept := e.res.adopt(mine); len(kept) > 0 {
+			lg.Printf("kept running, unchanged: %s", strings.Join(kept, ", "))
+		}
+	}
 	return e, nil
+}
+
+// workerProc is the Python worker and the holds its units take on it,
+// shared by every engine whose worker starts the same way.
+type workerProc struct {
+	wk *worker.Worker
+	sw *sharedProc
+}
+
+// shareUnits gives each unit its recipe and generation, and makes its model
+// server the one already registered in the residency for the same recipe,
+// so an unchanged model keeps its process across engines (G-11).
+func (e *Engine) shareUnits(ollamaURL, workerRecipe string) {
+	keys := make([]string, 0, len(e.units))
+	for k := range e.units {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // a fixed order, so the registry's users add up the same way each time
+	for _, k := range keys {
+		u := e.units[k]
+		u.gen = e.gen
+		switch {
+		case u.llama != nil:
+			p := u.llama
+			rec := "llama:" + fingerprint(p.Bin, fileSig(p.Bin), p.Model, fileSig(p.Model), p.MMProj, fileSig(p.MMProj),
+				p.Ctx, p.Threads, p.Embedding, p.TemplateSHA, p.NoSandbox, p.Required, p.LogPath)
+			u.llama = e.res.share(rec, p, p.Stop).(*LlamaProc)
+			e.procs = append(e.procs, rec)
+			u.rec = fingerprint(u.pl, rec)
+		case u.ollama != nil:
+			u.rec = fingerprint(u.pl, "ollama", ollamaURL, u.tag)
+		case u.sw != nil:
+			u.rec = fingerprint(u.pl, workerRecipe, u.src.Worker, u.files)
+		}
+	}
+}
+
+// owns says a resident is one of this engine's units.
+func (e *Engine) owns(l loadable) bool {
+	u, ok := l.(*unit)
+	return ok && e.units[u.k] == u
 }
 
 // remoteChatter builds the client for a remote brain.
@@ -344,7 +425,15 @@ func reasoningModel(m string) bool {
 // Unload frees every model this engine loaded, keeping it usable (models
 // load again on the next request). The updater calls it on an idle engine
 // to make room for checking new models.
-func (e *Engine) Unload() { e.res.UnloadAll() }
+// In a server's residency it frees what no request holds, whichever engine
+// loaded it: an older engine may still be finishing an answer.
+func (e *Engine) Unload() {
+	if e.ownRes {
+		e.res.UnloadAll()
+		return
+	}
+	e.res.UnloadIdle()
+}
 
 // Close unloads everything Brainiac loaded. A closed engine gives no new
 // holds (Enter is false), so nothing starts a model server on it again.
@@ -352,10 +441,13 @@ func (e *Engine) Close() {
 	e.refMu.Lock()
 	e.retired = true
 	e.refMu.Unlock()
-	e.res.UnloadAll()
-	if e.wk != nil {
-		_ = e.wk.Stop()
+	if e.ownRes {
+		e.res.UnloadAll()
+	} else {
+		e.res.unloadAll(e.owns)
 	}
+	// The worker and model servers no other engine uses stop with it.
+	e.procOnce.Do(func() { e.res.release(e.procs) })
 }
 
 // Traces is the trace store.

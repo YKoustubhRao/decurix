@@ -152,6 +152,7 @@ func ForProgram(program string, read, write []string, plugins ...string) Policy 
 	p := Policy{Read: append([]string{}, systemRead...), Write: append(append([]string{}, systemWrite...), write...)}
 	files, libPath := resolved(program, plugins)
 	p.Read = append(p.Read, files...)
+	p.Read = append(p.Read, pythonStdlib(program)...)
 	p.Read = append(p.Read, read...)
 	p.LibraryPath = libPath
 	return p
@@ -202,4 +203,73 @@ func filter(environ []string, foldCase bool) []string {
 		}
 	}
 	return out
+}
+
+// pythonStdlib is the standard library of a managed (non-system) Python
+// interpreter, which the interpreter needs to start and which no ELF names:
+// a build with its own prefix (uv's, pyenv's, a relocatable one) keeps it in
+// lib/python3.N beside its bin directory. It is found structurally, the way
+// the interpreter finds its own prefix: program's real path is <prefix>/bin/<name>,
+// and <prefix>/lib/python3.N holds os.py (the landmark). Only that directory
+// is granted, read-only, never the prefix; when the program's name says its
+// version (python3.12) only that version's directory. A prefix the policy
+// already reads (/usr, /usr/local, /opt...) adds nothing, and a directory
+// whose real path leaves the prefix is not granted. A venv's python is a
+// symlink to its base interpreter, so the base's library is the one found.
+func pythonStdlib(program string) []string {
+	real, err := filepath.EvalSymlinks(program)
+	if err != nil {
+		return nil
+	}
+	bin := filepath.Dir(real)
+	if filepath.Base(bin) != "bin" {
+		return nil
+	}
+	prefix := filepath.Dir(bin)
+	if filepath.Dir(prefix) == prefix || systemPath(filepath.ToSlash(real)) {
+		return nil
+	}
+	name := strings.TrimSuffix(strings.ToLower(filepath.Base(real)), ".exe")
+	if !strings.HasPrefix(name, "python") {
+		return nil
+	}
+	want := ""
+	if v := strings.TrimPrefix(name, "python"); strings.HasPrefix(v, "3.") {
+		want = "python" + v
+	}
+	entries, err := os.ReadDir(filepath.Join(prefix, "lib"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		n := e.Name()
+		if !e.IsDir() || !isPythonLibDir(n) || (want != "" && n != want) {
+			continue
+		}
+		dir := filepath.Join(prefix, "lib", n)
+		r, err := filepath.EvalSymlinks(dir)
+		if err != nil || !within(prefix, r) {
+			continue
+		}
+		if fi, err := os.Stat(filepath.Join(r, "os.py")); err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// isPythonLibDir says n is "python3.N" with N digits.
+func isPythonLibDir(n string) bool {
+	v, ok := strings.CutPrefix(n, "python3.")
+	if !ok || v == "" {
+		return false
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

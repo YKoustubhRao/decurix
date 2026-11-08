@@ -240,12 +240,12 @@ func TestApplyStagesAndOnlyAPersonPromotes(t *testing.T) {
 	// A lock.next.json that changed after its check is not promoted.
 	good, _ := os.ReadFile(f.st.Path(NextLock))
 	os.WriteFile(f.st.Path(NextLock), append(append([]byte{}, good...), ' '), 0o644)
-	if _, _, err := Promote(f.st, now); err == nil {
+	if _, _, err := Promote(f.st, now, PromoteOptions{ByHand: true}); err == nil {
 		t.Fatal("a changed lock.next.json was promoted")
 	}
 	os.WriteFile(f.st.Path(NextLock), good, 0o644)
 	// A person promotes: lock.json is the staged plan, the old one is kept.
-	lock, staged, err := Promote(f.st, now)
+	lock, staged, err := Promote(f.st, now, PromoteOptions{ByHand: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestApplyStagesAndOnlyAPersonPromotes(t *testing.T) {
 	if s := ReadState(f.st); len(s.History) != 3 || s.History[2].Outcome != OutcomePromoted {
 		t.Fatalf("state %+v", s)
 	}
-	if _, _, err := Promote(f.st, now); !errors.Is(err, ErrNothingStaged) {
+	if _, _, err := Promote(f.st, now, PromoteOptions{ByHand: true}); !errors.Is(err, ErrNothingStaged) {
 		t.Fatalf("promoting twice: %v", err)
 	}
 	res, err = Run(context.Background(), f.opt)

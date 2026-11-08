@@ -278,9 +278,9 @@ func ensureVenv(ctx context.Context, groups []string, opt Options) (string, erro
 	}
 	var reqs []string
 	for _, g := range groups {
-		f := filepath.Join(opt.WorkerDir, "requirements-"+g+".txt")
-		if _, err := os.Stat(f); err != nil {
-			return "", fmt.Errorf("no requirement file for %s at %s", g, f)
+		f, err := WorkerLock(opt.WorkerDir, g, opt.Census.Python.Version, runtime.GOOS, runtime.GOARCH)
+		if err != nil {
+			return "", err
 		}
 		reqs = append(reqs, f)
 	}
@@ -510,4 +510,31 @@ func ReadLock(st *store.Store) (*Lock, error) {
 		return nil, errors.New("lock.json has no plan: run `brainiac pull` again")
 	}
 	return &l, nil
+}
+
+// WorkerLock is the hash-locked requirement file of a worker group for this
+// machine: locks/<group>-cp3N-<target>.txt beside requirements-<group>.txt,
+// made by scripts/lock_worker.py for CPython 3.N (from the interpreter's
+// version, "3.12.4") on the target (win_amd64, linux_x86_64, linux_aarch64,
+// macos_arm64). There is no unlocked fallback: with no lock for this
+// Python and system, the worker is not installed (G-09, fail closed like
+// the catalog's pins).
+func WorkerLock(workerDir, group, pythonVersion, goos, goarch string) (string, error) {
+	parts := strings.SplitN(strings.TrimSpace(pythonVersion), ".", 3)
+	if len(parts) < 2 || parts[0] != "3" || parts[1] == "" {
+		return "", fmt.Errorf("the worker's Python reports version %q; its packages are locked for CPython 3.11-3.14 only", pythonVersion)
+	}
+	targets := map[string]string{"windows/amd64": "win_amd64", "linux/amd64": "linux_x86_64", "linux/arm64": "linux_aarch64", "darwin/arm64": "macos_arm64"}
+	target, ok := targets[goos+"/"+goarch]
+	if !ok {
+		return "", fmt.Errorf("the worker's packages are not locked for %s/%s; refusing an unlocked install", goos, goarch)
+	}
+	if _, err := os.Stat(filepath.Join(workerDir, "requirements-"+group+".txt")); err != nil {
+		return "", fmt.Errorf("no requirement file for %s in %s", group, workerDir)
+	}
+	f := filepath.Join(workerDir, "locks", fmt.Sprintf("%s-cp3%s-%s.txt", group, parts[1], target))
+	if _, err := os.Stat(f); err != nil {
+		return "", fmt.Errorf("no hash-locked requirements for %s on CPython 3.%s %s (%s); refusing an unlocked install (brainiac/scripts/lock_worker.py makes them)", group, parts[1], target, f)
+	}
+	return f, nil
 }

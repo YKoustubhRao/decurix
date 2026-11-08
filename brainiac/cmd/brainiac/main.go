@@ -12,7 +12,8 @@
 //	brainiac paths               per field: what could answer here, and why each does or does not
 //	brainiac eval --cases f      measure models field by field on checked cases
 //	brainiac update [--apply]    a better plan from public evaluations: shown, or installed, checked and staged
-//	brainiac update promote      switch to the staged plan (a person's decision)
+//	brainiac update promote      switch to the staged plan (a person's decision, or a signed release on an appliance)
+//	brainiac update sign-release sign a release naming a staged lock (the release pipeline)
 //	brainiac update approve-template <model>   accept a model's changed chat template, after reading it
 //	brainiac scout [--days n]    open models newer than the catalog, checked
 //	brainiac scout adopt|pin     add a scouted model to the local catalog; move to a newer llama.cpp build
@@ -116,6 +117,7 @@ func usage() {
   update [--apply] [--json]                       find better open models from public evaluations; --apply
                                                  installs, checks and stages them, changing nothing served
   update promote                                  switch to the staged plan; a running serve follows
+  update sign-release <lock.next.json> --key f    sign a release that lets an appliance promote that lock
   update approve-template <model>                 accept a model's changed chat template, after reading it
   scout  [--days 120]                              find open models newer than the catalog, checked
   scout adopt <repo> --roles code=72               add a scouted model to the local catalog
@@ -380,12 +382,18 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 	}
 	// Model servers a crashed Brainiac left running hold memory this one plans with.
 	engine.SweepOrphans(lg.Printf)
-	eng, err := engine.New(engine.Options{Config: cfg, Store: st, Lock: lock, Logger: lg, Catalog: cat})
+	// One residency for every engine this serve runs: a changed lock.json
+	// keeps the models it did not change running (G-11).
+	res := engine.NewServerResidency(census.LiveAvailableGB)
+	eng, err := engine.New(engine.Options{Config: cfg, Store: st, Lock: lock, Logger: lg, Catalog: cat, Residency: res})
 	if err != nil {
 		return err
 	}
-	as := &api.Server{Eng: eng, APIKey: cfg.APIKey(), Log: lg, WorkSlots: workSlots(lock)}
-	defer func() { as.Current().Close() }()
+	as := &api.Server{Eng: eng, APIKey: cfg.APIKey(), Log: lg, WorkSlots: workSlots(lock), Residency: res}
+	defer func() {
+		as.Current().Close()
+		res.UnloadAll() // an engine still finishing a request on the old plan is gone with serve
+	}()
 	// The updater reads public evaluations on the web and only stages what it
 	// finds; it is off unless update_every is set, and off with the web.
 	if every, ok := updateEvery(cfg); ok {
@@ -402,7 +410,7 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 			if err != nil {
 				return nil, err
 			}
-			return engine.New(engine.Options{Config: cfg, Store: st, Lock: l, Logger: lg, Catalog: c})
+			return engine.New(engine.Options{Config: cfg, Store: st, Lock: l, Logger: lg, Catalog: c, Residency: as.Residency})
 		}}
 	go follow.run(ctx, 30*time.Second)
 	// A body must arrive within minutes; an answer may stream for longer.

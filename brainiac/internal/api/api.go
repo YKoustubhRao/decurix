@@ -51,6 +51,11 @@ type Server struct {
 	// WorkSlots is how many work requests run at once (0 means 4); the rest
 	// wait their turn, so parallel large requests cannot exhaust memory.
 	WorkSlots int
+	// Residency is the server's model residency, which outlives its engines:
+	// every engine it serves is built on it (engine.Options.Residency), so
+	// an engine for a changed plan keeps the unchanged models running and
+	// the one it replaces stops only its own (G-11).
+	Residency *engine.Residency
 
 	cur    atomic.Pointer[engine.Engine]
 	hold   sync.RWMutex // work requests share it; Hold takes it alone

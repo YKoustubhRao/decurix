@@ -42,15 +42,61 @@ type resident struct {
 	lastUsed time.Time
 }
 
+// recipeOf is what started u's process, when u says (a unit does): two
+// loadables with the same key and recipe run the same process, so an engine
+// built later uses the one already in memory. "" is a loadable that does not
+// say, known by its key alone.
+func recipeOf(u loadable) string {
+	if r, ok := u.(interface{ recipe() string }); ok {
+		return r.recipe()
+	}
+	return ""
+}
+
+// generationOf is the engine generation that built u (0 when it does not say).
+func generationOf(u loadable) uint64 {
+	if g, ok := u.(interface{ generation() uint64 }); ok {
+		return g.generation()
+	}
+	return 0
+}
+
+// ident is the residency's name for u: its key, and its recipe when it has
+// one. A model whose recipe changed (a new file, context or build) is
+// another resident, never handed the old process.
+func ident(u loadable) string {
+	if r := recipeOf(u); r != "" {
+		return u.key() + "#" + r
+	}
+	return u.key()
+}
+
+// sharedHandle is one process object several engines may use in turn (a
+// model server, the Python worker), by its recipe; it is stopped when the
+// last engine using it lets go.
+type sharedHandle struct {
+	v     any
+	users int
+	stop  func()
+}
+
 // Residency decides which models are in memory. Each pool has a budget (from
 // the plan); a model that does not fit beside the others evicts the least
 // recently used ones Brainiac itself loaded and is not using right now.
 // Before loading, the pool's real free memory is measured again, because the
 // machine is shared: desktops come and go.
+//
+// One Residency belongs to a server and outlives its engines (G-11): an
+// engine built for a new plan uses the processes of the units whose recipe
+// did not change (adopt), and the engine it replaced stops only its own
+// (the ones that changed or left the plan) when it retires.
 type Residency struct {
 	mu      sync.Mutex
 	budgets map[string]float64
-	loaded  map[string]*resident
+	loaded  map[string]*resident // by ident
+	// procs are the process objects engines share, by recipe.
+	procs map[string]*sharedHandle
+	gen   uint64
 	// live re-measures a pool's available memory; nil skips the check.
 	live func(ctx context.Context, pool string) (float64, error)
 	// loadMu serialises loads per pool: two big loads at once on a small
@@ -60,7 +106,87 @@ type Residency struct {
 
 // NewResidency returns a manager with per-pool budgets in GB.
 func NewResidency(budgets map[string]float64, live func(ctx context.Context, pool string) (float64, error)) *Residency {
-	return &Residency{budgets: budgets, loaded: map[string]*resident{}, live: live, loadMu: map[string]*sync.Mutex{}}
+	return &Residency{budgets: budgets, loaded: map[string]*resident{}, live: live, loadMu: map[string]*sync.Mutex{},
+		procs: map[string]*sharedHandle{}}
+}
+
+// NewServerResidency is the residency a server keeps for all its engines:
+// budgets come from each engine's plan, and the pool's free memory is
+// measured on this machine before each load.
+func NewServerResidency(live func(ctx context.Context, pool string) (float64, error)) *Residency {
+	return NewResidency(map[string]float64{}, live)
+}
+
+// setBudgets replaces the per-pool budgets (a new plan's).
+func (r *Residency) setBudgets(b map[string]float64) {
+	r.mu.Lock()
+	r.budgets = b
+	r.mu.Unlock()
+}
+
+// nextGeneration numbers a new engine; a later engine's units take over
+// residents from an earlier one's.
+func (r *Residency) nextGeneration() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gen++
+	return r.gen
+}
+
+// share returns the process object running recipe if an engine holds one,
+// else v, which is registered under it; stop ends v's process when the last
+// engine releases it. Each share is paired with one release.
+func (r *Residency) share(recipe string, v any, stop func()) any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if h, ok := r.procs[recipe]; ok {
+		h.users++
+		return h.v
+	}
+	r.procs[recipe] = &sharedHandle{v: v, users: 1, stop: stop}
+	return v
+}
+
+// release lets go of shared process objects; one no engine uses any more
+// is stopped.
+func (r *Residency) release(recipes []string) {
+	var stops []func()
+	r.mu.Lock()
+	for _, k := range recipes {
+		h, ok := r.procs[k]
+		if !ok {
+			continue
+		}
+		if h.users--; h.users <= 0 {
+			delete(r.procs, k)
+			if h.stop != nil {
+				stops = append(stops, h.stop)
+			}
+		}
+	}
+	r.mu.Unlock()
+	for _, s := range stops {
+		s()
+	}
+}
+
+// adopt hands the residents whose ident matches one of units to that unit:
+// the new engine owns them from now on, so the engine it replaces does not
+// stop them when it retires. Holds already taken stay valid. It returns the
+// keys it kept.
+func (r *Residency) adopt(units []loadable) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var kept []string
+	for _, u := range units {
+		if e, ok := r.loaded[ident(u)]; ok && generationOf(u) >= generationOf(e.u) {
+			inheritFrom(u, e.u)
+			e.u = u
+			kept = append(kept, u.key())
+		}
+	}
+	sort.Strings(kept)
+	return kept
 }
 
 // Acquire makes u resident and holds it until release is called. loadMs is
@@ -68,12 +194,14 @@ func NewResidency(budgets map[string]float64, live func(ctx context.Context, poo
 func (r *Residency) Acquire(ctx context.Context, u loadable) (release func(), loadMs int64, err error) {
 	// A model already in memory needs no load lock: it never waits behind
 	// another model's load in the same pool.
+	id := ident(u)
 	r.mu.Lock()
-	if e, ok := r.loaded[u.key()]; ok && e.u.alive() {
+	if e, ok := r.loaded[id]; ok && e.u.alive() {
 		e.refs++
 		e.lastUsed = time.Now()
+		r.takeLocked(e, u)
 		r.mu.Unlock()
-		return r.releaser(u.key(), e), 0, nil
+		return r.releaser(id, e), 0, nil
 	}
 	lm := r.loadMu[u.pool()]
 	if lm == nil {
@@ -86,17 +214,18 @@ func (r *Residency) Acquire(ctx context.Context, u loadable) (release func(), lo
 	defer lm.Unlock()
 
 	r.mu.Lock()
-	if e, ok := r.loaded[u.key()]; ok {
+	if e, ok := r.loaded[id]; ok {
 		if e.u.alive() {
 			e.refs++
 			e.lastUsed = time.Now()
+			r.takeLocked(e, u)
 			r.mu.Unlock()
-			return r.releaser(u.key(), e), 0, nil
+			return r.releaser(id, e), 0, nil
 		}
 		// It died after loading: its memory is back already. Forget it, and
 		// load it again below. Requests still holding the dead one release
 		// their own entry, not the new one.
-		r.forgetLocked(u.key())
+		r.forgetLocked(id)
 	}
 	evicted, err := r.makeRoomLocked(ctx, u)
 	r.mu.Unlock()
@@ -112,9 +241,26 @@ func (r *Residency) Acquire(ctx context.Context, u loadable) (release func(), lo
 	}
 	e := &resident{u: u, refs: 1, lastUsed: time.Now()}
 	r.mu.Lock()
-	r.loaded[u.key()] = e
+	r.loaded[id] = e
 	r.mu.Unlock()
-	return r.releaser(u.key(), e), time.Since(start).Milliseconds(), nil
+	return r.releaser(id, e), time.Since(start).Milliseconds(), nil
+}
+
+// takeLocked gives e to u when u's engine is newer than its owner's: a
+// model an old engine loaded after the new one was built still passes to
+// the new one, and never back.
+func (r *Residency) takeLocked(e *resident, u loadable) {
+	if generationOf(u) > generationOf(e.u) {
+		inheritFrom(u, e.u)
+		e.u = u
+	}
+}
+
+// inheritFrom lets u take over what old knew about the running model.
+func inheritFrom(u, old loadable) {
+	if h, ok := u.(interface{ inherit(loadable) }); ok {
+		h.inherit(old)
+	}
 }
 
 // releaser gives back one hold on e. It touches e only while e is still the
@@ -186,7 +332,7 @@ func (r *Residency) makeRoomLocked(ctx context.Context, u loadable) ([]loadable,
 		return nil, &ErrNoRoom{Model: u.key(), NeedGB: need, FreeGB: f + freed, Pool: pool, Unloaded: names}
 	}
 	for _, e := range evict {
-		delete(r.loaded, e.key())
+		delete(r.loaded, ident(e))
 	}
 	return evict, nil
 }
@@ -195,9 +341,13 @@ func (r *Residency) makeRoomLocked(ctx context.Context, u loadable) ([]loadable,
 func (r *Residency) Loaded() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	seen := map[string]bool{}
 	var out []string
-	for k := range r.loaded {
-		out = append(out, k)
+	for _, e := range r.loaded {
+		if k := e.u.key(); !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -216,11 +366,16 @@ func (r *Residency) forgetLocked(key string) { delete(r.loaded, key) }
 // pool is done under its load lock, the one eviction and loading hold, so a
 // request that acquires the same model meanwhile waits for the unload and
 // then loads it again, instead of having it stopped under it.
-func (r *Residency) UnloadIdle() {
+func (r *Residency) UnloadIdle() { r.unloadIdle(nil) }
+
+// unloadIdle is UnloadIdle for the residents owned says are its (nil: all).
+func (r *Residency) unloadIdle(owned func(loadable) bool) {
 	r.mu.Lock()
 	pools := map[string]bool{}
 	for _, e := range r.loaded {
-		pools[e.u.pool()] = true
+		if owned == nil || owned(e.u) {
+			pools[e.u.pool()] = true
+		}
 	}
 	r.mu.Unlock()
 	names := make([]string, 0, len(pools))
@@ -240,7 +395,7 @@ func (r *Residency) UnloadIdle() {
 		r.mu.Lock()
 		var idle []loadable
 		for k, e := range r.loaded {
-			if e.refs == 0 && e.u.pool() == pool {
+			if e.refs == 0 && e.u.pool() == pool && (owned == nil || owned(e.u)) {
 				idle = append(idle, e.u)
 				delete(r.loaded, k)
 			}
@@ -254,13 +409,18 @@ func (r *Residency) UnloadIdle() {
 }
 
 // UnloadAll unloads every resident (shutdown).
-func (r *Residency) UnloadAll() {
+func (r *Residency) UnloadAll() { r.unloadAll(nil) }
+
+// unloadAll is UnloadAll for the residents owned says are its (nil: all).
+func (r *Residency) unloadAll(owned func(loadable) bool) {
 	r.mu.Lock()
 	var all []loadable
-	for _, e := range r.loaded {
-		all = append(all, e.u)
+	for k, e := range r.loaded {
+		if owned == nil || owned(e.u) {
+			all = append(all, e.u)
+			delete(r.loaded, k)
+		}
 	}
-	r.loaded = map[string]*resident{}
 	r.mu.Unlock()
 	for _, u := range all {
 		u.unload()
