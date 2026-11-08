@@ -57,7 +57,7 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **Done: B-37.** Each schedule and DAG cron has its own IANA zone (`schedule.Expr.NextIn`, `zone`/`cron_zone`, appended Migrate steps; old rows read UTC), picked on the forms from the browser's zone.
 - **B-29:** a restart loop for the Windows tunnel (`Lan-Tunnel.ps1`); the tunnel is opt-in now.
 - **Done: B-10.** Desktops reach the native Ollama only through an allow-listed proxy (`internal/httpapi/native_ollama.go`, `modelRequestPolicy`; d25d201).
-- **W-20 rest:** the `rfb.js` hash (served immutable at a versioned path, not a content hash). Done: the in-flight guards (`loadNotes` and `pollResourceAlerts` go through `Decurix.poll`, one call at a time) and a bounded `/api/desktops/memory` (`?limit=`, default 200, max 1000, `truncated`).
+- **Done: W-20.** The viewer's script is served at a path naming its own bytes (`noVNCPath`, `rfb-1.6.0-<sha256 12>.js`), so a changed file is never a stale cached copy. Also done: the in-flight guards (`loadNotes` and `pollResourceAlerts` go through `Decurix.poll`, one call at a time) and a bounded `/api/desktops/memory` (`?limit=`, default 200, max 1000, `truncated`).
 - **Done: RW1-G-04 rest.** A start or a resume waits for a tools refresh in progress, at most 5 min and never past the request (`holdToolsForStart`, `ErrToolsRefreshing`).
 - **Done: orphan home volume.** Create answers 409 `leftover_home`, and the form offers to delete the old volume (`POST /api/desktops/home-volume/delete`, primary listener, humansOnly; refused while any container mounts it or it is not that desktop's labelled home).
 - **Done: RW1-D-01.** A desktop container carries its creation's id (`decurix.creation`, as its home does); after a `ContainerCreate` error, `Manager.removeHalfCreated` removes a container of exactly that name with that creation's id, never another's.
@@ -91,7 +91,12 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 ### TheBot (W3)
 
 - **O-1.a** (above).
-- **N-W3-3:** `asksAppNamesRe` suppresses a HELP to the person once, by words. It fails toward a delay, never a false success; move it into T-20's gate table as a fact.
+- **Closed 2026-11-08: N-W3-3.** `asksAppNamesRe` is gone. A HELP is held once for names the application lists only on a
+  fact of the listing (`listOnScreen`, `screen_answer.go`): it names a list a listed window shows (a field's options,
+  or a column of a table's first row) whose entries hold letters; the lines go back with the nudge (`NamesNudged`).
+  With no listed screen showing that list it goes to the person (a names question for a page not yet listed is no
+  longer held). No T-20 gate table exists in the repository; the fact is recorded where the gate is
+  (`screen_answer.go`) and in harness-v3-plan.md item 4.
 - **Closed: T-19.** A recall score floor was measured and decided against (`agent/thebot/internal/memory/l1.go`, the note at ~318).
 - **T-27:** the embedded UI is the owner's decision.
 - **A planted row in `l1.db`** (worker-writable) only shows "you approved this on <date>" in a standalone coding question. Word it as "a record on this machine says ...".

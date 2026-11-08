@@ -218,3 +218,15 @@ func TestAnInterruptedTaskIsReportedOnlyWhileOpen(t *testing.T) {
 		t.Fatal("a task the control plane had already closed got a second note")
 	}
 }
+
+// The viewer's script is served at a path naming its own bytes, so a changed file is never a cached stale copy
+// (follow-up W-20), and the screen page loads it from exactly that path.
+func TestTheViewerScriptPathNamesItsContent(t *testing.T) {
+	if !strings.HasPrefix(noVNCPath, "/static/novnc/rfb-1.6.0-") || !strings.HasSuffix(noVNCPath, ".js") ||
+		!strings.Contains(noVNCPath, contentTag(webui.NoVNC)) {
+		t.Fatalf("noVNCPath = %q", noVNCPath)
+	}
+	if contentTag([]byte("a")) == contentTag([]byte("b")) {
+		t.Fatal("different bytes, same tag")
+	}
+}
