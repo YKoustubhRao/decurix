@@ -855,6 +855,15 @@ func (o *OperatorSkill) commandTimeout() time.Duration {
 // killed at step 19 of 52, leaving a form half filled for the model to finish by hand.
 const defaultReplayTimeout = 20 * time.Minute
 
+// defaultSelectTimeout bounds a command that chooses an entry from an application's list (gui select): the choosing
+// is bounded by its own searches (selecting.MAX_SEARCHES, each waiting on the list as long as a look takes), so it
+// needs more than one command's three minutes on a loaded host. Found live (2026-11-08, load 13-24): a select of a
+// supplier was killed at three minutes mid-search, and the model typed the supplier by hand.
+const defaultSelectTimeout = 10 * time.Minute
+
+// selectCommandRe is a command that chooses from a list (also after `cd ... &&` or `;`).
+var selectCommandRe = regexp.MustCompile(`(?m)(?:^|&&|;|\|\|)\s*gui\s+select\s+\S`)
+
 // replayCommandRe is a command that replays a taught task or a recording (also after `cd ... &&` or `;`).
 var replayCommandRe = regexp.MustCompile(`(?m)(?:^|&&|;|\|\|)\s*gui\s+(?:do|replay)\s+\S`)
 
@@ -862,6 +871,12 @@ var replayCommandRe = regexp.MustCompile(`(?m)(?:^|&&|;|\|\|)\s*gui\s+(?:do|repl
 // OPERATOR_REPLAY_TIMEOUT_SECONDS (defaultReplayTimeout).
 func (o *OperatorSkill) timeoutFor(command string) time.Duration {
 	limit := o.commandTimeout()
+	if selectCommandRe.MatchString(command) && !replayCommandRe.MatchString(command) {
+		if limit < defaultSelectTimeout {
+			return defaultSelectTimeout
+		}
+		return limit
+	}
 	if !replayCommandRe.MatchString(command) {
 		return limit
 	}

@@ -38,3 +38,14 @@ func TestTheReplayLimitNeverShortensALongerCommandLimit(t *testing.T) {
 		t.Errorf("OPERATOR_REPLAY_TIMEOUT_SECONDS=600 gave %v", got)
 	}
 }
+
+// A choice from a list gets its own longer limit: its searches bound it, not the shell's three minutes.
+func TestASelectGetsTheSelectLimit(t *testing.T) {
+	o := &OperatorSkill{}
+	if got := o.timeoutFor(`gui select e12 "Developer Workstation"`); got != defaultSelectTimeout {
+		t.Fatalf("select limit %v", got)
+	}
+	if got := o.timeoutFor(`gui click e12`); got != defaultCommandTimeout {
+		t.Fatalf("click limit %v", got)
+	}
+}
