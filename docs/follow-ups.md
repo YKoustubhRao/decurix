@@ -49,7 +49,7 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 ### Control plane, desktops, scripts, Electron (W1)
 
 - **Digest pins** (B-24): `accetto/ubuntu-vnc-xfce-chromium-g3` (still `:latest`), `alpine:3.24` and `ollama/ollama:0.40.1` are pinned by tag only. Pin digests on the next build (needs a pull).
-- **Dead bridge verbs** (B-27): about 1,500 lines of `bridge.ps1` verbs Go never sends. First item for the next loop with a live Windows run.
+- **Dead bridge verbs** (B-27): removed 2026-11-08 (3,804 -> 2,258 lines). Gone: the native-worker screen verbs Go never sends (`open`, `openr`, `click`, `count`, `shortcuts`, `tasks`, `start`, `shell`, `win`, `over`, `screen`, `focus`, `windows`) with the painted wallpaper, taskbar, Start menu and window manager behind them, the AppContainer terminal (`Confined`), and the compiled-program mode (`-Build`, `-Resolve`, `Main`/`Starting`; Go stopped using it on 2026-10-06). The C# compiles, the script parses, `go test ./internal/winhost` and the real-helper check pass. Owed: one live host-app run on Windows (open, click, type, close).
 - **B-19:** clean up host browser profiles when a VM is forgotten (needs a new bridge verb). The launch-time quarantine covers the dangerous case.
 - **W-14:** one aggregated endpoint per dashboard tab (performance only).
 - **Done: C-25.** The practice broker knows its desktop by the address a callback comes from, never by `desktop_id` in the body: `Broker.Caller` = `desktop.Manager.PracticeDesktopAt` (labelled `practice-<run>` containers on `decurix-practice`, never the mock), answers kept per address (`Broker.fromRunDesktop`), a body naming another desktop refused, no `Caller` refuses all (simulation.md).
