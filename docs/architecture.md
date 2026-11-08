@@ -132,7 +132,10 @@ internal/winhost   — runs a Windows app on a PRIVATE WIN32 DESKTOP of the host
                       the helper pushes pictures (Watch/Viewer: a whole picture first, then
                       only the rectangle that changed), Do/Mouse/Wheel/Type/Key, Copy/Paste,
                       Check (which programs can run hidden, from the same helper), Stop/StopAll;
-                      Keep/Forget/ForgetDesktop (an app kept running, ready to show), controls.go
+                      Keep/Forget/ForgetDesktop (an app kept running, ready to show), DeleteDesktop
+                      (a deleted desktop's host browser profiles removed by the bridge's dropprofiles
+                      verb: exact folder names under its own profile root, links never followed; a
+                      stop keeps them, they hold the worker's sign-ins), controls.go
                       (Controls: the app's controls from UI Automation, and Picture);
                       token.go signs and checks the launch, exec and open tokens (LoadSecret keeps the key in the data dir). Takes its host
                       command as a Starter, so it depends on nothing internal and is tested
@@ -234,6 +237,11 @@ internal/outbox    — emails agents drafted (`office email`, POST /api/outbox
 internal/sealed    — AES-256-GCM for the few secrets kept in SQLite, key in a file of its
                       own in the data dir (mailtrigger's mail.key, cftunnel's cloudflare.key, llm's llm.key;
                       an old claude-session.key is left unread since the Claude login went, 2026-11-07)
+internal/runs      — the run record (docs/trajectory.md): Puller takes a run's bundle off its desktop when the
+                      run ends (limit DECURIX_RUN_BUNDLE_MB, default 64, runs.BundleLimit) and Build
+                      assembles decurix.trajectory/v1. A desktop delete first pulls what is missing; runs it
+                      still could not save make the delete answer 409 unless a person forces it (a
+                      delete_anyway judgement names who and which runs were given up)
 internal/purge     — purges a leaked secret by value from the never-delete stores (blobs,
                       llm_calls, judgements, task records, chat, concierge, query notes, run
                       bundles): each copy becomes `[purged]` in place through a small
