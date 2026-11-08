@@ -1745,8 +1745,18 @@ def gate_faults(task_id=None, created=None):
     out = []
     for rec in found:
         if rec.get("saved_at") and rec.get("undeclared"):
+            # Where the saved record is and the one command that settles it, so the attempt sent back declares the
+            # field on that record rather than entering it again: found live (2026-11-08, a bill in an eval run), told
+            # only "correct the saved record", the next attempt opened a new form and typed the bill again.
+            where = re.search(r"https?://\S+", rec.get("saved") or "")
+            place = (f"its page is {where.group(0).rstrip('.,;')}" if where
+                     else f"its window is {rec['window']!r}" if rec.get("window") else "")
             out.append(finding(UNDECLARED, f"record {rec['key']} was saved with " + ", ".join(rec["undeclared"][:6])
-                               + " - a value this task set that no declaration backs"))
+                               + " - a value this task set that no declaration backs. To settle it, declare the field "
+                               "on the saved record: open it" + (f" ({place})" if place else "") + " and look at it "
+                               f"(gui observe), then run gui record {json.dumps(rec['key'])} --from "
+                               f"{json.dumps(rec.get('source') or 'SOURCE')} --fields - with that field and the value "
+                               "its source or the person's answer gives - never a new form"))
     saved = sum(1 for r in found if r.get("saved_at"))
     if created is not None and created > saved:
         out.append(finding(UNCOVERED, f"this task's saves made {created} new record(s), and {saved} declared record(s) "

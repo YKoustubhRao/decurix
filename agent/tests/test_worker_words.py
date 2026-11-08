@@ -195,6 +195,20 @@ class ASavedRecordDeclaredUnderItsNumber(Ledger):
         self.assertIn(str(note), records.declared_sources(TASK))
         self.assertEqual(records.gate_faults(TASK, created=1), [])
 
+    def test_an_undeclared_saved_value_says_where_the_record_is_and_how_to_settle_it(self):
+        # Found live (2026-11-08, a bill in an eval run): told only "correct the saved record", the attempt sent back
+        # opened a new form and typed the bill again.
+        rec, _ = records.declare("invoice", str(self.bill), {"Invoice no.": "INV-0001", "Total": "3,540.00"})
+        self.save(rec, "Invoice INV-0001 Total 3,540.00 Fund FND-3")
+        ledger = records.load(TASK)
+        ledger[0]["undeclared"] = ["Fund=FND-3"]
+        records._save(TASK, ledger)
+        faults = " ".join(str(f) for f in records.gate_faults(TASK, created=1))
+        self.assertIn("record invoice was saved with Fund=FND-3", faults)
+        self.assertIn("its page is http://app/invoices/4?saved=1", faults)
+        self.assertIn(f'gui record "invoice" --from "{self.bill}" --fields -', faults.replace("\\\\", "\\"))
+        self.assertIn("never a new form", faults)
+
     def test_a_field_the_last_page_did_not_show_says_how_to_read_it_back(self):
         # Found live (2026-11-08, a bill in an eval run): told only "declare those again", the worker tried a page's title and
         # URL as --from and then misdescribed its own declaration; four reviews held it until the case timed out.
