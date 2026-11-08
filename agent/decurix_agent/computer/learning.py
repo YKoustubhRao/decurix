@@ -1676,6 +1676,25 @@ def _step_numbers(text):
     return numbers
 
 
+# Where a choice ends and the person's explanation of it begins: a dash, a colon or an opening bracket.
+_EXPLAINED = re.compile(r"\s+[-–—]\s+|\s*:\s+|\s*\(")
+
+
+def _leading_choice_head(clause):
+    """The words of a clause before its first dash, colon or bracket (the whole clause when it has none)."""
+
+    return _EXPLAINED.split(clause, maxsplit=1)[0]
+
+
+def _leading_choice(kind, clause):
+    """The one choice a clause plainly makes before it explains itself ("keep - that spot is the Party field"), or
+    None. Found live (2026-11-08): told that, the lesson answered "I did not catch that", and only a bare "keep" was
+    taken - a person who explains their answer was asked again."""
+
+    head = _leading_choice_head(clause)
+    return _choose(kind, head) if head.strip() != clause.strip() else None
+
+
 def _coordinate_choices(question, text):
     """
     What a reply to the grouped positional question decides for each step:
@@ -1691,8 +1710,8 @@ def _coordinate_choices(question, text):
     for clause in re.split(r"[;,\n]|\band\b|\bbut\b|\bexcept\b", text):
         if not clause.strip():
             continue
-        choice = _choose("coordinates", clause)
-        numbers = _step_numbers(clause)
+        choice = _choose("coordinates", clause) or _leading_choice("coordinates", clause)
+        numbers = _step_numbers(_leading_choice_head(clause) if choice and not _choose("coordinates", clause) else clause)
         if numbers is None:
             return None
 
