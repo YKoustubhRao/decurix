@@ -39,7 +39,9 @@ RUNNER = r'''
 import json, os, re, subprocess, sys, time
 
 ENV = dict(os.environ, DISPLAY=":1", DECURIX_GUI_TEXT_CHARS="20000")
-ITEM = re.compile(r'(e\d+) (?:([a-z][a-z ]*?) )?"([^"]*)"[^@\n,]*?@(-?\d+),(-?\d+)')
+# A control's state between its name and its place may hold a comma ("[row 4, unchecked]"): a checkbox in a table row
+# was never found when the pattern refused one.
+ITEM = re.compile(r'(e\d+) (?:([a-z][a-z ]*?) )?"([^"]*)"[^@\n]*?@(-?\d+),(-?\d+)')
 FIELDS = ("textbox", "searchbox", "spinbutton", "password text", "text", "entry", "combobox")
 
 
