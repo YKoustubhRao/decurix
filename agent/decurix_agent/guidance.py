@@ -247,7 +247,8 @@ def said_on_earlier_tasks():
         return ""
     return ("What the person told this worker on its earlier tasks (newest first; each answer is to its own question "
             "there; a rule or way of laying out the work they gave holds on this task too, over your own idea of how "
-            "it should be done - judge the work against it):\n" + "\n".join(lines))
+            "it should be done and over a rule the task was taught that it differs from - judge the work against "
+            "it):\n" + "\n".join(lines))
 
 
 # A no that is "not yet": the person asks for something first and says to come back. Found live (2026-10-27): "No -

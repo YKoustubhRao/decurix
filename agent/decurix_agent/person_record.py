@@ -232,17 +232,25 @@ def field_answers():
         if not isinstance(said, dict) or not said.get("label") or not said.get("option"):
             continue
         out.append({"label": str(said["label"]), "host": str(said.get("host") or ""), "option": str(said["option"]),
+                    "party": str(said.get("party") or ""), "confirmed": said.get("confirmed") is True,
                     "source_text": source["text"], "source_asked": str(source.get("asked") or ""),
                     "judgement": str(row["derived_from"])})
     return out
 
 
-def keep_field_answer(task_id, judgement_id, label, host, option, asked=""):
+def keep_field_answer(task_id, judgement_id, label, host, option, asked="", party="", confirmed=False):
     """Keep on the control plane that the person's judgement `judgement_id` answered which entry `label` takes in the
-    application at `host`: a learned row derived from it (messaging.post_learned). The thread, or None."""
+    application at `host`: a learned row derived from it (messaging.post_learned). `party`: for whom the task's work
+    was (records.form_party: the record's own) - the answer backs only that party's later picks; `confirmed`: the judgement was the
+    person's yes to a question naming this field and entry (records.confirm_picks). The thread, or None."""
 
     from decurix_agent import messaging
-    text = json.dumps({"label": label, "host": host, "option": option}, ensure_ascii=False, sort_keys=True)
+    said = {"label": label, "host": host, "option": option}
+    if party:
+        said["party"] = party
+    if confirmed:
+        said["confirmed"] = True
+    text = json.dumps(said, ensure_ascii=False, sort_keys=True)
     return messaging.post_learned(FIELD_ANSWER, "", 0, asked, text, task_id=task_id, derived_from=judgement_id)
 
 

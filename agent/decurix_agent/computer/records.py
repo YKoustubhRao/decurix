@@ -547,7 +547,17 @@ def picks(task_id=None, events=None, open_form=False):
     if events is None:
         from decurix_agent.computer import evidence
         events = evidence._task_events(task_id)
-    out, pending, page = [], [], None
+    out, pending, page, form = [], [], None, []
+    owner = task_id or task_context.current() or ""
+
+    def with_party(found):
+        # The record's own party: the identifiers its form holds (form_party); each pick of it carries them. A form that
+        # holds none is a party of its own - this record of this task - so what is confirmed about it carries to no
+        # other record or run, and such a pick is asked each time (owner's ruling 2026-11-09: a consumer's invoice has
+        # no buyer number, and a client-wide answer would back a wrong entry on it).
+        party = form_party(form) or f"record:{owner}:{len(out)}"
+        return [dict(p, party=party) for p in found]
+
     for event in events:
         if event.get("outcome") not in (None, "done"):
             continue
@@ -560,14 +570,26 @@ def picks(task_id=None, events=None, open_form=False):
             left = page is not None and here != page
             page = here
         if kind in ("click", "key") and core._saved(change):
-            out += pending
-            pending = []
+            out += with_party(pending)
+            pending, form = [], []
             continue
         if left or core._FORM_START.search(change) or (kind == "open" and core._FORM_START.search("page is now " + to)):
-            pending = []
+            pending, form = [], []
+        if kind == "type" and event.get("text"):
+            form.append(str(event["text"]))
         if kind == "select" and not left and (event.get("option") or event.get("taken")):
+            form.append(str(event.get("taken") or event.get("option")))
             pending.append(_pick_of(event, host=(page or ("", ""))[0]))
-    return out + pending if open_form else out
+    return out + with_party(pending) if open_form else out
+
+
+def form_party(values):
+    """For whom one record is, as the identifier-shaped values its form holds (letters and digits together: a
+    buyer's tax number, an account), joined; "" when it holds none. A confirmation of a picked entry backs only the
+    record of the same party: a client's Karnataka buyer confirmed is no source for its Kerala buyer's entry (owner's
+    ruling 2026-11-09)."""
+
+    return "|".join(sorted({t for v in values or () for t in _PARTY_TOKEN.findall(str(v).upper())}))
 
 
 def picked_options(task_id=None):
@@ -989,7 +1011,7 @@ def resolved_names(task_id=None, events=None):
 
 # ------------------------------------------------------------------ a person's answer about a field, kept
 
-def _kept_answer(label, option, host, offered=None):
+def _kept_answer(label, option, host, offered=None, party=None):
     """Whether a person's answer about this field (its label, in this application), kept on the control plane as a
     learned row derived from their judgement, names `option` - checked against that judgement's own text."""
 
@@ -998,10 +1020,20 @@ def _kept_answer(label, option, host, offered=None):
         rows = person_record.field_answers()
     except Exception:  # noqa: BLE001 - what cannot be read backs nothing
         return False
+    party = "" if party is None else party
     for a in rows:
         if a.get("host") and host and a["host"] != host:
             continue
         if not (label_matches(a.get("label", ""), label) and same_value(a.get("option", ""), option, order="")):
+            continue
+        if a.get("party") and (a["party"] != party or a["party"].startswith("record:")):
+            continue  # (kept for another party, or for one record alone: no source for this pick)
+        if a.get("confirmed"):
+            # The person confirmed this very entry when asked about it: the question code put names the field and the
+            # entry, and the control plane holds their reply as their judgement on it (confirm_picks).
+            if set(label_words(label)) <= set(label_words(a.get("source_asked", ""))) \
+                    and option_backed(option, a.get("source_asked", ""), offered):
+                return True
             continue
         # The question the person answered (the control plane's, never the row's) names this field: a row cannot move
         # an answer about one field onto another (review round 11). None given: nothing backed.
@@ -1051,7 +1083,8 @@ def keep_field_answers(task_id=None, events=None):
                 mark = (a["id"], p["host"], " ".join(label_words(p["label"])))
                 if mark not in _kept_now:
                     _kept_now.add(mark)
-                    person_record.keep_field_answer(task_id, a["id"], p["label"], p["host"], value, asked=a["asked"])
+                    person_record.keep_field_answer(task_id, a["id"], p["label"], p["host"], value, asked=a["asked"],
+                                                    party=p.get("party") or "")
                     posted += 1
                 break
         return posted
@@ -1081,7 +1114,53 @@ def pick_backed(pick, given=None, resolved=None, value=None, labels=()):
         for label in [pick.get("label")] + list(labels or ()):
             if label and any(option_beside_label(v, label, f, offered) for f in sources.get("files") or ()):
                 return True
-    return bool(pick.get("label")) and _kept_answer(pick["label"], value, pick.get("host", ""), offered)
+    # (A pick read elsewhere than picks() names no record: its party is unknown, and only an answer kept for no party
+    # at all - from before parties were kept - backs it.)
+    party = pick.get("party") or ""
+    if pick.get("label") and _confirmed_here(pick["label"], value, party):
+        return True
+    return bool(pick.get("label")) and _kept_answer(pick["label"], value, pick.get("host", ""), offered, party=party)
+
+
+# Picks the person confirmed in this process (label words, value, party): a confirmation backs at once, before the
+# control plane's copy of it can be read back (confirm_picks).
+_confirmed_now = set()
+
+# An identifier a record's form holds for whom it is (a tax number, an account, a client code): letters and digits
+# together, long enough not to be a word or an amount (form_party).
+_PARTY_TOKEN = re.compile(r"\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{8,20}\b")
+
+
+def _confirmed_here(label, value, party):
+    words = " ".join(label_words(label))
+    return any(w == words and same_value(v, value, order="") and p == party for w, v, p in _confirmed_now)
+
+
+def confirm_picks(task_id, judgement_id, entries, asked):
+    """
+    Keep that the person confirmed each picked entry ({label, value, host, party}) for its record's party, in answer
+    to `asked` (a question naming each field and its entry): at once in this process, and on the control plane for
+    later tasks (person_record.keep_field_answer, confirmed). Never a different entry. Returns how many were kept.
+    Never raises.
+    """
+
+    kept = 0
+    for e in entries:
+        label, value = str(e.get("label") or ""), str(e.get("value") or "")
+        if not label or not value:
+            continue
+        party = e.get("party") or ""  # (the record's own party: picks / form_party)
+        _confirmed_now.add((" ".join(label_words(label)), value, party))
+        try:
+            from decurix_agent import person_record
+            if judgement_id:
+                person_record.keep_field_answer(task_id, judgement_id, label, e.get("host") or "", value, asked=asked,
+                                                party=party, confirmed=True)
+        except Exception as exc:  # noqa: BLE001 - kept here; the control plane's copy is for later tasks
+            from decurix_agent.logging_utils import log
+            log(f"Could not keep the person's confirmation of {label}: {exc}")
+        kept += 1
+    return kept
 
 
 def unbacked_pick_entries(task_id=None, events=None):
@@ -1100,7 +1179,8 @@ def unbacked_pick_entries(task_id=None, events=None):
         if given is None:
             given = given_sources(task_id)
         if not pick_backed(p, given, resolved):
-            if not any(o["label"] == p["label"] and o["option"] == p["option"] for o in out):
+            if not any(o["label"] == p["label"] and o["option"] == p["option"] and o.get("party") == p.get("party")
+                       for o in out):
                 out.append(p)
     return out
 

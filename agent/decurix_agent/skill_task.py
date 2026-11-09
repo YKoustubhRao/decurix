@@ -2460,6 +2460,11 @@ def _said_this_run(skill, since):
             + "\n".join(f"- asked: {s['q'][:400]} - the person answered: {s['a']}" for s in said))
 
 
+# Said where the skill's taught rules and the person's later words are shown together (_taught).
+LATER_WORDS_HOLD = ("What the person said after this task was taught follows. Where it differs from a rule or an "
+                    "answer above, what they said later holds.")
+
+
 def _taught(skill, since=None):
     """What the person taught and answered before this run (since: when it began; None, every answer)."""
 
@@ -2482,12 +2487,16 @@ def _taught(skill, since=None):
     for said in understood.get("dialogue") or []:
         # The person's own words, which the rules above were written from.
         parts.append(f"Asked when it was taught: {said['q']} - the person answered: {said['a']}")
-    for correction in skill.get("corrections") or []:
-        parts.append(f"A correction the person made after an earlier run: {correction['text']}")
-    for said in skill.get("run_answers") or []:
-        if since and (said.get("at") or 0) >= since:
-            continue  # this run's (_said_this_run)
-        parts.append(f"Asked during an earlier run: {said['q']} - the person answered: {said['a']}")
+    later = [f"A correction the person made after an earlier run: {c['text']}" for c in skill.get("corrections") or []]
+    # (An answer given during this run is this run's: _said_this_run.)
+    later += [f"Asked during an earlier run: {s['q']} - the person answered: {s['a']}"
+              for s in skill.get("run_answers") or [] if not (since and (s.get("at") or 0) >= since)]
+    if later:
+        # Owner's ruling (2026-11-09): a correction kept only as the person's later words left the rule it corrected
+        # standing above it ("stop before Proceed to file" beside "never before Proceed to file"), and nothing said
+        # which holds.
+        parts.append(LATER_WORDS_HOLD)
+        parts.extend(later)
     return "\n".join(parts)
 
 

@@ -48,6 +48,14 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 
 ## Deferred items
 
+### A person's later words supersede a taught rule (logged 2026-11-09, owner's ruling)
+
+A correction the person gives after a skill was taught ("ask only before File with EVC and Verify, never before
+Proceed to file") is kept as their later words (run_answers), while the taught rule it corrects stays in
+understanding.rules. Since 2026-11-09 the worker and the check are told that the later words hold
+(`skill_task.LATER_WORDS_HOLD`). Owed: a mechanism that rewrites or retires the rule itself from the person's later
+words - shown to the person as the rule it replaces, never silently - so the lesson stops carrying both.
+
 ### Control plane, desktops, scripts, Electron (W1)
 
 - **Digest pins** (B-24): `accetto/ubuntu-vnc-xfce-chromium-g3` (still `:latest`), `alpine:3.24` and `ollama/ollama:0.40.1` are pinned by tag only. Pin digests on the next build (needs a pull).

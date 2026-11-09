@@ -191,6 +191,95 @@ def _reworked(run):
     return False
 
 
+# How many lines of the run's documents are quoted for each entry asked about (_ask_about_picks).
+MAX_PICK_EVIDENCE = 2
+
+
+def _pick_evidence(value):
+    """Lines of this task's files where the words of a picked entry stand (records.option_backed on each line), each
+    with its file's name: what the documents show about it, for the person to weigh. [] when none."""
+
+    from decurix_agent.computer import records
+    out = []
+    for path in task_context.current_files() or []:
+        try:
+            from decurix_agent.tools import office
+            text = str(office.read_document(str(path)).get("text") or "")
+        except Exception:  # noqa: BLE001 - a file not read shows nothing
+            continue
+        for line in text.splitlines():
+            line = " ".join(line.split())
+            if line and len(line) <= 200 and records.option_backed(value, line):
+                out.append(f'"{line}" ({Path(path).name})')
+                if len(out) >= MAX_PICK_EVIDENCE:
+                    return out
+    return out
+
+
+def _ask_about_picks(run, reply, engine, guided):
+    """
+    Put the entries picked from the application's lists that nothing given backs to the person, once, with what the
+    run's documents show about each - instead of sending the work back. Their yes is kept as their confirmation of
+    exactly those entries, each for its own record's party (records.confirm_picks, form_party): that party's later runs
+    are backed, another party is asked once, a record that names no party is asked each time, and a different entry
+    is never backed by it. False when there is nothing to ask.
+    """
+
+    from decurix_agent.computer import records
+    entries = [{"label": p["label"], "value": p["taken"] or p["option"], "host": p.get("host") or "",
+                "party": p.get("party") or ""}
+               for p in records.unbacked_pick_entries(task_context.current()) if p.get("label")]
+    if not entries:
+        return False
+    run["picks_asked"] = True
+    lines = ["Before I report this, please confirm the entries I chose from the application's own lists - nothing "
+             "the request, its files or you gave states these for their fields:"]
+    for e in entries:
+        # (Each for its own record's party - form_party - so a yes about one buyer is never taken for another.)
+        named = e["party"] and not e["party"].startswith("record:")
+        lines.append(f"- {e['label']}: {e['value']}" + (f" (for {e['party'].replace('|', ', ')})" if named else
+                                                         " (on a record that names no party: asked for it alone)"))
+        for seen in _pick_evidence(e["value"]):
+            lines.append(f"  where the documents show it: {seen}")
+    lines.append("Reply yes if each is right for the record it is on, or say which entry each should be.")
+    question = "\n".join(lines)
+    state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "engine": engine, "task": guided["task"],
+                          "verdict": {"verdict": verify.UNSURE, "confidence": 0.0, "seen": question, "why": ""},
+                          "picks": entries, "picks_question": question}
+    ask_for_query(question, kind="query", engine=engine)
+    return True
+
+
+def _picks_reply(paused, reply, claim, engine):
+    """
+    The person's answer to the picked entries put to them (_ask_about_picks). A yes to all of them: kept as their
+    confirmation for each entry's record party (records.confirm_picks) - a required question answered, not help - and the result is
+    checked again, as it stands. Anything else - another entry, a condition, a no - is the person directing the work:
+    the model carries on with their words, and the run was helped.
+    """
+
+    from decurix_agent.computer import records
+    run = paused["run"]
+    said = approval.read_choice(reply, paused.get("picks_question") or "", {
+        "yes": "it confirms that every entry listed is right, and adds or changes nothing",
+        "other": "it names another entry for any field, asks for a change, sets a condition, or says no",
+    }, plain={"yes": ["yes", "yes, right", "yes, correct", "correct", "right", "ok", "okay", "yes they are right",
+                      "all correct", "yes, all correct"]})
+    if said["choice"] == "yes" and not said.get("instruction"):
+        records.confirm_picks(task_context.current(), getattr(state, "reply_judgement", "") or "", paused["picks"],
+                              paused.get("picks_question") or "")
+        progress.emit("You confirmed the entries chosen from the application's lists; checking the result again.")
+        # (The run is the gate's to check again, as it was when it reported: the same path as a check not made.)
+        guidance.begin(skill=(run.get("skill") or {}).get("name"), task=paused.get("task") or claim, text="",
+                       values=run.get("values"), mode="model", run=run)
+        return write_final_reply(claim, kind="final", engine=engine)
+    run["asked_person"] = True
+    run["attempt_note"] = f"the person said about the entries chosen from the application's lists: {reply}"
+    run["attempt_report"] = (claim or "").strip()[:1500]
+    progress.emit("Changing what you said about the entries chosen from the lists.")
+    return _by_model(run)
+
+
 def _series_question(*args, **kwargs):
     """The person's question about a hole in the documents' own numbered series, or "" (skill_task._series_question)."""
 
@@ -669,6 +758,13 @@ def _gate(reply, kind, engine):
                    "why": "An email draft states a value no source gives. Take each fact from the sources (the "
                           "request's files, the person's messages, the system's pages, your recorded working) and "
                           "replace the draft (office email --replaces <its id>)."}
+    elif ledger_faults and run is not None and not run.get("picks_asked") \
+            and all(getattr(f, "kind", "") == ledger_checks.UNBACKED_PICK for f in ledger_faults) \
+            and _ask_about_picks(run, reply, engine, guided):
+        # Only entries picked from the application's lists that nothing given backs: whether each is right is the
+        # person's to say, once, with what the documents show - never a retry of the work (owner's ruling 2026-11-09:
+        # a run was sent back over "29-Karnataka" and "18" that every invoice supported).
+        return True
     elif ledger_faults:
         # No model is asked: a saved record's value no source backs, a save outside the declared records, or a call the
         # report itself marks "not backed" is a fact code decides - and the person is the one to give the value (review
@@ -1293,6 +1389,9 @@ def _confirm_reply(paused, reply):
 
     # One reading of the reply decides (_done_reading). A reply it cannot settle (no model to read it) is taken as
     # what is wrong and tried again with their words - never as a confirmation.
+    if paused.get("picks") and run is not None:
+        return _picks_reply(paused, reply, claim, engine)
+
     said = _done_reading(reply, seen)
     choice, told = said["choice"], said["instruction"]
     if paused.get("series") and run is not None and choice != "done":

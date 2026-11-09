@@ -478,3 +478,21 @@ running, so the question stayed "waiting on you" on the control plane until some
 then told it was stale. At start the agent now reads this desktop's waiting tasks (`GET /api/agent/waiting`) and closes
 each question it does not hold as stopped (`watchers._close_lost_questions`), saying what the task had saved; the
 question it holds (a long request resumed waiting on its answer) is never closed.
+
+### A run was sent back over entries every invoice supported
+
+The pick check held "Place of supply: 29-Karnataka" and "Rate (%): 18" as backed by nothing: the invoices show Karnataka
+and 9% + 9%, but never beside those fields' labels, and by design (review round 10) a document's free-floating words
+back no pick. The run was sent back and redone. Now, when nothing but unbacked picks stands against the saved records,
+the person is asked once, with the document lines where each entry stands (`final_gate._ask_about_picks`); their yes is
+kept as their confirmation of exactly those entries for each record's own party - the identifier-shaped values its
+form holds, such as the buyer's tax number (`records.form_party`, `confirm_picks`) - so that party's later records are
+backed, another party's are asked, a record that names no party is asked each time, and a different entry is never
+backed. Anything but a yes goes to the model with their words, as help.
+
+### A corrected rule stayed beside its correction
+
+A person's "ask only before File with EVC and Verify, never before Proceed to file" was kept as their later words while
+the taught rule "stop before Proceed to file" stayed in the lesson, and nothing said which held. Where the taught rules
+and the person's later words are shown together, it is now said that the later words hold
+(`skill_task.LATER_WORDS_HOLD`; the final check's earlier-answers text). Rewriting the rule itself is a follow-up.

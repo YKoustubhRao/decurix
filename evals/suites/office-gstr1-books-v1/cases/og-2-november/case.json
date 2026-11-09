@@ -41,6 +41,14 @@
       "role": "button"
     },
     {
+      "control": "Validate selected",
+      "role": "button"
+    },
+    {
+      "control": "Update names from TaxNet",
+      "role": "button"
+    },
+    {
       "control": "Save to portal",
       "role": "button"
     },

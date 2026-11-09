@@ -1015,3 +1015,5 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): Told to collect the bills, the model entered them
 - [part-6.md](gotchas/part-6.md): Bills read through a filtered loop were "never read"
 - [part-6.md](gotchas/part-6.md): "Waiting on you" over a question nobody held
+- [part-6.md](gotchas/part-6.md): A run was sent back over entries every invoice supported
+- [part-6.md](gotchas/part-6.md): A corrected rule stayed beside its correction
