@@ -44,7 +44,8 @@ FIELDS = ("textbox", "searchbox", "spinbutton", "password text", "text", "entry"
 
 
 def look():
-    out = subprocess.run(["bash", "-lc", "gui observe --coords"], capture_output=True, text=True, env=ENV, timeout=60).stdout
+    # A look takes 20 s on a loaded host and longer right after the desktop starts: one over 60 s stopped a demonstration.
+    out = subprocess.run(["bash", "-lc", "gui observe --coords"], capture_output=True, text=True, env=ENV, timeout=240).stdout
     size = re.search(r"Screen (\d+)x(\d+)", out)
     w, h = (int(size.group(1)), int(size.group(2))) if size else (1280, 720)
     items = [(m.group(2) or "", " ".join(m.group(3).split()), int(m.group(4)), int(m.group(5))) for m in ITEM.finditer(out)]
@@ -91,10 +92,22 @@ def run(steps):
                     if "has no open tab" not in look()[3]:
                         break
                 me.wait(2)
-            me.key("ctrl+l")
-            me.type(st[1])
-            me.key("Return")
-            me.wait(2.5)
+            # A person looks where the address took them and types it again when it went wrong: on a loaded host the
+            # first characters of an address were lost ("http:/" gone - a file:// page; "h" gone - a web search).
+            host = st[1].split("://", 1)[-1].split("/", 1)[0]
+            for attempt in range(3):
+                me.key("ctrl+l")
+                me.wait(1.5)
+                me.type(st[1])
+                me.wait(0.5)
+                me.key("Return")
+                me.wait(3)
+                tab = re.search(r'== Chromium tab "[^"]*" (\S+) ==', look()[3])
+                if tab and tab.group(1).split("://", 1)[-1].startswith(host):
+                    break
+                print(f"the address went to {tab.group(1) if tab else 'no tab'}; typing it again", flush=True)
+            else:
+                raise SystemExit(f"could not open {st[1]}")
         elif kind == "click":
             me.click(*find(st[1], st[2], me))
             me.wait(1.5)
