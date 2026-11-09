@@ -2285,7 +2285,10 @@ FORM_FIELDS = """function(enter) {
     ((form.querySelector('legend, h1, h2, h3') || {}).textContent || '').trim() || 'the form';
   const control = enter ? submitControl : b;
   const submit = ((control && (control.getAttribute('aria-label') || control.textContent || control.value)) || '').trim();
-  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60), unset: unset};
+  // How the press sends the form, as the page writes it (a control's own formmethod over the form's). A form that
+  // names none is not taken as GET: an app may send it by script, with a POST of its own.
+  const method = ((control && control.getAttribute('formmethod')) || form.getAttribute('method') || '').toLowerCase();
+  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60), unset: unset, method: method};
 }""".replace("__VALUE_CHARS__", str(FORM_VALUE_CHARS))
 
 # A form with fewer filled fields than this (a search box and its button, a sign-in) is sent without the check.

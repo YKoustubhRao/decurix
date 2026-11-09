@@ -827,6 +827,11 @@ the person attention and the product its use. On ERPNext bills (2026-11-08) most
   page names the control at the point (`cdp.hit`, `core._gate_spot`), that control is judged, and the yes is bound to
   it. The fallback when nothing names it is unchanged: the description is judged and the pixel kept. A tolerance was
   not built, because the three looks were up to 200 px apart.
+- **A form sent as a query** (found in an eval, 2026-11-09): a return-prep app's "OK" under "Financial year" and
+  "Return period" was held as the save the agreed plan makes "with your OK first", and two runs stopped there. A
+  form the page writes with `method="get"` (`cdp` FORM_FIELDS `method`, `core._queries`) asks for a page and keeps
+  nothing, so its submit is no save to check or hold. The exception is a control whose own label commits ("Pay
+  now"). A form that names no method is not taken as GET, because a script may post it.
 - **Return after Ctrl+L and a typed address** was asked as a press "that cannot be told". The address bar is no part
   of the page. Now two facts together make it the field with the keyboard (`core._location_bar`): this task's own last
   actions put the keyboard there, and the page says its document lost it (`cdp.page_has_keyboard`).

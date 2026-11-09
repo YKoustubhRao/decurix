@@ -421,4 +421,7 @@ bound to the pixel, so each new look asked again), and by Return in the address 
 field there, so Return was taken to press any control). What decides whether to ask is a filter in the worker's
 process, and it must read structure: what the page says is at the point, whether a press submits a form holding
 values, where the keyboard is. A yes is bound to the control the page names, never to a pixel a grounding model
-chose (approval.opens_new_record, core._gate_spot, core._location_bar).
+chose (approval.opens_new_record, core._gate_spot, core._location_bar). The same day an eval run stopped twice on a
+return-prep app's period picker: its "OK" submits a form written `method="get"`, a query that keeps nothing, yet it
+was held as the plan's save. A GET form's submit is no save unless its own label commits (core._queries); a form
+naming no method is not taken as GET, since a script may post it.

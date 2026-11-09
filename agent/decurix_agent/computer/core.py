@@ -2134,6 +2134,8 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
                                 "could not be made - look at what it holds before it goes")
         if form is None and not approval.commits(element):
             return ""
+        if _queries(form) and not approval.commits(element):
+            return ""  # a form sent as a query (GET) asks for a page and keeps nothing: no save to check or hold
         if form is None and element.get("source") == "cdp" \
                 and _OPENS_OR_ACCEPTS.match(approval.label_words(element.get("name"))) \
                 and not approval.DIALOG_IN_PATH.search(element.get("path") or "") \
@@ -2148,7 +2150,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
     field = element if element is not None else _keyboard_field(before)
     if enter and field is not None and field.get("source") == "cdp":
         form = cdp.enter_form_fields(field)
-        if not form:
+        if not form or (_queries(form) and not approval.commits({"role": "button", "name": form.get("submit") or ""})):
             return ""
         if typed_enter:
             # What the field will hold when its new line submits the form: the text typed before it.
@@ -3007,6 +3009,15 @@ def _gate_spot(kind, element, point, grounded, before):
     return spot, why, bound
 
 
+def _queries(form):
+    """Whether a form a press submits is sent as a query (method GET): it asks for a page - a period, a filter, a search -
+    and keeps nothing (HTTP's GET is safe by definition). Found in an eval (2026-11-09): a return-prep app's "OK" under
+    "Financial year" and "Return period" (method get) was held as the save the agreed plan makes "with your OK first",
+    and the run stopped there twice. A form whose method cannot be read is not one."""
+
+    return isinstance(form, dict) and str(form.get("method") or "").lower() == "get"
+
+
 def _press_submits(kind, element):
     """Whether a click on this control submits a form holding values, as the page says (cdp.submit_form_fields): True,
     False, or None when it is not a page's control. A page that cannot be asked counts as submitting - unsure is asked."""
@@ -3015,7 +3026,7 @@ def _press_submits(kind, element):
             or not element.get("handle"):
         return None
     found = cdp.submit_form_fields(element, min_fields=1, unreadable=cdp.UNREADABLE)
-    return found is not None
+    return found is not None and not _queries(found)
 
 
 # Keys that put a browser's keyboard in its address bar.

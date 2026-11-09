@@ -57,6 +57,39 @@ class ANewRecordButton(unittest.TestCase):
         self.assertIsNone(core._press_submits("click", {"role": "button", "name": "Add Purchase Invoice"}))
 
 
+class AFormSentAsAQuery(unittest.TestCase):
+    """A form sent with GET asks for a page (a period, a filter) and keeps nothing: found in an eval (2026-11-09), a
+    return-prep app's "OK" under Financial year / Return period was held as the agreed plan's save, twice."""
+
+    PERIOD = {"form": "Select return period", "fields": [["Financial year", "2026-27"], ["Return period", "December"]],
+              "submit": "OK", "unset": [], "method": "get"}
+
+    def check(self, element, form):
+        pressed = []
+        with mock.patch.object(core.cdp, "submit_form_fields", return_value=form), \
+                mock.patch.object(core, "_form_check", return_value="CHECKED"):
+            said = core._commit_check("click", element, None, {"elements": []}, pressed=pressed)
+        return said, pressed
+
+    def test_a_query_form_is_no_save(self):
+        said, pressed = self.check(button("OK"), self.PERIOD)
+        self.assertEqual((said, pressed), ("", []))  # nothing checked, nothing the plan could hold
+
+    def test_a_form_that_posts_is_still_a_save(self):
+        said, pressed = self.check(button("OK"), dict(self.PERIOD, method="post"))
+        self.assertEqual(said, "CHECKED")
+        self.assertEqual(len(pressed), 1)
+
+    def test_a_query_form_whose_control_commits_is_still_a_save(self):
+        said, pressed = self.check(button("Pay now"), self.PERIOD)
+        self.assertEqual(len(pressed), 1)
+
+    def test_an_unknown_method_is_not_a_query(self):
+        self.assertFalse(core._queries(dict(self.PERIOD, method="")))
+        self.assertFalse(core._queries(core.cdp.UNREADABLE))
+        self.assertTrue(core._queries(self.PERIOD))
+
+
 class APressFoundByEye(unittest.TestCase):
 
     BEFORE = {"page_url": "http://erp.test/desk/purchase-invoice", "active_title": "Purchase Invoice - Chromium",
