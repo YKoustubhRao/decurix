@@ -23,3 +23,15 @@ class ASlowHost(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnEntryByItsOwnName(unittest.TestCase):
+    """An entry the list writes as its name, then its name again with its group, is the entry its name names."""
+
+    def test_the_entry_whose_own_name_is_the_value_is_picked(self):
+        entry = {"name": "Sharma & Co Chartered Accountants Sharma & Co Chartered Accountants, All Supplier Groups"}
+        self.assertIs(selecting._pick([entry], "Sharma & Co Chartered Accountants"), entry)
+
+    def test_a_longer_name_is_still_another_entry(self):
+        entry = {"name": "Statutory Audit & GST Compliance Statutory Audit & GST Compliance, Services"}
+        self.assertIsNone(selecting._pick([entry], "Statutory Audit"))

@@ -159,7 +159,11 @@ def _pick(candidates, option):
     D-11): such an entry was clicked and reported as the one asked for.
     """
 
-    hits = [e for e in candidates if identity.same(e.get("name"), option)]
+    # The entry's own name counts too: a list writes an entry as its name, then its name again with its group ("Sharma
+    # & Co Sharma & Co, All Supplier Groups"). Found live (2026-11-08): such an entry, listed by the select's own
+    # search, was refused as "no option" for the value it names exactly.
+    hits = [e for e in candidates
+            if identity.same(e.get("name"), option) or identity.same(_own_label(e.get("name") or ""), option)]
     if len(hits) > 1:
         raise ComputerError(f"several options are named {option!r} - pick one yourself by its ref")
     return hits[0] if hits else None
@@ -891,7 +895,8 @@ def _select_in_list(element, option, ids, track):
                 cdp.type_text(element, search)
                 if submitted:
                     send(now)
-            deadline = time.monotonic() + CUSTOM_OPTIONS_SECONDS + (MIN_LIST_ANSWER if search else 0)
+            deadline = time.monotonic() + max(CUSTOM_OPTIONS_SECONDS, 2 * list_answer_wait(look_took)) + (
+                list_answer_wait(look_took) if search else 0)
             while True:
                 now = observe()["elements"]
                 refresh(now)
