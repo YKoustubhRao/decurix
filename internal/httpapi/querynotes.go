@@ -216,6 +216,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		CachedInputTokens: cachedWithin(nonNegative(req.CachedInputTokens), nonNegative(req.InputTokens)),
 		Checked:           req.Checked,
 		Secret:            req.Secret && (note.Kind == tasks.OutcomeQuery || note.Kind == tasks.OutcomeApproval),
+		Interrupted:       req.Interrupted,
 	})
 	if err != nil {
 		log.Printf("querytext from %s: %v", desktopID, err)

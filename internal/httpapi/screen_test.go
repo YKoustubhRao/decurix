@@ -194,8 +194,9 @@ func TestAnInterruptedTaskIsReportedOnlyWhileOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail.Status != tasks.StatusError {
-		t.Fatalf("an open task interrupted by a restart should end as an error, got %s", detail.Status)
+	// Stopped, not failed: the work stopped part way, and what it had saved stands (found live 2026-11-08).
+	if detail.Status != tasks.StatusAbandoned {
+		t.Fatalf("an open task interrupted by a restart should end as stopped, got %s", detail.Status)
 	}
 	thread := readThread(t, s, "terga")
 	if thread.Running || thread.Entries[len(thread.Entries)-1].Kind != conversation.KindError {

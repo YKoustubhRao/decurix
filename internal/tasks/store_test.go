@@ -697,3 +697,17 @@ func TestUncheckedDoneIsNotAutonomous(t *testing.T) {
 		t.Fatalf("autonomous = %d, want 1 (only the checked one): %+v", report.Totals.Autonomous, report.Totals)
 	}
 }
+
+// A task the desktop restarted under is recorded as stopped, never as failed: the work stopped part way, and what it
+// had saved stands (found live 2026-11-08: two correctly saved bills read "Failed").
+func TestARestartIsRecordedAsStoppedNotFailed(t *testing.T) {
+	c := newClock()
+	s := openStore(t, c)
+	box := worker("box", "thebot")
+	route := send(t, s, box, "Enter this bill: ~/work/bill.pdf")
+	c.advance(time.Minute)
+	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeError, Reply: "This desktop restarted ...", Interrupted: true})
+	if detail := get(t, s, route.TaskID); detail.Status != StatusAbandoned || StatusLabel(detail.Status) != "Stopped" {
+		t.Fatalf("status = %q", detail.Status)
+	}
+}

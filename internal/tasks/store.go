@@ -247,6 +247,9 @@ type Outcome struct {
 	// Secret: a query raised for a secret (the agent knows where its question came from); the person's reply to it
 	// is kept as withhold.Secret in every record, and reaches the desktop as typed.
 	Secret bool
+	// Interrupted: the desktop restarted under the task and its agent reports it, after the fact - the task stopped
+	// part way, which is no failure of the work: it is recorded as stopped (StatusAbandoned), never as failed.
+	Interrupted bool
 }
 
 // Route is where a human request goes: a new task, the reply to a task's open
@@ -1291,6 +1294,10 @@ func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (str
 		status := StatusDone
 		if outcome.Kind == OutcomeError {
 			status = StatusError
+		}
+		if outcome.Interrupted {
+			// Found live (2026-11-08): two bills saved correctly before a restart read "Failed" in their records.
+			status = StatusAbandoned
 		}
 
 		if _, err := tx.Exec(
