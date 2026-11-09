@@ -48,23 +48,19 @@ class TheRunsOwnQuestion(unittest.TestCase):
         self.assertFalse(skill_task.ask_again())
 
 
+class ADateTheDocumentNamesItsMonth(unittest.TestCase):
+    """A digit date declared through gui record that names one date the document writes with its month named is kept
+    as the document writes it (records.declare), so the save can tell which day the form's digits are. Found live
+    (2026-11-08): kept as "12-10-2026", the save was refused against the identical form text."""
+
+    def test_the_record_keeps_the_documents_wording(self):
+        from decurix_agent.computer import records
+        with mock.patch.object(task_context, "current", return_value="t1234567890abcdef"),                 mock.patch.object(task_context, "app_date_order", return_value="day"),                 mock.patch.object(records, "_source_text", return_value="TAX INVOICE  Invoice No: AIR-911402  Date: 12-Oct-2026"),                 mock.patch.object(records, "load", return_value=[]), mock.patch.object(records, "_save"),                 mock.patch.object(records, "_key_on_an_app_page", return_value=""),                 mock.patch.object(records, "_backings"), mock.patch.object(records, "_source_units", return_value=([], [])):
+            rec, _ = records.declare("AIR-911402", "/home/headless/work/bill.pdf",
+                                     {"Supplier Invoice No": "AIR-911402", "Supplier Invoice Date": "12-10-2026"})
+        self.assertEqual(rec["fields"]["Supplier Invoice Date"]["intent"], "12-Oct-2026")
+
+
+
 if __name__ == "__main__":
     unittest.main()
-
-
-class TheSameDateText(unittest.TestCase):
-    """The form holding exactly the record's text is the record's value, unless the two sides are known to write dates
-    in different orders (records.compare_shown). Found live (2026-11-08): "12-10-2026" against "12-10-2026" was refused
-    as "which day cannot be told"."""
-
-    def test_identical_text_matches_when_an_order_is_unknown(self):
-        from decurix_agent.computer import records
-        with mock.patch.object(task_context, "app_date_order", return_value="day"), \
-                mock.patch.object(task_context, "source_date_order", return_value=None):
-            self.assertIs(records.compare_shown("12-10-2026", "12-10-2026").same, True)
-
-    def test_identical_text_does_not_match_when_the_orders_are_known_to_differ(self):
-        from decurix_agent.computer import records
-        with mock.patch.object(task_context, "app_date_order", return_value="month"), \
-                mock.patch.object(task_context, "source_date_order", return_value="day"):
-            self.assertIsNot(records.compare_shown("12-10-2026", "12-10-2026").same, True)

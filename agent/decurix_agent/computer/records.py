@@ -66,14 +66,12 @@ def compare_shown(shown, wanted, source_order=None, label="", units=()):
     (values.field_units, review round 3, R5). `units`: more units the field takes, as the person said
     (unit_answers.answered)."""
 
-    app, source = task_context.app_date_order(), source_order or task_context.source_date_order()
-    if (" ".join(str(shown or "").split()) == " ".join(str(wanted or "").split()) and str(wanted or "").strip()
-            and not (app and source and app != source)):
-        # The form holds exactly what the record says: the same text is the same value unless the two sides are known
-        # to write dates in different orders. Found live (2026-11-08): "12-10-2026" against "12-10-2026" was refused
-        # as "which day cannot be told".
-        return values.Result(same=True, why="same text")
-    return values.compare(shown, wanted, app, source, values.field_units(label) | frozenset(units or ()))
+    # (The same digits are not the same day when the two sides write dates in different orders: identical text is no
+    # answer to which day it is - test_values, "the source's own digits". A record keeps a date the document writes
+    # with its month named as the document writes it (declare), which settles it.)
+    return values.compare(shown, wanted, task_context.app_date_order(),
+                          source_order or task_context.source_date_order(),
+                          values.field_units(label) | frozenset(units or ()))
 
 
 def same_value(a, b, order=None):
