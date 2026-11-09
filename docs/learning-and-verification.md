@@ -134,3 +134,20 @@ carried that copy falls back to the execution id and a 2-second tolerance on tim
 left, nothing is deleted
 and the log says so (at most hourly). The run's manifest (`run.json`) names the agent's code and soul by hash and lists
 the parts that exist.
+
+## A hole in the documents' own series is the person's to judge (2026-11-09)
+
+Found live: a month's mail held bills 1058, 1059 and 1061. The worker entered the three and reported done, and the final
+judge confirmed it, although the taught rules said to ask the person for a bill missing from the series. Whether a
+series may skip a number (a cancelled bill) or not (a bill still to come) is a judgement only the person can make, so
+it is never the model's.
+
+- `skill_task._series_holes` finds the hole structurally: a list the fill read for a field whose label names a number
+  (`records.identifier_field`), one item per document, every item the same prefix and a number of the same width, and
+  a few numbers missing inside its range (`MAX_SERIES_GAP`). Two series, one document, or numbers far apart are no hole.
+- The judge is told it as a code fact (`_series_gaps`, in `_documents_note`).
+- Where the run would be reported done, on the replay's route (`skill_task._succeed`) or the model's (`final_gate._gate`),
+  the person is asked once instead (`_series_question`). Their reply is read like any reply to a result not confirmed:
+  it is fine as it is (done, checked by the person), or what to do about the missing one (the model carries on with
+  their words). A hole the person already named, in this task or on this worker's earlier ones, is not asked again.
+  It never blocks and never decides by itself.

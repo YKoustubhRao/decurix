@@ -33,6 +33,10 @@
   ],
   "approves": [
     {
+      "control": "Export",
+      "role": "button"
+    },
+    {
       "control": "Save to portal",
       "role": "button"
     },

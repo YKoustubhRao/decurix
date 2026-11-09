@@ -1765,8 +1765,13 @@ def invented_typing(typed, request, chosen=()):
     # (A failure raises: the caller makes it a check not made - never a pass.)
     from decurix_agent import filler
     texts = filler.source_texts(request, [i.split(" (= ")[0] for i in run_inputs(request)])
-    # Hygiene: a placeholder (test, n/a, 9999999999) that no source holds.
-    made_up = [repr(v) for v in typed if filler.looks_filler(v) and not filler.in_sources(v, texts)]
+    # Hygiene: a placeholder (test, n/a, 9999999999) that no source holds - never an entry the application's own list
+    # held (evidence.listed_picks; found live 2026-11-09, a portal's "NA" unit chosen as the demonstration did).
+    from decurix_agent.computer import evidence, records
+    listed = {" ".join(v.split()).casefold() for v in evidence.listed_picks()}
+    texts = texts + [records._answers_text()]  # (the person's confirmed answers in this task are a source too)
+    made_up = [repr(v) for v in typed if filler.looks_filler(v) and not filler.in_sources(v, texts)
+               and " ".join(str(v).split()).casefold() not in listed]
     # Provenance: a fact typed (an address, a date, a code, a figure of 100 or more) that no source holds.
     sources = work_sources(request)
     # A figure worked out in one step from another value typed in this work and a source figure is held: the tax of

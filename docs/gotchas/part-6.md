@@ -397,7 +397,9 @@ spells a little differently; the step's check expected the bill's words in the f
 A bill that charges IGST shows the CGST and SGST places with no amount. The fill dropped those items, so the lists no
 longer had one item per document and the whole month went to the model by hand (correct, 2.96M tokens). The fill may now
 give `(empty)` for such a field; code keeps it only where the document shows that place with no figure on its line
-(`binding.left_blank`), and the replay leaves the field untouched (`skills.expand`).
+(`binding.left_blank`), and the replay leaves the field untouched (`skills.expand`). Its first live run then refused
+the month before the first step: the field's number constraint read "(empty)" as "not a number" and asked a person for
+the value. An empty item now breaks no constraint (`constraints.EMPTY_ITEM`, the one text binding and skills share).
 
 ### "The record is read back" was not true for ERPNext
 
@@ -405,6 +407,15 @@ The read-back ran only after a save the page answered with "saved"; ERPNext answ
 record's own page, so no ERPNext bill was ever read back until 5d773eba (2026-11-09). The lines of a saved record were
 never read back anywhere: they are now declared and each must stand on a page line of its own, under its columns
 (`records.rows_shown`).
+
+### A portal's own "NA" was refused as made up
+
+A return's unit field took the portal's own option "NA" (a service's unit, as the person chose in the demonstration).
+The filler guard read it like a typed "n/a" and refused the save three times; the person's "keep NA and save" changed
+nothing, since their answers were no source for it, and the question put to them read "The field it names: the field
+it names". An entry the application's own list offered or a pick took is not filler (`core._not_picked`,
+`evidence.listed_picks`), the person's confirmed answers are a source (`filler.invented(said=...)`), and the soul's
+question names the field of this refusal shape (`save_refusal.go`).
 
 ### Two eval runs answered for each other's app
 
@@ -425,3 +436,10 @@ chose (approval.opens_new_record, core._gate_spot, core._location_bar). The same
 return-prep app's period picker: its "OK" submits a form written `method="get"`, a query that keeps nothing, yet it
 was held as the plan's save. A GET form's submit is no save unless its own label commits (core._queries); a form
 naming no method is not taken as GET, since a script may post it.
+
+### A month with a bill missing from its series was confirmed done
+
+The mail held bills 1058, 1059 and 1061; the taught rules said to ask for a bill missing from the series. The worker
+entered the three and reported done, and the final judge, with the rule in hand, confirmed it (the eval's false done).
+A hole in the documents' own numbered series is now found in code and put to the person once, instead of a done
+(`skill_task._series_question`; docs/learning-and-verification.md).

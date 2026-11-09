@@ -55,6 +55,15 @@ class TheReplayOfAnEmptyItem(unittest.TestCase):
         self.assertEqual(len([s for s in program["steps"] if s["kind"] == "click"]), 2, "both vouchers are saved")
         self.assertEqual(skills.EMPTY_ITEM, binding.EMPTY_ITEM)
 
+    def test_an_empty_item_breaks_no_number_constraint(self):
+        # Found live (2026-11-09): the run read "(empty)" as "not a number", asked a person for CGST and SGST, and a
+        # correct month was refused before its first step.
+        from decurix_agent.computer import constraints
+        param = {"name": "cgst", "label": "CGST amount", "list": True,
+                 "constraint": {"type": "number", "strict": True}}
+        self.assertEqual(constraints.violations([param], {"cgst": "1,080.00; (empty)"}, split=skills.split_items), [])
+        self.assertTrue(constraints.violations([param], {"cgst": "1,080.00; none"}, split=skills.split_items))
+
 
 if __name__ == "__main__":
     unittest.main()

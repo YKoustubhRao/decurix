@@ -201,6 +201,8 @@ type fakeSandbox struct {
 	execExit  func(argv []string) (int, []byte)
 	paused    map[string]bool
 	resets    int
+	// resetFails is how many ResetPractice calls fail before they succeed again (a Docker stall).
+	resetFails int
 	// settles counts SettlePractice calls (between a carry-state run's cases).
 	settles int
 	// home is the files in the desktop's home that outlive a case unless the reset clears them.
@@ -257,6 +259,10 @@ func (f *fakeSandbox) ResetPractice(context.Context, string, []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resets++
+	if f.resetFails > 0 {
+		f.resetFails--
+		return errors.New("exec: context deadline exceeded")
+	}
 	for file := range f.home {
 		for _, root := range desktop.PracticeResetPaths() {
 			if file == root || strings.HasPrefix(file, root+"/") {

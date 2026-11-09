@@ -29,7 +29,8 @@ var saveRefusalRe = regexp.MustCompile(`(?m)^gui: (Not pressed: .+)$`)
 
 // refusedFieldRe finds the first field a refusal names, as core's save check words it ("Notes holds '...'", "No. is
 // empty where ...", "Cost centre is left unset ...") - the shape of the agent's own message, not words of a task.
-var refusedFieldRe = regexp.MustCompile(`(?:says - |; )([^;:'"\n]{1,60}?) (?:holds '|is empty where |is left unset )`)
+// A value refused as made up names its field as "any source: UQC: 'NA'" (the agent's filler.refusal).
+var refusedFieldRe = regexp.MustCompile(`(?:says - |; |any source: )([^;:'"\n]{1,60}?)(?: holds '| is empty where | is left unset |: ')`)
 
 // saveRefusal is the refusal a command's output reports, or "" when the command was no gui action that the save check
 // stopped (exit code 1 and the refusal line, on a command that acts on the screen).
@@ -74,11 +75,12 @@ func (st *operatorState) noteSaveRefusal(command string, r shellResult) {
 
 // saveRefusalQuestion is what the person is asked: the refusal quoted, and the field it names.
 func saveRefusalQuestion(refusal string, times int) string {
-	field := "the field it names"
+	// (No field found: the question says so plainly. Found live 2026-11-09, "The field it names: the field it names.")
+	ask := "Tell me how to go on (or reply `stop`)."
 	if m := refusedFieldRe.FindStringSubmatch(refusal); m != nil {
-		field = strings.TrimSpace(m[1])
+		field := strings.TrimSpace(m[1])
+		ask = fmt.Sprintf("The field it names: %s. Tell me what %s should hold, or how to go on (or reply `stop`).", field, field)
 	}
 	return fmt.Sprintf("The save is refused by the same check every time - %d times now, with the form unchanged between "+
-		"the tries - and I cannot clear it myself:\n\n%s\n\nThe field it names: %s. Tell me what %s should hold, or how "+
-		"to go on (or reply `stop`).", times, truncateText(refusal, maxRefusalQuoteChars), field, field)
+		"the tries - and I cannot clear it myself:\n\n%s\n\n%s", times, truncateText(refusal, maxRefusalQuoteChars), ask)
 }

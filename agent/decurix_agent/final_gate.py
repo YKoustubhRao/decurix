@@ -151,6 +151,12 @@ def _says_it_could_not(*args, **kwargs):
     return _RUN["_says_it_could_not"](*args, **kwargs)
 
 
+def _series_question(*args, **kwargs):
+    """The person's question about a hole in the documents' own numbered series, or "" (skill_task._series_question)."""
+
+    return _RUN["_series_question"](*args, **kwargs)
+
+
 def _stopped(*args, **kwargs):
     """The report of a run the person stopped (skill_task._stopped)."""
 
@@ -802,6 +808,19 @@ def _gate(reply, kind, engine):
                       + "\n\nTell me what to do about it and I will carry on with that, or reply `stop`.", kind="query", engine=engine)
         return True
 
+    series = _series_question(run) if run is not None and decided["status"] == verify.DONE else ""
+    if series:
+        # A hole in the documents' own numbered series: whether that is fine is the person's to say, never the model's
+        # (found live 2026-11-09, a month with bill 1060 missing confirmed done on the model's word). Asked once; their
+        # reply decides, as any reply to a result not confirmed does.
+        state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "engine": engine, "task": guided["task"],
+                              "verdict": {"verdict": verify.UNSURE, "confidence": 0.0, "seen": series, "why": ""},
+                              "series": {"helped": guided["mode"] == "takeover" or run.get("attempts", 1) > 1
+                                         or bool(run.get("asked_person")),
+                                         "basis": _basis("model", code=bool(made) and facts.compared_clean())}}
+        ask_for_query(series, kind="query", engine=engine)
+        return True
+
     if decided["status"] == verify.DONE:
         guidance.end()
         # The way this run took is kept for the next request like it - not a
@@ -1236,6 +1255,10 @@ def _confirm_reply(paused, reply):
     # what is wrong and tried again with their words - never as a confirmation.
     said = _done_reading(reply, seen)
     choice, told = said["choice"], said["instruction"]
+    if paused.get("series") and run is not None and choice != "done":
+        # Anything but "as it should be" about a hole in the series (a bill to fetch, one to wait for) is the person
+        # doing or directing the work: the run was helped, as any correction is.
+        run["asked_person"] = True
 
     # The check itself was not made (it failed, or its answer was cut off) and the reply settles nothing - no
     # confirmation, no stop, no correction, not the protocol's own `retry`: the check is made again, never the work, on
@@ -1276,6 +1299,20 @@ def _confirm_reply(paused, reply):
         state.paused_skill = dict(paused, asked_again=True)
         return ask_for_query("I did not catch that. To mark it done, reply `done`. Reply `retry` to have it tried "
                              "again, or say what is wrong.", kind="query", engine=engine)
+
+    if choice == "done" and paused.get("series"):
+        # The person said the hole in the series is as it should be (_series_question): only that was theirs to settle.
+        # The run's own check stands as it was, with its code checks (the replay's route goes through them now), and
+        # the run counts as unhelped - a month whose series skips a number must not keep its skill from trust.
+        series = paused["series"]
+        if run is not None and paused.get("result") is not None:
+            return _succeed(run, paused["result"], series.get("checked_by") or "model", seen=series.get("seen") or "",
+                            helped=bool(series.get("helped")))
+        basis = series.get("basis") or ["model"]
+        if run is not None:
+            _record_verdict(run, True, checked_by="model", helped=bool(series.get("helped")), basis=basis)
+        return write_final_reply(f"{claim}\n\nYou said the gap in the series is as it should be.", kind="final",
+                                 engine=engine, checked=True, verdict=_success_verdict("model", basis))
 
     if choice == "done":
         if run is not None and paused.get("result") is not None:

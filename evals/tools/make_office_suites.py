@@ -378,7 +378,10 @@ def suite_doc(name, description, cases, minutes, tokens):
             "cases": cases, "carry_state": False,
             # The person glances at a taught worker's plan and says yes, or corrects a value against their facts
             # (internal/eval/confirm.go; owner's decision 2026-11-08).
-            "confirms_plans": True}
+            "confirms_plans": True,
+            # Its cases stand alone, and may also run in order on one taught desktop, state carried, to show the worker
+            # getting cheaper with practice (internal/eval/case.go CarryAllowed; owner's ask 2026-11-09).
+            "carry_allowed": True}
 
 
 def base_app(today, now="17:21:07", **extra):
@@ -919,7 +922,9 @@ def gstr_books_suite():
                         {"kind": "asked", "facts": ["cancelled-receiver"]}]
             oracle.append({"answer": f"Not filed: the GSTIN {bad['gstin']} of {bad['name']} (invoice {bad_inv}) is cancelled on "
                                      f"the register, so the return was neither saved to TaxNet nor filed."})
-            approves = ["Save to portal", "File with EVC", "Verify"]
+            # (Export writes the return's JSON into the client's month folder on the office share, overwriting an
+            # earlier one: the plan holds it for the person's OK, and the person gives it - found 2026-11-09.)
+            approves = ["Export", "Save to portal", "File with EVC", "Verify"]
         else:
             facts = [otp_fact(case["otp"])]
             graders += [{"id": "receivers", "kind": "mock_records", "collection": "fp_receivers",
@@ -941,7 +946,9 @@ def gstr_books_suite():
                        curl(f"http://taxnet.example.test/gstr1/{period}/file-evc", declare="yes", signatory=SIGNATORY[g]),
                        curl(f"http://taxnet.example.test/gstr1/{period}/verify", otp=case["otp"]),
                        {"answer": f"Filed {client['name']}'s GSTR-1 for {period_words(period)} with EVC. ARN {arn_of(g, period)}."}]
-            approves = ["Save to portal", "File with EVC", "Verify"]
+            # (Export writes the return's JSON into the client's month folder on the office share, overwriting an
+            # earlier one: the plan holds it for the person's OK, and the person gives it - found 2026-11-09.)
+            approves = ["Export", "Save to portal", "File with EVC", "Verify"]
         # The portal's demo passwords (every client's login is in the fixture); the oracle types its client's.
         secrets = tuple(TN_PASSWORDS[x] for x in TN_PASSWORDS)
         doc = case_doc(case["id"], case["category"], "gstr1_from_books", request, files, facts, approves, graders, oracle,

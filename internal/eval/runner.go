@@ -35,6 +35,10 @@ const (
 	ArmAsk     = "ask"
 )
 
+// resetRetryWait is how long a failed reset of the practice desktop waits before its one more try (a variable: tests
+// shorten it).
+var resetRetryWait = 30 * time.Second
+
 // AskAnything is the ask arm's question: one any worker could ask of any case.
 const AskAnything = "Before I go on: is there anything else I should know?"
 
@@ -295,8 +299,8 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 // carry_state, and such a suite needs the run to ask for it.
 func checkCarry(suite Suite, carry bool) error {
 	switch {
-	case carry && !suite.CarryState:
-		return BadRequest("The suite does not carry state from case to case: only a suite whose suite.json says \"carry_state\": true runs that way.")
+	case carry && !suite.CarryState && !suite.CarryAllowed:
+		return BadRequest("The suite does not carry state from case to case: only a suite whose suite.json says \"carry_state\": true or \"carry_allowed\": true runs that way.")
 	case !carry && suite.CarryState:
 		return BadRequest("The suite carries state from case to case (carry_state): run it with --carry-state, or its later cases miss what the earlier ones left.")
 	}
@@ -726,20 +730,39 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 			// those, the desktop is settled: the earlier case's open question or unfinished work is ended (it would
 			// hold the next request back, found live 2026-11-08), and nothing it learned is cleared.
 			if !first {
-				var err error
-				if !run.CarryState || i == 0 {
-					err = s.Sandbox.ResetPractice(ctx, d.ContainerID, run.startSnapshot())
-					s.Broker.ForgetReplies() // (what an earlier case was told is not the reset desktop's)
-				} else {
-					err = s.Sandbox.SettlePractice(ctx, d.ContainerID)
+				reset := func() error {
+					var err error
+					if !run.CarryState || i == 0 {
+						err = s.Sandbox.ResetPractice(ctx, d.ContainerID, run.startSnapshot())
+						s.Broker.ForgetReplies() // (what an earlier case was told is not the reset desktop's)
+					} else {
+						err = s.Sandbox.SettlePractice(ctx, d.ContainerID)
+					}
+					if err == nil {
+						err = s.waitAgent(ctx, d)
+					}
+					return err
 				}
-				if err == nil {
-					err = s.waitAgent(ctx, d)
+				err := reset()
+				if err != nil && ctx.Err() == nil {
+					// Once more after a pause: a reset restores the snapshot whole, so a second try is safe. Found live
+					// (2026-11-09): Docker stalled for a few minutes under load, the reset timed out, and a whole arm
+					// ended "could not be reset" with no reason in the log.
+					log.Printf("eval: run %s arm %s case %s: the practice desktop's reset failed, trying once more: %v",
+						run.ID, arm.Name, c.ID, err)
+					select {
+					case <-time.After(resetRetryWait):
+					case <-ctx.Done():
+					}
+					if ctx.Err() == nil {
+						err = reset()
+					}
 				}
 				if ctx.Err() != nil {
 					return invalid, nil
 				}
 				if err != nil {
+					log.Printf("eval: run %s arm %s case %s: the practice desktop's reset failed again: %v", run.ID, arm.Name, c.ID, err)
 					return invalid, practice.Sentence("The practice desktop could not be reset between cases.")
 				}
 			}

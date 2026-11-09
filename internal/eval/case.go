@@ -72,6 +72,10 @@ type Suite struct {
 	// cases before it left. Such a suite runs only when the run asks for it too (MatrixRequest.CarryState), and then
 	// nothing is cleared between a repeat's cases; never the default.
 	CarryState bool `json:"carry_state,omitempty"`
+	// CarryAllowed is a suite whose cases stand alone but MAY run as a sequence on one taught desktop, state carried
+	// from case to case - to show the worker getting cheaper with practice (a learning curve; owner's ask 2026-11-09).
+	// CarryState says a run must carry; this, that it may. Run without --carry-state, every case starts from the snapshot.
+	CarryAllowed bool `json:"carry_allowed,omitempty"`
 	// ConfirmsPlans: the person glances at the plan a taught worker puts to them and says yes, or corrects a value
 	// that contradicts one of their facts (confirm.go). Off, the expert answers a plan as any question (no fact gives
 	// leave to act). Owner's decision 2026-11-08, for suites whose taught route asks a plan.

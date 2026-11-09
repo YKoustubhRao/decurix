@@ -22,6 +22,7 @@ import os
 import re
 
 from decurix_agent import llm_client
+from decurix_agent.computer import constraints
 from decurix_agent.logging_utils import log
 from decurix_agent.tools import office
 
@@ -128,7 +129,7 @@ MAX_GATHERED = 12
 # The item of a list for a document that shows that field's place empty (an inter-state bill's CGST row): the step that
 # types it is left out for that item (skills.expand). Given only where the document's own text shows the empty place
 # (left_blank).
-EMPTY_ITEM = "(empty)"
+EMPTY_ITEM = constraints.EMPTY_ITEM
 
 LISTS_NOTE = (
     "This run has SEVERAL documents, listed below in order, and the procedure is done once per document: every value "

@@ -66,7 +66,9 @@ suites" and "Teaching once"): `office-books-v1`, `office-gstr1-books-v1` and `of
 
 `budget` is per case; a case may lower it, never raise it. `cases` is the run order. `carry_state` (optional, false
 when left out) says the cases are a sequence on one desktop, each building on what the ones before it left (a learning
-curve): such a suite runs only in the carry-state mode below, and a suite without it never does. `hosts` are what the practice
+curve): such a suite runs only in the carry-state mode below. `carry_allowed` (optional) says the cases stand alone but
+may also run in that mode, in order on one taught desktop, to show the worker getting cheaper with practice (the office
+suites say it); a suite with neither never carries. `hosts` are what the practice
 browser maps to the run's own mock (`practice-mock-<run>:8000`, `desktop.PracticeMockHost`).
 
 ### case.json
@@ -224,8 +226,8 @@ open, and the next case's request, sent a second later, queued behind it (the ag
 request saved more than a second after it) until that case ran out of time. `TestPracticeSettleLive` proves it on the
 image. A restart's start no longer counts its own earlier start's memory reservation (`idlepause` reserves per desktop
 id): settling every few seconds was refused its desktop after a few cases. The two must agree: `--carry-state` on
-a suite without the flag, and a carry-state suite without `--carry-state`, are refused before anything is made
-(`checkCarry`). The run row keeps the mode (`eval_runs.carry_state`), and the table's head says which ran: "State:
+a suite with neither `carry_state` nor `carry_allowed`, and a `carry_state` suite without `--carry-state`, are refused
+before anything is made (`checkCarry`); a `carry_allowed` suite runs either way. The run row keeps the mode (`eval_runs.carry_state`), and the table's head says which ran: "State:
 carried from case to case" or "State: reset to the snapshot before every case".
 
 Three calibration arms run no model: `oracle` runs each case's scripted solution (graded as if the facts were given,

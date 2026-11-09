@@ -24,5 +24,6 @@
     "oc-4-nil-month"
   ],
   "carry_state": false,
-  "confirms_plans": true
+  "confirms_plans": true,
+  "carry_allowed": true
 }

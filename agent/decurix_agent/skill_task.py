@@ -69,6 +69,7 @@ final_gate.use_run(
     _reads_replies=lambda *args, **kwargs: _reads_replies(*args, **kwargs),
     _record_verdict=lambda *args, **kwargs: _record_verdict(*args, **kwargs),
     _says_it_could_not=lambda *args, **kwargs: _says_it_could_not(*args, **kwargs),
+    _series_question=lambda *args, **kwargs: _series_question(*args, **kwargs),
     _stopped=lambda *args, **kwargs: _stopped(*args, **kwargs),
     _succeed=lambda *args, **kwargs: _succeed(*args, **kwargs),
     _success_verdict=lambda *args, **kwargs: _success_verdict(*args, **kwargs),
@@ -840,7 +841,80 @@ def _documents_note(run):
     for head, items in kinds:
         if items:
             lines.append(f"{head}: " + "; ".join(f"{Path(x['document']).name} ({x['why']})" for x in items) + ".")
+    lines += _series_gaps(run)
     return "\n".join(lines)
+
+
+# How many numbers a series of the documents' own identifiers may skip and still be one series with holes in it.
+MAX_SERIES_GAP = 3
+
+
+def _series_holes(run):
+    """
+    The numbered series the run's documents carry that skip numbers, as [{label, items, missing}]. Each list the fill
+    read for a field whose label names a number (records.identifier_field), one item per document: when every item is
+    the same prefix and a number of the same width - one series, never documents of two - and the numbers between the
+    lowest and the highest miss a few (MAX_SERIES_GAP), the missing ones, written as the series writes them. Only
+    inside the range: what comes before the first or after the last is not known to be missing.
+    """
+
+    out = []
+    for param in skills.list_params(run["skill"]):
+        label = param.get("label") or param["name"]
+        items = skills.split_items(run["values"].get(param["name"]))
+        if len(items) < 2 or not records.identifier_field(label):
+            continue
+        parts = [re.fullmatch(r"(\D*?)(\d+)", " ".join(str(i).split())) for i in items]
+        if not all(parts) or len({p.group(1) for p in parts}) != 1 or len({len(p.group(2)) for p in parts}) != 1:
+            continue
+        numbers = sorted({int(p.group(2)) for p in parts})
+        missing = sorted(set(range(numbers[0], numbers[-1] + 1)) - set(numbers))
+        if not missing or len(missing) > MAX_SERIES_GAP:
+            continue
+        prefix, width = parts[0].group(1), len(parts[0].group(2))
+        out.append({"label": label, "items": items, "missing": [prefix + str(n).zfill(width) for n in missing]})
+    return out
+
+
+def _series_gaps(run):
+    """
+    Facts, for the final check: the holes of _series_holes, each named - no document of this request carries them.
+    Found live (2026-11-09): bills 1058, 1059 and 1061 were entered and confirmed done, though the taught rules said to
+    ask the person for a bill missing from the series.
+    """
+
+    return [f"CHECKED IN CODE, NOT CLAIMED - the documents' {h['label']} values ({', '.join(h['items'][:12])}) skip "
+            f"{', '.join(h['missing'])}: no document of this request carries "
+            f"{'it' if len(h['missing']) == 1 else 'them'}." for h in _series_holes(run)]
+
+
+def _series_question(run):
+    """
+    The question put to the person, once per run, instead of reporting it done: a hole in the documents' own numbered
+    series (_series_holes) that nothing the person said covers. Whether a series may skip a number is the person's
+    judgement, never the model's: found live (2026-11-09), the judge had the taught rule "ask for a bill missing from
+    the series" and the hole in hand, and called bills 1058, 1059 and 1061 done. Settled already when the person named
+    each missing number in this task or on this worker's earlier ones (their answers are kept). "" when nothing is to
+    be asked. Never blocks: their reply decides (final_gate's confirm reading) - done as it is, or what to do.
+    """
+
+    if not run or run.get("series_asked"):
+        return ""
+    holes = _series_holes(run)
+    if not holes:
+        return ""
+    said = "\n".join(x for x in (records._answers_text(), records._worker_words_text()) if x)
+    open_holes = [h for h in holes if not all(re.search(r"(?<![\w-])" + re.escape(m) + r"(?![\w-])", said)
+                                              for m in h["missing"])]
+    if not open_holes:
+        return ""
+    run["series_asked"] = True
+    lines = [f"This request's documents carry {h['label']} {', '.join(h['items'][:12])}; "
+             f"{', '.join(h['missing'])} {'is' if len(h['missing']) == 1 else 'are'} missing from that series - no "
+             "document of this request carries " + ("it" if len(h["missing"]) == 1 else "them") + "."
+             for h in open_holes]
+    return ("\n".join(lines) + "\nIs that expected? Say so and I will report the work as it is, or tell me what to do "
+            "about the missing one (where to find it, or to wait for it).")
 
 
 def _assumed_note(run):
@@ -1580,6 +1654,14 @@ def _succeed(run, result, checked_by, seen="", helped=False):
     skill = run["skill"]
     text = result["text"]
     read_clean = False
+    series = _series_question(run) if checked_by != "person" else ""
+    if series:
+        # A hole in the documents' own numbered series: the person's to judge, never the screen's or the model's
+        # (_series_question). Their reply decides, as for any result not confirmed (final_gate's confirm reading).
+        _pause(run, "confirm", series, result=result,
+               verdict={"verdict": verify.UNSURE, "confidence": 0.0, "seen": series, "why": ""},
+               series={"checked_by": checked_by, "seen": seen, "helped": helped})
+        return
     if checked_by != "person":
         # checked=True only when the files the run made were read back (review 2026-11-03).
         problems, not_made = _read_back(run, text)
@@ -2214,6 +2296,8 @@ def _never_entered(run):
         items = skills.split_items(value) if any(p.get("name") == name and p.get("list")
                                                  for p in skill.get("params") or []) else [value]
         for item in items:
+            if item == skills.EMPTY_ITEM:
+                continue  # a field its document leaves empty: nothing was to be typed (skills.expand)
             if not any(_same_value(item, typed) for typed in done) and not was_read(item) and not was_pressed(item):
                 missing[name] = item
     return missing

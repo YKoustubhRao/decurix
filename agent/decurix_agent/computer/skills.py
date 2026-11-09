@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from decurix_agent import config
-from decurix_agent.computer import experience, recording, replay
+from decurix_agent.computer import constraints, experience, recording, replay
 
 
 def _rename_file(text, old, new):
@@ -75,9 +75,9 @@ DRAFT = "draft"
 # item of a list given at run time. Items are separated by ";" or a new line.
 ITEM_SPLIT = re.compile(r"\s*(?:;|\n)\s*")
 MAX_LOOP_ITEMS = 200
-# The item of a list for a document that shows that field's place empty (binding.EMPTY_ITEM, the same text): the step that
-# types it is left out for that item (expand), the rest replays.
-EMPTY_ITEM = "(empty)"
+# The item of a list for a document that shows that field's place empty: the step that types it is left out for that
+# item (expand), the rest replays.
+EMPTY_ITEM = constraints.EMPTY_ITEM
 
 
 def slug(text):

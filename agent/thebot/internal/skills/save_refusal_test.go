@@ -107,3 +107,18 @@ func TestTheOperatorAsksInsteadOfTryingTheSameRefusedSaveAgain(t *testing.T) {
 		t.Fatal("the goal was not kept for the person's answer")
 	}
 }
+
+// TestARefusedMadeUpValueNamesItsField: the agent's refusal of a value that looks made up names its field as
+// "any source: UQC: 'NA'"; the person is asked about UQC, and a refusal naming no field never says "the field it
+// names: the field it names" (found live 2026-11-09).
+func TestARefusedMadeUpValueNamesItsField(t *testing.T) {
+	q := saveRefusalQuestion("Not pressed: these values look invented - a filler, not a value read from any source: "+
+		"UQC: 'NA'. Never type a value you did not read from a source", 3)
+	if !strings.Contains(q, "The field it names: UQC.") || !strings.Contains(q, "what UQC should hold") {
+		t.Fatalf("question = %q", q)
+	}
+	q = saveRefusalQuestion("Not pressed: something else entirely", 3)
+	if strings.Contains(q, "field it names") || !strings.Contains(q, "Tell me how to go on") {
+		t.Fatalf("question = %q", q)
+	}
+}

@@ -1874,6 +1874,33 @@ def _not_the_apps(fields):
             if not (label in shown and values.same_value(value, shown[label]) is True)]
 
 
+def _not_picked(fields, picks=None):
+    """
+    The form's fields the filler check judges, less a value chosen from the application's own list for that field: an
+    entry its list offered, or the one a pick took. An entry of the application's vocabulary is not text the worker
+    made up, whatever it looks like. Found live (2026-11-09): a return's unit field set to the portal's own "NA" (the
+    unit of a service, as the person chose in the demonstration) was refused as an invented filler at every save.
+    Whether it was the right entry is the pick checks' to say (records.pick_backed), not this one's.
+    """
+
+    from decurix_agent import values
+    from decurix_agent.computer import records
+    if picks is None:
+        picks = records.picks(open_form=True)
+
+    def listed(label, value):
+        for p in picks:
+            if not records.label_matches(p.get("label"), label):
+                continue
+            if p.get("taken") and values.same_value(value, p["taken"]) is True:
+                return True
+            if any(values.same_value(value, entry) is True for entry in p.get("offered") or ()):
+                return True
+        return False
+
+    return [(label, value) for label, value in fields if not listed(label, value)]
+
+
 def _unsourced_fields(fields):
     """
     [(label, value)] of a form's fields whose value the tools typed during this task and that states a fact (an
@@ -1975,7 +2002,11 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         # Every field, except a value the application itself showed there before the worker acted (an edit form's
         # existing record, found in the GUI bench 2026-11-03): decided by the observations, not by what was typed -
         # a reformatted, re-cased, pasted or picked value is judged (review round 2, B9).
-        made_up = filler.invented(_not_the_apps(found["fields"]), task_context.current_request(), files)
+        from decurix_agent.computer import records as ledger
+        # (The person's confirmed answers in this task are a source: found live 2026-11-09, "keep NA and save" changed
+        # nothing and the same refusal came back.)
+        made_up = filler.invented(_not_picked(_not_the_apps(found["fields"])), task_context.current_request(), files,
+                                  said=[ledger._answers_text()])
         unsourced = _unsourced_fields(found["fields"])
         if listing == "ask":
             # A replay types what the person demonstrated where today's request gives nothing (replay.run): their own
