@@ -2949,6 +2949,8 @@ def _pressed_by_key(kind, element, keys, before, focus=None):
         return None
     if element is not None:
         return element if element.get("role") in approval.ACTIVATING_ROLES else None
+    if (focus or {}).get("location_bar"):
+        return None  # the keys go to the browser's address bar (_location_bar), not to a control of the page
     return _focused_control(before)
 
 
@@ -2981,6 +2983,82 @@ def _unresolved_press(kind, element, point, before):
         return None, None  # the page says no control is there: a click on plain page, nothing to name
     return None, (f"this presses the spot {point[0]},{point[1]}, which nothing on the screen names - a press there may "
                   "pay, send or file")
+
+
+def _gate_spot(kind, element, point, grounded, before):
+    """
+    (spot, why, bound) for a press that resolved to no element: the control the gate judges it by (spot), or why it is
+    put to the person when nothing names it; `bound` is the spot when the page itself said which control is there (its
+    own description, cdp.hit), which the yes is then bound to instead of the pixel.
+
+    A press found by eye for a description (grounded) asks the page first, as a press at a point does: the page names
+    what is there. Only when the page names nothing is the worker's own description what the press is judged by.
+    Found live (2026-11-08, ERPNext): "row in Purchase Invoice list", found by eye, was judged by its description's
+    words as a purchase, and each yes was bound to the pixel - each new look at the screen put the point elsewhere on
+    the row, and the person was asked about the same press three times.
+    """
+
+    if kind not in ("click", "double_click") or element is not None or point is None:
+        return None, None, None
+    spot, why = _unresolved_press(kind, element, point, before)
+    bound = spot if spot is not None and spot.get("source") == "cdp" else None
+    if spot is None and grounded:
+        return {"role": "button", "name": grounded, "window_title": before.get("active_title")}, None, None
+    return spot, why, bound
+
+
+def _press_submits(kind, element):
+    """Whether a click on this control submits a form holding values, as the page says (cdp.submit_form_fields): True,
+    False, or None when it is not a page's control. A page that cannot be asked counts as submitting - unsure is asked."""
+
+    if kind not in ("click", "double_click") or not element or element.get("source") != "cdp" \
+            or not element.get("handle"):
+        return None
+    found = cdp.submit_form_fields(element, min_fields=1, unreadable=cdp.UNREADABLE)
+    return found is not None
+
+
+# Keys that put a browser's keyboard in its address bar.
+LOCATION_BAR_KEYS = {"ctrl+l", "alt+d", "f6"}
+
+
+def _location_bar(before):
+    """
+    The browser's address bar as the field that has the keyboard, or None. Two facts, both needed: this task's own
+    last actions put it there (a key of LOCATION_BAR_KEYS in this browser window, then only typing into what had the
+    keyboard and keys that stay in a text field), and the page says its document does not have the keyboard
+    (cdp.page_has_keyboard). Found live (2026-11-08): after Ctrl+L and typing an address, "Delete Return" was put to
+    the person as a press that "cannot be told" where it lands - the address bar is no part of the page, so the look
+    named no field, and Return was taken to land on any control of the page.
+    """
+
+    title = before.get("active_title") or ""
+    if not browser.is_browser_title(title) or not cdp.available():
+        return None
+    try:
+        from decurix_agent.computer import evidence
+        events = evidence._task_events(None)
+    except Exception:  # noqa: BLE001 - what this task did cannot be read: where the keyboard is is not known
+        return None
+    for event in reversed(events or []):
+        if event.get("outcome") not in (None, "done"):
+            continue
+        if (event.get("window") or "") != title:
+            return None
+        keys = [str(k).strip().lower() for k in event.get("keys") or []]
+        if event.get("kind") == "key" and keys and any(k in LOCATION_BAR_KEYS for k in keys):
+            break
+        if event.get("kind") == "type" and not event.get("element") and not event.get("target"):
+            continue
+        if event.get("kind") == "key" and keys and all(approval._keeps_focus(k, True)
+                                                       and not approval.ACTIVATING_KEY.search(k) for k in keys):
+            continue
+        return None
+    else:
+        return None
+    if cdp.page_has_keyboard() is not False:
+        return None
+    return {"role": "textbox", "name": "the browser's address bar", "window_title": title, "location_bar": True}
 
 
 def _refuse_files_that_may_not_leave(files):
@@ -3231,7 +3309,10 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     context = _context(before)
     if kind == "key" and element is None:
-        context["focused"] = _keyboard_field(before)
+        context["focused"] = _keyboard_field(before) or _location_bar(before)
+    if element is not None and approval.opens_new_record(element):
+        # Read from the page only for the presses it decides (approval.opens_new_record): a label alone never is.
+        context["submits"] = _press_submits(kind, element) is not False
     # The dialogs open on the screen, for a yes-button whose own path does not name its dialog (approval.py).
     context["dialogs"] = [str(e.get("name") or "") for e in before.get("elements") or []
                           if str(e.get("role") or "").lower() in ("dialog", "alertdialog") and e.get("name")]
@@ -3300,18 +3381,17 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             label = " ".join(str(keyed.get("name") or "").split())[:60]
             why = f'{" ".join(keys)} on "{label}" presses it - {why}'
             require = f"{why}; {require}" if require else why
-    if grounded and kind in ("click", "double_click") and element is None:
-        # Found by eye for a description: the description is what it presses.
-        spot, spot_why = {"role": "button", "name": grounded, "window_title": before.get("active_title")}, None
-    else:
-        spot, spot_why = _unresolved_press(kind, element, point, before)
+    # A press at a point (found by eye or given) is judged by the control the page names there, and its yes is bound
+    # to that control, not to the pixel (_gate_spot).
+    spot, spot_why, bound = _gate_spot(kind, element, point, grounded, before)
     if spot is not None:
         why = approval.assess("click", spot, context=context)
         if why:
             require = f"{why}; {require}" if require else why
     elif spot_why:
         require = f"{spot_why}; {require}" if require else spot_why
-    decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context,
+    decision = approval.check(kind, element if element is not None else bound, text=text, keys=keys,
+                              point=point, context=context,
                               about=_what_it_acts_on(before, element), require=require,
                               sends=lambda: _what_it_sends(before, element if by_enter is None else by_enter,
                                                            enter_form=(by_enter or {}).get("form")))

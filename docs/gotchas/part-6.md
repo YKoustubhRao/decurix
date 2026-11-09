@@ -412,3 +412,13 @@ Every run's mock app joined the one practice network under the fixed name `pract
 running evals at once, both mocks answered to it and Docker's DNS spread a desktop's requests between them: a books case
 saved a voucher and then found its company gone ("no records", then "Not found" for every page), and both runs' rows were
 worthless. Each run's mock now has its own name (`desktop.PracticeMockHost`), and its desktop's browser maps to that.
+
+### The gate asked about every bill, and three times about one click
+
+On ERPNext (2026-11-08) a taught worker was stopped for a yes by "+ Add Purchase Invoice" (only opens an empty form),
+by a list row found by eye (judged by the worker's own description "... row in Purchase Invoice list", and each yes
+bound to the pixel, so each new look asked again), and by Return in the address bar after Ctrl+L (the page names no
+field there, so Return was taken to press any control). What decides whether to ask is a filter in the worker's
+process, and it must read structure: what the page says is at the point, whether a press submits a form holding
+values, where the keyboard is. A yes is bound to the control the page names, never to a pixel a grounding model
+chose (approval.opens_new_record, core._gate_spot, core._location_bar).

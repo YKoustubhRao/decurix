@@ -1007,3 +1007,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): An inter-state bill sent a month's books to the model
 - [part-6.md](gotchas/part-6.md): "The record is read back" was not true for ERPNext
 - [part-6.md](gotchas/part-6.md): Two eval runs answered for each other's app
+- [part-6.md](gotchas/part-6.md): The gate asked about every bill, and three times about one click

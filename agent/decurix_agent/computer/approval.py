@@ -691,7 +691,7 @@ def assess(kind, element, text=None, keys=None, context=None):
 
     if kind in ("click", "double_click") and element is not None:
         name = element.get("name") or ""
-        if press_effect(element) == "asks":
+        if press_effect(element) == "asks" and not (opens_new_record(element) and context.get("submits") is False):
             label = " ".join(name.split())[:60]
             return f'"{label}" sends, pays, buys or publishes something on your behalf'
 
@@ -760,6 +760,38 @@ def press_effect(element):
     if consequential(name, goes_somewhere(element)):
         return "asks" if role in ACTIVATING_ROLES else "commits"
     return "commits" if COMMIT_CONTROL.match(label_words(name)) else None
+
+
+# The first word of a button that opens a new, empty record of a kind ("Add Purchase Invoice", "New Sales Order",
+# "Create Payment Entry"): the record is kept only by its own form's Save or Submit, which is checked and gated there.
+_OPENS_NEW = set("new add create make".split())
+# Words that are only acts, never part of a record's name: "Add and pay", "Create and send", "New payment - pay now".
+_ACT_ONLY = set("pay send buy sign submit publish confirm approve authorize authorise place checkout file post "
+                "transfer and now".split())
+
+
+def opens_new_record(element):
+    """
+    Whether a press on this button opens a new, empty record of a named kind rather than committing one: its label is
+    a word that opens a new one (_OPENS_NEW) and then a record's name ending in a record noun ("Add Purchase Invoice",
+    "New Payment Entry"), with no word that is only an act (_ACT_ONLY). Found live (2026-11-08, ERPNext bills): "+ Add
+    Purchase Invoice" on the list page was put to the person as a purchase on every bill, though it only opens an
+    empty form - the form's own Save is what keeps it, and is checked there.
+
+    The label alone is never enough: assess lets such a press through only when the caller has read from the page
+    itself that it submits no form holding values (context "submits" is False, core: cdp.submit_form_fields). A
+    "Create Payment Order" that submits a filled form is still asked; a press whose form cannot be read is asked.
+    """
+
+    if (element or {}).get("role") != "button":
+        return False
+    words = [w.lower() for w in label_words(element.get("name") or "").split()]
+    while words and words[0] == "and":
+        words = words[1:]  # a "+" drawn before the label ("+ Add Purchase Invoice"), read as a joiner
+    if len(words) < 2 or words[0] not in _OPENS_NEW:
+        return False
+    rest = words[1:]
+    return rest[-1] in _RECORD_NOUNS and not any(w in _ACT_ONLY for w in rest)
 
 
 def commits(element):

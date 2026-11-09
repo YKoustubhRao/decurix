@@ -2179,6 +2179,23 @@ FOCUSED_NUMBER = """(() => { const a = document.activeElement;
     ? (a.getAttribute('aria-label') || a.name || a.id || 'number field') : null; })()"""
 
 
+def page_has_keyboard():
+    """Whether the active page's own document has the keyboard (document.hasFocus()): False when it is in the browser's
+    own controls - its address bar - or another window; None when the page cannot be asked."""
+
+    page = None
+    try:
+        page = active_page()
+        value = page.call("Runtime.evaluate", {"expression": "document.hasFocus()", "returnByValue": True}).get(
+            "result", {}).get("value")
+        return value if isinstance(value, bool) else None
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
+        return None
+    finally:
+        if page is not None:
+            page.close()
+
+
 def focused_number_field():
     """The label of the number field that has the keyboard, or None."""
 

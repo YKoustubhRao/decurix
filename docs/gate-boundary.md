@@ -812,6 +812,43 @@ there the agent is started by XFCE's autostart, after a session that reads the w
 worker left there can race for the files at boot. And a person's `docker exec` without `env -i` still sees the token
 in the container's configuration (the control plane's own execs clear it, `workerCmd`).
 
+## Next: what the gate asks about (2026-11-09)
+
+Everything above is about who can make a yes. Which actions are put to the gate at all is decided earlier, in the
+worker's own process (`approval.assess`, `core.act`): a filter, not the boundary. A filter that asks too often costs
+the person attention and the product its use. On ERPNext bills (2026-11-08) most of the asks were false.
+
+**Fixed 2026-11-09 (O-11).** Each fix rests on structure, not on a word taken off a list:
+- **A button that opens a new, empty record** ("+ Add Purchase Invoice") was read as a purchase. Its label shape
+  (`approval.opens_new_record`) only makes it a candidate. It goes through only when the page itself says the press
+  submits no form holding values (`cdp.submit_form_fields`). A press the page cannot answer for is still asked.
+- **A press found by eye** (`gui click --see`) was judged by the worker's own description, and its yes was bound to
+  the pixel. Each new look put the point elsewhere on the same row, and the person was asked three times. Now the
+  page names the control at the point (`cdp.hit`, `core._gate_spot`), that control is judged, and the yes is bound to
+  it. The fallback when nothing names it is unchanged: the description is judged and the pixel kept. A tolerance was
+  not built, because the three looks were up to 200 px apart.
+- **Return after Ctrl+L and a typed address** was asked as a press "that cannot be told". The address bar is no part
+  of the page. Now two facts together make it the field with the keyboard (`core._location_bar`): this task's own last
+  actions put the keyboard there, and the page says its document lost it (`cdp.page_has_keyboard`).
+
+**The design to move to: ask about effects, not words.** A press commits something outside the desktop when it sends
+entered values to a server or ends something that cannot be taken back. Both can largely be read from the page
+before the press:
+- the form a control submits, and what it holds (`cdp.submit_form_fields`, already read for the pre-save checks);
+- the request a page makes on the press, in a dry run (not built; would need a request interceptor that holds the
+  first non-GET request a press causes, shows its target and body, and releases it on the yes);
+- a dialog that confirms a permanent act (`confirms_permanently`, built).
+
+The gate would then ask about the request, held, rather than about a label, and the yes would be bound to that
+request's target and body: exactly one action's, and exactly the one shown.
+
+Risks, which keep the word rules as a floor until a live round proves the interceptor:
+- **Apps that commit with no request a page can see:** a desktop app, a canvas, a websocket message.
+- **A GET that changes state,** which a "non-GET only" rule misses.
+- **Pages that batch or debounce requests,** where the first request is not the press's.
+- **The interceptor itself,** which is new code on the boundary's path and needs its own attack rows in
+  `bench/security/boundary.sh`.
+
 ## What this does not cover (said plainly)
 
 - **Direct input.** The gate decides whether a *yes* exists. It does not stand between the worker and the screen: a
