@@ -691,7 +691,11 @@ def assess(kind, element, text=None, keys=None, context=None):
 
     if kind in ("click", "double_click") and element is not None:
         name = element.get("name") or ""
-        if press_effect(element) == "asks" and not (opens_new_record(element) and context.get("submits") is False):
+        # Not asked, whatever the label's words, for a press the page itself says commits nothing here: a button that
+        # opens a new, empty record and submits no form (opens_new_record), or a link that only goes to another page
+        # (context "navigates", core._only_navigates) - what it leads to is gated there.
+        if press_effect(element) == "asks" and not (opens_new_record(element) and context.get("submits") is False) \
+                and not (element.get("role") == "link" and context.get("navigates") is True):
             label = " ".join(name.split())[:60]
             return f'"{label}" sends, pays, buys or publishes something on your behalf'
 

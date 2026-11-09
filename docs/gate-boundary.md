@@ -832,6 +832,14 @@ the person attention and the product its use. On ERPNext bills (2026-11-08) most
   form the page writes with `method="get"` (`cdp` FORM_FIELDS `method`, `core._queries`) asks for a page and keeps
   nothing, so its submit is no save to check or hold. The exception is a control whose own label commits ("Pay
   now"). A form that names no method is not taken as GET, because a script may post it.
+- **A link that only goes somewhere** (found in an eval, 2026-11-09): "Proceed to file / summary", a link to a
+  return's summary page, was asked as a filing, and two runs stopped there. A link goes somewhere, and what it leads to
+  is gated there. Now a press the page says only navigates is not asked, whatever its words: the role is link, the
+  anchor leads to an http(s) address (`cdp.link_target`: not a script, not a spot on the same page), and the press
+  submits no form holding values (`core._only_navigates`). The filing on that page ("File with EVC", a posted form)
+  still asks. **Residual risk, said plainly:** a site whose link performs an act by its address alone (a GET that
+  deletes or pays) is let through. That is against HTTP's own rules, and the act's confirmation page, if any, is
+  still gated.
 - **Return after Ctrl+L and a typed address** was asked as a press "that cannot be told". The address bar is no part
   of the page. Now two facts together make it the field with the keyboard (`core._location_bar`): this task's own last
   actions put the keyboard there, and the page says its document lost it (`cdp.page_has_keyboard`).

@@ -3049,6 +3049,17 @@ def _queries(form):
     return isinstance(form, dict) and str(form.get("method") or "").lower() == "get"
 
 
+def _only_navigates(kind, element):
+    """Whether a click on this control only goes to another page, as the page's own markup says: a link (by its role)
+    whose anchor leads to a web address (cdp.link_target) and whose press submits no form holding values. False when
+    either cannot be read - unsure is not navigation."""
+
+    if kind not in ("click", "double_click") or not element or element.get("role") != "link" \
+            or element.get("source") != "cdp" or not element.get("handle"):
+        return False
+    return bool(cdp.link_target(element)) and _press_submits(kind, element) is False
+
+
 def _press_submits(kind, element):
     """Whether a click on this control submits a form holding values, as the page says (cdp.submit_form_fields): True,
     False, or None when it is not a page's control. A page that cannot be asked counts as submitting - unsure is asked."""
@@ -3355,6 +3366,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if element is not None and approval.opens_new_record(element):
         # Read from the page only for the presses it decides (approval.opens_new_record): a label alone never is.
         context["submits"] = _press_submits(kind, element) is not False
+    if element is not None and element.get("role") == "link" and approval.press_effect(element) == "asks":
+        # A link whose label reads like an act: the page says whether the press only goes somewhere (_only_navigates).
+        context["navigates"] = _only_navigates(kind, element)
     # The dialogs open on the screen, for a yes-button whose own path does not name its dialog (approval.py).
     context["dialogs"] = [str(e.get("name") or "") for e in before.get("elements") or []
                           if str(e.get("role") or "").lower() in ("dialog", "alertdialog") and e.get("name")]
@@ -3426,6 +3440,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # A press at a point (found by eye or given) is judged by the control the page names there, and its yes is bound
     # to that control, not to the pixel (_gate_spot).
     spot, spot_why, bound = _gate_spot(kind, element, point, grounded, before)
+    if bound is not None and bound.get("role") == "link" and approval.press_effect(bound) == "asks":
+        context["navigates"] = _only_navigates(kind, bound)
     if spot is not None:
         why = approval.assess("click", spot, context=context)
         if why:

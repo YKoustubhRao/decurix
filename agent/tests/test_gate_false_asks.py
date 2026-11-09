@@ -90,6 +90,42 @@ class AFormSentAsAQuery(unittest.TestCase):
         self.assertTrue(core._queries(self.PERIOD))
 
 
+class ALinkThatOnlyGoesSomewhere(unittest.TestCase):
+    """A link the page says only leads to another page is no commit, whatever its words - what it leads to is gated
+    there. Found in an eval (2026-11-09): "Proceed to file / summary", a link to a return's summary, stopped two runs;
+    the filing itself ("File with EVC", a form posted) is asked on that page."""
+
+    def link(self, name):
+        return {"role": "link", "name": name, "path": "", "source": "cdp", "handle": {"backend_id": 9}}
+
+    def test_navigation_read_from_the_page_is_not_asked(self):
+        self.assertIsNone(approval.assess("click", self.link("Proceed to file / summary"), context={"navigates": True}))
+        self.assertIsNotNone(approval.assess("click", self.link("Proceed to file / summary"), context={}))
+        self.assertIsNotNone(approval.assess("click", self.link("Proceed to file / summary"),
+                                             context={"navigates": False}))
+
+    def test_only_a_link_by_its_role_and_never_a_button(self):
+        for name in ("File with EVC", "Pay", "Proceed to file / summary", "Send invoice"):
+            self.assertIsNotNone(approval.assess("click", button(name), context={}), name)  # asks today
+            self.assertIsNotNone(approval.assess("click", button(name), context={"navigates": True}), name)
+
+    def test_the_page_decides(self):
+        link = self.link("Proceed to file / summary")
+        with mock.patch.object(core.cdp, "link_target", return_value="http://taxnet.test/returns/1/summary"), \
+                mock.patch.object(core.cdp, "submit_form_fields", return_value=None):
+            self.assertTrue(core._only_navigates("click", link))
+        with mock.patch.object(core.cdp, "link_target", return_value=""):  # javascript:, "#", or no anchor
+            self.assertFalse(core._only_navigates("click", link))
+        with mock.patch.object(core.cdp, "link_target", return_value="http://x.test/a"), \
+                mock.patch.object(core.cdp, "submit_form_fields", return_value={"fields": [["Amount", "9"]]}):
+            self.assertFalse(core._only_navigates("click", link))  # its press sends a filled form
+        with mock.patch.object(core.cdp, "link_target", return_value="http://x.test/a"), \
+                mock.patch.object(core.cdp, "submit_form_fields", return_value=core.cdp.UNREADABLE):
+            self.assertFalse(core._only_navigates("click", link))
+        self.assertFalse(core._only_navigates("click", button("Proceed to file")))
+        self.assertFalse(core._only_navigates("click", {"role": "link", "name": "Proceed to file"}))  # not the page's
+
+
 class APressFoundByEye(unittest.TestCase):
 
     BEFORE = {"page_url": "http://erp.test/desk/purchase-invoice", "active_title": "Purchase Invoice - Chromium",

@@ -2179,6 +2179,34 @@ FOCUSED_NUMBER = """(() => { const a = document.activeElement;
     ? (a.getAttribute('aria-label') || a.name || a.id || 'number field') : null; })()"""
 
 
+_LINK_TARGET = """function() {
+  const a = this.closest ? this.closest('a[href]') : null;
+  if (!a) return '';
+  const raw = (a.getAttribute('href') || '').trim();
+  if (!raw || raw.startsWith('#')) return '';
+  try { const u = new URL(a.href, document.baseURI); return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : ''; }
+  catch (e) { return ''; }
+}"""
+
+
+def link_target(element):
+    """The web address a press on this control goes to, as the page's own markup says (an anchor's href, http or https,
+    not a script and not a spot on the same page), or "" when it is no such link or the page cannot be asked."""
+
+    page = None
+    try:
+        page = _page_for(element)
+        object_id = _object(page, element["handle"]["backend_id"])
+        value = page.call("Runtime.callFunctionOn", {"objectId": object_id, "returnByValue": True,
+                                                     "functionDeclaration": _LINK_TARGET}).get("result", {}).get("value")
+        return value if isinstance(value, str) else ""
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
+        return ""
+    finally:
+        if page is not None:
+            page.close()
+
+
 def page_has_keyboard():
     """Whether the active page's own document has the keyboard (document.hasFocus()): False when it is in the browser's
     own controls - its address bar - or another window; None when the page cannot be asked."""
