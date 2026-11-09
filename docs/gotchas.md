@@ -1014,3 +1014,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): No gathered month could ever earn trust
 - [part-6.md](gotchas/part-6.md): Told to collect the bills, the model entered them
 - [part-6.md](gotchas/part-6.md): Bills read through a filtered loop were "never read"
+- [part-6.md](gotchas/part-6.md): "Waiting on you" over a question nobody held

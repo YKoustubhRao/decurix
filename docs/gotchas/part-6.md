@@ -470,3 +470,11 @@ phase noted by `core.write_phase`), so saving the attachments as taught goes thr
 soul's evidence of a read; the review sent the run back three times. A loop's marker line now earns the credit only
 when code's own read of that file holds every checkable line printed under it (`creditLoopMarkers`): a marker over
 nothing, or over lines the file does not hold, earns nothing.
+
+### "Waiting on you" over a question nobody held
+
+A desktop restarted while a task waited on the person's answer. The agent's restart report covers only the task it was
+running, so the question stayed "waiting on you" on the control plane until someone answered it, and the answer was
+then told it was stale. At start the agent now reads this desktop's waiting tasks (`GET /api/agent/waiting`) and closes
+each question it does not hold as stopped (`watchers._close_lost_questions`), saying what the task had saved; the
+question it holds (a long request resumed waiting on its answer) is never closed.

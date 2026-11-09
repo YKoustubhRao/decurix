@@ -688,6 +688,25 @@ func (s *Store) IsOpen(workerID, taskID string) (bool, error) {
 	return true, nil
 }
 
+// Waiting returns the tasks whose execution on a worker waits on a human (a question or an approval it asked), oldest
+// first. A desktop that comes back from a restart is asked whether it still holds each: a question its agent no
+// longer has is closed by the agent's own report (found live 2026-11-09: a task read "waiting on you" for good over a
+// question the restarted agent had forgotten).
+func (s *Store) Waiting(workerID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ids, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (string, error) {
+		var id string
+		err := r.Scan(&id)
+		return id, err
+	}, `SELECT task_id FROM executions WHERE worker_id = ? AND status = ? ORDER BY started_ns`, workerID, StatusWaiting)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: listing waiting tasks: %w", err)
+	}
+	return ids, nil
+}
+
 // LastActivity returns when a worker's task records were last touched - a
 // task created, started, finished, or reopened by a human's reply - or
 // ok=false when the worker has no task records at all yet. Used by

@@ -369,6 +369,17 @@ def _post_querytext(payload):
         return "unreachable", str(exc)
 
 
+def waiting_tasks():
+    """The tasks of this desktop the control plane shows waiting on a person (GET /api/agent/waiting), oldest first.
+    Raises when the control plane cannot be read: what is not known is never taken as "none"."""
+
+    url = (config.CONTROL_PLANE_URL.rstrip("/") + "/api/agent/waiting?desktop_id="
+           + urllib.parse.quote(str(config.DESKTOP_ID or "")))
+    with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=10) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return [str(t) for t in (data.get("tasks") or []) if t]
+
+
 def _unsent_dir():
     return config.DECURIX_DIR / "unsent"
 

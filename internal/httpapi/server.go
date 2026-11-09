@@ -346,6 +346,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(stepImagePath, s.stepImageHandler)
 	mux.HandleFunc("/api/agent/events", s.agentEventHandler)
 	mux.HandleFunc("/api/querytext", s.queryTextHandler)
+	mux.HandleFunc("/api/agent/waiting", s.agentWaitingHandler)
 	mux.HandleFunc("/api/querynotes", s.queryNotesHandler)
 	mux.HandleFunc("/api/tasks/finished", s.finishedTasksHandler)
 	mux.HandleFunc("/api/querynotes/close", s.closeQueryNoteHandler)

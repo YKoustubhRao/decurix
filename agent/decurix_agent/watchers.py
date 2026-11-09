@@ -3,7 +3,7 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (ask_task, attachments, config, guidance, lessons, long_task, playbooks, procedures, progress, record_task, replay_task,
+from decurix_agent import (ask_task, attachments, config, guidance, lessons, long_task, messaging, playbooks, procedures, progress, record_task, replay_task,
                            skill_task, state, task_context, tool_task, usage, workflow_task)
 from decurix_agent.computer import approval, browser
 from decurix_agent.harness import continue_after_query, perform_task
@@ -249,6 +249,41 @@ def _report_interrupted():
     finally:
         state.current_task = None
         task_context.start("")
+
+
+LOST_QUESTION = (
+    "This desktop restarted while this waited on your answer, so the question is gone and nothing more will happen "
+    "on this task. Send the request again to start it over (for a lesson, `/learn` on the same recording carries on "
+    "from the last answer it kept)."
+)
+
+
+def _close_lost_questions():
+    """
+    Close, on the control plane, each task of this desktop that waits on the person for a question this agent no
+    longer holds: an earlier life of it asked, then the desktop restarted. Found live (2026-11-09): a task read
+    "waiting on you" for good over a question the restarted agent had forgotten, and only a reply to it - answered
+    "stale" - closed it. The question this agent does hold (a long request it resumed waiting on its answer) is never
+    closed. Each closes as stopped, saying what it had saved when its records say so. Never raises.
+    """
+
+    held = task_context.current() if state.waiting_for_query else ""
+    try:
+        waiting = messaging.waiting_tasks()
+    except Exception as exc:  # noqa: BLE001 - not known which are lost: none is closed
+        log(f"Could not read this desktop's questions from the control plane: {exc}")
+        return
+    for task_id in waiting:
+        if task_id == held or not task_context.valid(task_id):
+            continue
+        log(f"Task {task_id} waits on a question an earlier life of this agent asked; closing it as stopped.")
+        task_context.start(task_id)
+        try:
+            write_final_reply(_saved_before_restart(task_id) or LOST_QUESTION, kind="error", interrupted=True)
+        except Exception as exc:  # noqa: BLE001 - the next start tries again
+            log(f"Could not close the lost question of task {task_id}: {exc}")
+        finally:
+            task_context.start(held)
 
 
 def _answer_stale_reply(path, content):
@@ -1040,6 +1075,7 @@ def command_watcher():
     )
 
     _report_interrupted()
+    _close_lost_questions()
 
     # A task's outcome the control plane could not be told (it was restarting) is sent again, now and every little
     # while, so no chat is left saying "running" over a task that ended (messaging.resend_unsent).

@@ -711,3 +711,37 @@ func TestARestartIsRecordedAsStoppedNotFailed(t *testing.T) {
 		t.Fatalf("status = %q", detail.Status)
 	}
 }
+
+// A desktop coming back from a restart is told which of its tasks wait on a person (Waiting), so the agent can close
+// each question it no longer holds - and only those: an interrupted report on a waiting task closes it as stopped
+// (found live 2026-11-09: a task read "waiting on you" for good over a forgotten question).
+func TestTheTasksWaitingOnAPersonAreListedAndAForgottenOneClosesAsStopped(t *testing.T) {
+	c := newClock()
+	s := openStore(t, c)
+	box := worker("box", "thebot")
+	asked := send(t, s, box, "Enter the October bills")
+	c.advance(time.Minute)
+	outcome(t, s, "box", asked.TaskID, Outcome{Kind: OutcomeQuery, Reply: "Which month folder?"})
+	c.advance(time.Minute)
+	other := worker("other", "thebot")
+	elsewhere := send(t, s, other, "Something else")
+	outcome(t, s, "other", elsewhere.TaskID, Outcome{Kind: OutcomeQuery, Reply: "Which one?"})
+
+	waiting, err := s.Waiting("box")
+	if err != nil || len(waiting) != 1 || waiting[0] != asked.TaskID {
+		t.Fatalf("waiting = %v, %v; want only box's own question", waiting, err)
+	}
+	if open, _ := s.IsOpen("box", asked.TaskID); !open {
+		t.Fatal("a task waiting on a person is open")
+	}
+	outcome(t, s, "box", asked.TaskID, Outcome{Kind: OutcomeError, Reply: "This desktop restarted while this waited on you", Interrupted: true})
+	if detail := get(t, s, asked.TaskID); detail.Status != StatusAbandoned {
+		t.Fatalf("status = %q, want stopped", detail.Status)
+	}
+	if waiting, _ := s.Waiting("box"); len(waiting) != 0 {
+		t.Fatalf("still waiting: %v", waiting)
+	}
+	if waiting, _ := s.Waiting("other"); len(waiting) != 1 {
+		t.Fatalf("another desktop's question was touched: %v", waiting)
+	}
+}
