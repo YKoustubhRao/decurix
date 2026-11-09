@@ -1670,6 +1670,10 @@ def _run_reply(paused, reply, approval_outcome):
         if said["choice"] == "stop":
             return _stopped("before entering anything. The documents are collected and nothing was entered.")
         run["asked_person"], run["start"] = True, 1
+        # Said, so the route is never a silent change (found 2026-11-08: a run went from the plan to the model with no
+        # line saying why).
+        progress.emit("Your reply adds to or changes the plan, so the model does the rest with your words instead of "
+                      "replaying the taught steps.")
         shown = paused.get("plan_text") or _plan_text(run)
         return _by_model(run, note=f"You put this plan to the person:\n{shown[:1200]}\nThe person answered: "
                                    f"{reply}\n" + ("The documents are already collected. " if run.get("gathered") else "")
