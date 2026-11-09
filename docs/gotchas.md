@@ -1010,4 +1010,3 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): The gate asked about every bill, and three times about one click
 - [part-6.md](gotchas/part-6.md): A portal's own "NA" was refused as made up
 - [part-6.md](gotchas/part-6.md): A month with a bill missing from its series was confirmed done
-- [part-6.md](gotchas/part-6.md): The guard stopped a data file pretty-printed through a named module
