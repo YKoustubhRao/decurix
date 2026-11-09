@@ -271,6 +271,10 @@ def worth_reading(request):
     return False
 
 
+class Unavailable(Exception):
+    """The model service did not answer the reading of a request (read)."""
+
+
 def read(request):
     """
     The request as the model reads it against what was taught here:
@@ -302,8 +306,14 @@ def read(request):
 
     try:
         data = study._call(READ_SYSTEM, content, max_tokens=800)
-    except (llm_client.LLMError, ValueError) as exc:
+    except llm_client.LLMError as exc:
+        # The model service did not answer (after llm_client's own retries): the engine that would do the task needs
+        # it as much, so the request is not handed on as one nobody taught. Found live (2026-11-08): a 502 here sent a
+        # taught bill to the generic operator, whose every turn then failed the same way.
         log(f"request reading: the model could not be asked ({exc})")
+        raise Unavailable(str(exc)) from exc
+    except ValueError as exc:
+        log(f"request reading: the model's answer could not be read ({exc})")
         return None
 
     why = " ".join(str(data.get("why") or "").split())[:300]

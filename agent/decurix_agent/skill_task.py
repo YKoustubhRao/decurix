@@ -217,6 +217,11 @@ def perform_mimic(content, task_file=None):
         progress.emit("Reading the request against what you taught me.")
         try:
             reading = request_reading.read(said)
+        except request_reading.Unavailable as exc:
+            write_final_reply("I could not start this: the model service is not answering (" + " ".join(str(exc).split())[:200]
+                              + "). Nothing was done. Send the request again when it is back.", kind="error",
+                              engine=SKILL_ENGINE)
+            return
         except Exception as exc:
             log(f"Could not read the request with the model ({exc}); comparing it with the recordings instead.")
             log(traceback.format_exc())

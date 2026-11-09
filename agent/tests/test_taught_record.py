@@ -256,3 +256,21 @@ class ACheckThatCouldNotBeMade(unittest.TestCase):
             skill_task._finish({"skill": bill_skill(), "values": {}}, {"outcome": "completed_unverified", "text": "ran"})
         self.assertEqual(judge.call_count, 2)
         self.assertEqual((self.supervised, self.by_model, self.paused), ([], [], ["confirm"]))
+
+
+class AModelServiceThatDoesNotAnswer(unittest.TestCase):
+    """A request read against the taught tasks while the model service fails is not handed on as untaught: it ends,
+    saying so, with nothing done (found live 2026-11-08: a 502 sent a taught bill to the generic operator)."""
+
+    def test_the_request_ends_saying_why_and_nothing_runs(self):
+        finals, engine = [], []
+        with mock.patch.object(skill_task.request_reading, "available", return_value=True), \
+                mock.patch.object(skill_task.request_reading, "read",
+                                  side_effect=skill_task.request_reading.Unavailable("HTTP 502")), \
+                mock.patch.object(skill_task, "write_final_reply", lambda text, **kw: finals.append((text, kw))), \
+                mock.patch.object(skill_task, "_engine", lambda *a: engine.append(a)), \
+                mock.patch.object(skill_task, "_begin"), mock.patch.object(skill_task.progress, "emit"):
+            skill_task.perform_mimic("Enter this bill: ~/work/bill.pdf")
+        self.assertEqual(engine, [])
+        self.assertEqual(finals[0][1]["kind"], "error")
+        self.assertIn("not answering", finals[0][0])
