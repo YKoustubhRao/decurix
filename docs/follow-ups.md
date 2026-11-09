@@ -207,6 +207,23 @@ person itself at the refusal (the readings are code's), not wait for the model's
 taught run no longer declares an ambiguous digit date when the application's order is unknown, and an organisation's
 `DECURIX_DATE_ORDER` settles it. **Open.**
 
+## Taught record keeping: what is left (2026-11-09)
+
+- **Line-level read-back (designed, not built).** A declared record holds header fields only, so a replayed bill's
+  lines are judged by the model's screen check (15k tokens a bill). Design: declare the table's rows with the record
+  (`rows`: [{label: value}] from the run's row values, `skills.repeated_rows` names), and after the save read the page's
+  row groups (controls whose path holds `row N`, the first row with none) and match each declared row to one page row
+  whose every value stands in it (`stands_in`), each page row used once. Not built: a saved ERPNext invoice shows its
+  lines as static grid text, not fields, so the page's rows must be proven readable live first; a matcher that cannot
+  read them would pass a wrong line. Next: one live save, dump `observe()` of the saved invoice, build against it.
+- **A per-document field one document leaves blank.** An inter-state bill has IGST and no CGST/SGST: the fill drops the
+  empty items, the lists stop counting one per document, and the whole month goes to the model (office books ob-2:
+  correct, 2.96M tokens). The fill's own instructions say such a document is `by_hand` (another kind of tax); it did not
+  follow them. Either hold the fill to that (a list one short of the documents names which document is short) or carry
+  an explicit empty item through `split_items`/`expand` (it drops empties today). **Open.**
+- Supplier and item picks from a long description under load take 2-15 minutes per search set (each search waits for
+  the list as long as a look takes); 10 minutes to conclude a supplier is missing. **Open.**
+
 ## Live checks after the next build
 
 The writers could not run these. Run them on the next build, before calling this review done.
