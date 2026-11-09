@@ -1224,6 +1224,25 @@ def _saved(change):
 _DELETED_ANSWER = re.compile(r"(?i)\b(?:deleted|removed|moved to (?:the )?(?:trash|bin))\b")
 
 
+# The last part of an address that names one record (it holds a digit): ".../purchase-invoice/PINV-26-00011".
+_RECORD_PAGE = re.compile(r"(?i)page is now (\S*/[^/\s;?#]*\d[^/\s;?#]*)/?(?=[\s;?#]|$)")
+
+
+def _became_a_record(before, change):
+    """Whether a press took the browser from a new record's page (".../new...", ".../new-purchase-invoice-x1y2") to a
+    page that names one record, with no refusal beside it: how a web application answers a save that says no "saved".
+    Found live (2026-11-08, ERPNext): every bill's save answered only "page is now .../PINV-26-00011", so no saved bill
+    was ever read back against its declared record ("declared but never saved")."""
+
+    url = str((before or {}).get("page_url") or "")
+    if not url or _SAVE_REFUSED.search(change or ""):
+        return False
+    came_from_new = bool(_NEW_RECORD_PAGE.search("page is now " + url)) or bool(
+        re.search(r"(?i)/new[-_][^/]*$", url.split("?")[0].rstrip("/")))
+    landed = _RECORD_PAGE.search(change or "")
+    return came_from_new and landed is not None and not _NEW_RECORD_PAGE.search(landed.group(0))         and not re.search(r"(?i)/new[-_]", landed.group(1))
+
+
 def _released(save, answer, page):
     """Whether a delete's answer (or the page it was pressed on) is about this earlier save: the record's number or
     one of its own references named in it, or the delete pressed on the page the save led to."""
@@ -3636,7 +3655,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     if _relayed_page(before) and _saves(kind, element, keys):
         note += _shared_save_note(acted_at)
-    if kind in ("click", "key") and _saved(change_text):
+    if kind in ("click", "key") and (_saved(change_text) or _became_a_record(before, change_text)):
         note += _ledger_readback(after, change_text)
     if downloads_before is not None:
         # The second in which a download must show starts at the action and runs while the screen settles and is looked
