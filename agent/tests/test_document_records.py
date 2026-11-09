@@ -125,3 +125,21 @@ class Helped(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AmbiguousDates(unittest.TestCase):
+    """A digit date that reads two ways is never declared while the application's date order is unknown - whatever the
+    document writes (found live 2026-11-09: a bill writing the same "04-11-2026" as the form was declared, and every save
+    of the month waited on "which day is it" until the case ended)."""
+
+    def run_with(self, doc_text, order):
+        run = {"context": ""}
+        with mock.patch.object(records, "_source_text", lambda source: doc_text), \
+                mock.patch("decurix_agent.task_context.app_date_order", lambda task_id=None: order):
+            return skill_task._declarable(run, {"Date": "04-11-2026", "Voucher No.": "1048"}, "bill.docx")
+
+    def test_the_same_digits_in_the_document_are_not_declared_without_an_order(self):
+        self.assertEqual(self.run_with("Invoice No : 1048  Invoice Date : 04-11-2026", None), {"Voucher No.": "1048"})
+
+    def test_with_the_order_known_the_date_is_declared(self):
+        self.assertIn("Date", self.run_with("Invoice No : 1048  Invoice Date : 04-11-2026", "day"))

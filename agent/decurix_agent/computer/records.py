@@ -1545,6 +1545,11 @@ def _undecided(flabel, fvalue, want, why, place=("", ""), unit=""):
                     "from here - this needs the person. The agent puts the two readings to them itself, as a question "
                     "of its own, when you next ask them anything (HELP: say the save waits on this date) or stop; "
                     "do not retype the field (a date written the same way is no answer).")
+        if task_context.date_left_open(side=side):
+            # (Asked once in this task, and the person could not say: not asked again, and not saved on a guess.)
+            return (f"{flabel} holds {fvalue!r} and the record says {want!r}, and the person could not say which day "
+                    f"{value!r} is when asked: this record cannot be saved as checked. Do not ask again or retype it - "
+                    "report this record as not saved, and why.")
         return (f"{flabel} holds {fvalue!r} and the record says {want!r}: the dates cannot be compared under the date "
                 "order known for this task - this needs the person.")
     if why == "unit" and unit:
@@ -1587,6 +1592,11 @@ def presave(rec, form_fields, cut=(), unset=()):
     blocking, advisory = [], []
     chosen = place = None
     cut = {str(c) for c in cut or ()}
+    if matched and any(values.parse_date(str(v)) for _l, _f, v in matched):
+        # The application the form is on: where a person's answer about its date order is kept and read
+        # (task_context.note_app_host, kept_app_order).
+        place = field_place()
+        task_context.note_app_host(place[0])
     for label, flabel, fvalue in matched:
         want = fields[label]["intent"]
         if str(flabel) in cut and str(fvalue).strip():

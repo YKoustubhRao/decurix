@@ -360,11 +360,18 @@ def write_case(suite, case, files, fixture):
     return out
 
 
+# How the office's apps and documents write digit dates, a fact of the mock the person knows: every app of the mock
+# reads them day first (mock_app.iso_date, DD-MM-YYYY) and every document here writes them so (dmy). The expert answers
+# the worker's date-order question from it (internal/eval/confirm.go; owner's ruling 2026-11-09).
+DATE_ORDERS = {"app": "day", "source": "day"}
+
+
 def case_doc(cid, category, kind, request, files, facts, approves, graders, oracle, secrets=(), minutes=60, tokens=8000000,
              tags=()):
     doc = {"schema": "decurix.eval-case/v1", "id": cid, "category": category, "kind": kind, "request": request,
            "start": {"files": sorted(files), "mock": MOCK, "fixture": "fixture.json"},
            "facts": facts, "approves": [{"control": a, "role": "button"} for a in approves],
+           "date_orders": dict(DATE_ORDERS),
            "expected": {"outcome": "complete", "graders": graders}, "oracle": oracle,
            "budget": {"max_minutes": minutes, "max_tokens": tokens}, "tags": list(tags)}
     if secrets:

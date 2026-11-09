@@ -342,6 +342,12 @@ func loadCase(s Suite, id string, files entries) (Case, Problems) {
 			add("the fact %s's answer looks like it holds a credential.", f.ID)
 		}
 	}
+	// How each side writes digit dates (the expert's answer to a date-order question): "app" or "source", "day" or "month".
+	for side, order := range c.DateOrders {
+		if (side != "app" && side != "source") || (order != "day" && order != "month") {
+			add("date_orders holds %q: %q - each side is \"app\" or \"source\", each order \"day\" or \"month\".", side, order)
+		}
+	}
 	// Approvals the person gives: each a click on a named control, matched against the gate's own question.
 	if len(c.Approves) > MaxApproves {
 		add("approves more than %d actions.", MaxApproves)

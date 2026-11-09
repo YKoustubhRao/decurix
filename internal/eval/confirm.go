@@ -29,12 +29,35 @@ const NotConfirmed = "I can't check that from here - report it as you see it, no
 // planPairRe is a value a plan shows: `Label = "value"` or `Label: "value"` (the agent's _record_plan_text).
 var planPairRe = regexp.MustCompile(`([A-Za-z][^=;:\n"]{0,60}?)\s*[=:]\s*"([^"\n]*)"`)
 
-// confirmReply is the expert's reply to a confirmation question, with its kind ("plan" or "done"), or "" for any
-// other question. A plan is confirmed only when the suite says the person does (Case.ConfirmsPlans).
+// DateOrderMark is what the agent's date-order question says (task_context.date_question_text): which of two
+// readings a digit date is, the day-first one numbered 1 and the month-first one 2.
+const DateOrderMark = "which can be read two ways. Reply 1 if it is"
+
+// dateOrderSides is how the date-order question names the side it asks about (task_context.date_question_text).
+var dateOrderSides = map[string]string{"the application writes the date": "app", "the document writes the date": "source"}
+
+// confirmReply is the expert's reply to a confirmation question, with its kind ("plan", "done" or "date"), or "" for
+// any other question. A plan is confirmed only when the suite says the person does (Case.ConfirmsPlans); a date-order
+// question is answered from the case's own fact of how that side writes dates (Case.DateOrders) - a person knows how
+// their own application writes dates (owner's ruling 2026-11-09: unanswered, every save of a month asked it again).
 func confirmReply(c Case, question string) (string, string) {
 	q := strings.TrimSpace(question)
 	if strings.Contains(q, DoneQuestionMark) {
 		return NotConfirmed, "done"
+	}
+	if strings.Contains(q, DateOrderMark) {
+		for said, side := range dateOrderSides {
+			if !strings.Contains(q, said) {
+				continue
+			}
+			switch c.DateOrders[side] {
+			case "day":
+				return "1", "date"
+			case "month":
+				return "2", "date"
+			}
+		}
+		return "", ""
 	}
 	if c.ConfirmsPlans && strings.HasPrefix(q, PlanQuestionOpening) {
 		return planReply(c, q), "plan"

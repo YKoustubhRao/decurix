@@ -64,3 +64,36 @@ func TestTheConfirmationWordsAreTheAgents(t *testing.T) {
 		}
 	}
 }
+
+// A date-order question is answered from the case's own fact of how that side writes dates, by the question's
+// structure (its mark and the side it names): "1" for day first, "2" for month first. With no such fact it is no
+// confirmation, and the expert answers it as any question (owner's ruling 2026-11-09).
+func TestTheExpertAnswersADateOrderQuestionFromTheCasesFact(t *testing.T) {
+	ask := func(side string) string {
+		return "Before I save: " + side + " 04-11-2026, " + DateOrderMark + " 4 November 2026 (day first), or 2 if it is " +
+			"11 April 2026 (month first)."
+	}
+	c := Case{DateOrders: map[string]string{"app": "day", "source": "month"}}
+	if reply, kind := confirmReply(c, ask("the application writes the date")); reply != "1" || kind != "date" {
+		t.Fatalf("app side: %q %q", reply, kind)
+	}
+	if reply, _ := confirmReply(c, ask("the document writes the date")); reply != "2" {
+		t.Fatalf("source side: %q", reply)
+	}
+	if reply, _ := confirmReply(Case{}, ask("the application writes the date")); reply != "" {
+		t.Fatalf("answered with no fact: %q", reply)
+	}
+}
+
+// The date-order question's words are the agent's own (task_context.date_question_text).
+func TestTheDateOrderWordsAreTheAgents(t *testing.T) {
+	b, err := os.ReadFile("../../agent/decurix_agent/task_context.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"which can be read two ways. Reply 1 if it is", `"the document" if question["side"] == "source" else "the application"`, "writes the date"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("task_context.py no longer holds %q", want)
+		}
+	}
+}

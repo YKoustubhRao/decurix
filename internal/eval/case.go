@@ -102,20 +102,23 @@ type Budget struct {
 // solution that proves it can be done.
 type Case struct {
 	// ConfirmsPlans is the suite's (Suite.ConfirmsPlans), copied onto each case by Load.
-	ConfirmsPlans bool         `json:"-"`
-	Schema        string       `json:"schema"`
-	ID            string       `json:"id"`
-	Category      string       `json:"category"`
-	Kind          string       `json:"kind"`
-	Request       string       `json:"request"`
-	Start         Start        `json:"start"`
-	Facts         []Fact       `json:"facts"`
-	Approves      []Approval   `json:"approves,omitempty"`
-	Expected      Expected     `json:"expected"`
-	Oracle        []OracleStep `json:"oracle"`
-	OracleSecrets []string     `json:"oracle_secrets,omitempty"`
-	Budget        Budget       `json:"budget"`
-	Tags          []string     `json:"tags,omitempty"`
+	ConfirmsPlans bool       `json:"-"`
+	Schema        string     `json:"schema"`
+	ID            string     `json:"id"`
+	Category      string     `json:"category"`
+	Kind          string     `json:"kind"`
+	Request       string     `json:"request"`
+	Start         Start      `json:"start"`
+	Facts         []Fact     `json:"facts"`
+	Approves      []Approval `json:"approves,omitempty"`
+	// DateOrders is how each side writes digit dates, a fact of the case's apps and documents: "app" and "source", each
+	// "day" (day first) or "month". The expert answers the agent's date-order question from it (confirmReply).
+	DateOrders    map[string]string `json:"date_orders,omitempty"`
+	Expected      Expected          `json:"expected"`
+	Oracle        []OracleStep      `json:"oracle"`
+	OracleSecrets []string          `json:"oracle_secrets,omitempty"`
+	Budget        Budget            `json:"budget"`
+	Tags          []string          `json:"tags,omitempty"`
 
 	// Filled by Load: the input files (by flat name) and the mock's start state.
 	Files   map[string][]byte `json:"-"`

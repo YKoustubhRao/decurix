@@ -1080,13 +1080,15 @@ def _declarable(run, candidates, document):
     given = records._source_text(document) + "\n" + str(run.get("context") or "")
     fields = {}
     for label, v in candidates.items():
-        written = binding.date_in(v, [given])
-        if written and _day_open(v):
+        if _day_open(v):
             # Declared, it would be compared with the form under an order nobody has said, and the save would wait
             # for a person to say which day the form's date is. Found live (2026-11-08): it did, the model read the
             # refusal as a wrong format, and typed "2026-10-11", which the application took as 20-10-2011. Left
-            # out, the date is the check's to read, as it was before dates were declared.
+            # out, the date is the check's to read, as it was before dates were declared. Whatever the document
+            # writes: found live (2026-11-09), a bill writing the same "04-11-2026" as the form was declared (date_in
+            # gives nothing for the same digits), and every save of a month waited on that question till the case ended.
             continue
+        written = binding.date_in(v, [given])
         if written or records.stands_in(v, given):
             fields[label] = written or v
     return fields

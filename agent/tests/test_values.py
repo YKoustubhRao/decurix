@@ -425,16 +425,20 @@ class TheSaveAsksThePerson(Base):
         self.reply("1", judgement="")
         self.assertIsNone(task_context.source_date_order())
 
-    def test_a_reply_that_picks_neither_leaves_it_to_be_asked_again(self):
+    def test_a_reply_that_picks_neither_is_not_asked_again_in_the_task(self):
+        # Owner's ruling 2026-11-09: asked once, never before every save - a month's six saves each asked it, and the
+        # case ended on the number of questions. The save then says the record waits on the person (records._undecided).
         records.presave(self.rec(), [("Bill date", "2026-04-03")])
         self.ask()
         handed = self.reply("the third of April")
         self.assertIn("picked neither reading", handed)
+        self.assertIn("will not be asked again", handed)
         self.assertIsNone(task_context.source_date_order())
-        self.assertNotIn("query_id", task_context.date_question(TASK))
+        self.assertIsNone(task_context.date_question(TASK))
         self.ask()
-        self.assertEqual(len(self.sent), 2)
-        self.assertIn("Reply 1 if it is 3 April 2026", self.sent[-1][0][1])
+        self.assertEqual(len(self.sent), 1)
+        blocking, _advisory = records.presave(self.rec(), [("Bill date", "2026-04-03")])[:2]
+        self.assertTrue(any("could not say which day" in line for line in blocking))
 
     def test_a_task_that_ends_with_it_unanswered_is_not_checked(self):
         from decurix_agent import verdict as verdicts

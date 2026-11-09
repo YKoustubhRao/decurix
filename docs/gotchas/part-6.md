@@ -496,3 +496,14 @@ A person's "ask only before File with EVC and Verify, never before Proceed to fi
 the taught rule "stop before Proceed to file" stayed in the lesson, and nothing said which held. Where the taught rules
 and the person's later words are shown together, it is now said that the later words hold
 (`skill_task.LATER_WORDS_HOLD`; the final check's earlier-answers text). Rewriting the rule itself is a follow-up.
+
+### Every save of a month asked which day "04-11-2026" is
+
+Per-document records declared a digit date that reads two ways while the application's date order was unknown: the
+skip for that case ran only when the document wrote the date differently, and a bill writing the same "04-11-2026" as
+the form slipped past. Each save then asked the person which day it was; the eval's expert could not say, and every
+taught case ended on the number of questions. Now such a date is never declared without the order
+(`skill_task._declarable`), the person's answer about an application's date order is kept for its host across tasks
+(`task_context.kept_app_order`, read before asking), a question they could not settle is not put again in the task
+(`date_left_open`), and the eval's expert answers it from the case's own fact of how its apps write dates
+(`Case.DateOrders`, `confirmReply`).

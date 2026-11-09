@@ -1017,3 +1017,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): "Waiting on you" over a question nobody held
 - [part-6.md](gotchas/part-6.md): A run was sent back over entries every invoice supported
 - [part-6.md](gotchas/part-6.md): A corrected rule stayed beside its correction
+- [part-6.md](gotchas/part-6.md): Every save of a month asked which day "04-11-2026" is

@@ -39,6 +39,10 @@
       "role": "button"
     }
   ],
+  "date_orders": {
+    "app": "day",
+    "source": "day"
+  },
   "expected": {
     "outcome": "complete",
     "graders": [

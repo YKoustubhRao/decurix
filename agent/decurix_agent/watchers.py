@@ -677,8 +677,9 @@ def answer_waiting(path, content, already_marked=False):
                 if not guidance.calls_off(said, ""):
                     date_answer = True
                     content = (f"(Not your question - the agent asked the person which way {question['value']} is "
-                               "written, since a save waited on it, and their reply picked neither reading, so the "
-                               "save still waits on it. Your own question was not put to them. Their reply: "
+                               "written, since a save waited on it, and their reply picked neither reading. It will "
+                               "not be asked again: a record that waits on that date is not saved - report it as not "
+                               "saved, and why. Your own question was not put to them. Their reply: "
                                + " ".join(said.split())[:300] + ")")
     except Exception as exc:  # noqa: BLE001
         log(f"Could not take the reply as the date order: {exc}")
