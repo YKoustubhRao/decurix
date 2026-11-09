@@ -2316,7 +2316,17 @@ FORM_FIELDS = """function(enter) {
   // How the press sends the form, as the page writes it (a control's own formmethod over the form's). A form that
   // names none is not taken as GET: an app may send it by script, with a POST of its own.
   const method = ((control && control.getAttribute('formmethod')) || form.getAttribute('method') || '').toLowerCase();
-  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60), unset: unset, method: method};
+  // A sign-in's shape: one secret field that is not a one-time code, beside one filled field naming who signs in.
+  // A one-time code, a signing PIN alone or a form of more fields is not one.
+  const live = [...form.elements].filter(f => !f.disabled && f.tagName === 'INPUT');
+  const secrets = live.filter(f => (f.type || '').toLowerCase() === 'password');
+  const oneTime = f => (f.getAttribute('autocomplete') || '').toLowerCase() === 'one-time-code'
+    || (f.getAttribute('inputmode') || '').toLowerCase() === 'numeric';
+  const named = live.filter(f => ['text', 'email', ''].includes((f.type || '').toLowerCase()) && String(f.value || '').trim() !== '');
+  const others = live.filter(f => !['password', 'text', 'email', '', 'hidden', 'submit', 'button', 'checkbox'].includes((f.type || '').toLowerCase()));
+  const signsIn = secrets.length === 1 && !oneTime(secrets[0]) && named.length === 1 && others.length === 0
+    && [...form.elements].filter(f => !f.disabled && ['SELECT', 'TEXTAREA'].includes(f.tagName)).length === 0;
+  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60), unset: unset, method: method, signs_in: signsIn};
 }""".replace("__VALUE_CHARS__", str(FORM_VALUE_CHARS))
 
 # A form with fewer filled fields than this (a search box and its button, a sign-in) is sent without the check.

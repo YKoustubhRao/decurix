@@ -103,10 +103,14 @@ CONSEQUENTIAL_CONTROL = re.compile(
 # More phrases that commit the person, read like CONSEQUENTIAL_CONTROL at any word of a label (consequential). Found in
 # review (2026-11-02): "Continue to payment", "Authorize", "Approve payment" passed a gate that read only the label's
 # first words.
+# The step that goes into a committing act ("Proceed to file", "Continue to payment"): the act is where it leads.
+_STEP_INTO_ACT = (r"(?:proceed|continue|go|move on|next|skip) (?:to|with) (?:the )?(?:checkout|payment|pay|paying|file|filing"
+                  r"|submit|submission|send|transfer|purchase)")
+STEP_INTO_ACT = re.compile(r"^\s*" + _STEP_INTO_ACT + r"\b", re.IGNORECASE)
+
 MORE_CONSEQUENTIAL = re.compile(
     r"^\s*(?:"
-    r"(?:proceed|continue|go|move on|next|skip) (?:to|with) (?:the )?(?:checkout|payment|pay|paying|file|filing|submit|submission"
-    r"|send|transfer|purchase)"
+    + _STEP_INTO_ACT +
     r"|authori[sz]e"
     r"|(?:make|submit|confirm|complete|process|release|initiate|execute|approve|schedule|send|finali[sz]e|issue) "
     r"(?:the |this |a |my |your )?(?:(?:" + "|".join(sorted(_MONEY_NOUNS)) + r") )?"
@@ -252,6 +256,31 @@ def consequential(name, goes_somewhere=False):
                 and not _only_reads(words, i, goes_somewhere):
             return True
     return bool(OTHER_LANGUAGES.search(" ".join(str(name or "").split())))
+
+
+def only_steps_into_an_act(name):
+    """
+    Whether a label commits only by naming where it goes: every place the gate's phrases (CONSEQUENTIAL_CONTROL,
+    MORE_CONSEQUENTIAL) find an act in it lies inside a step into that act (STEP_INTO_ACT: "Proceed to file",
+    "Continue to payment", "Go to checkout"). A label that also names an act on its own ("Pay now", "Send",
+    "Proceed to pay", "Delete invoice", "Approve payment") is not. For a link the page says only navigates
+    (assess, context "navigates"): the act is on the page it leads to, and is gated there.
+    """
+
+    words = label_words(name).split()
+    found, inside = False, 0
+    for i in range(len(words)):
+        rest = " ".join(words[i:])
+        step = STEP_INTO_ACT.match(rest)
+        if step:
+            found = True
+            inside = max(inside, i + len(rest[:step.end()].split()))
+            continue
+        if i < inside:
+            continue  # a word of the step itself ("checkout" in "Go to checkout")
+        if (CONSEQUENTIAL_CONTROL.match(rest) or MORE_CONSEQUENTIAL.match(rest)) and not _only_reads(words, i, True):
+            return False
+    return found and not OTHER_LANGUAGES.search(" ".join(str(name or "").split()))
 
 
 def _edits_the_form(words):
@@ -691,11 +720,14 @@ def assess(kind, element, text=None, keys=None, context=None):
 
     if kind in ("click", "double_click") and element is not None:
         name = element.get("name") or ""
-        # Not asked, whatever the label's words, for a press the page itself says commits nothing here: a button that
-        # opens a new, empty record and submits no form (opens_new_record), or a link that only goes to another page
-        # (context "navigates", core._only_navigates) - what it leads to is gated there.
+        # Not asked for a press the page itself says commits nothing here: a button that opens a new, empty record and
+        # submits no form (opens_new_record), or a link that only goes to another page (context "navigates",
+        # core._only_navigates) whose label names an act only as where it goes (only_steps_into_an_act) - the act is
+        # gated on that page. A link that names an act on its own ("Pay now", "Delete invoice") is asked as before:
+        # an older app may act on the address alone.
         if press_effect(element) == "asks" and not (opens_new_record(element) and context.get("submits") is False) \
-                and not (element.get("role") == "link" and context.get("navigates") is True):
+                and not (element.get("role") == "link" and context.get("navigates") is True
+                         and only_steps_into_an_act(name)):
             label = " ".join(name.split())[:60]
             return f'"{label}" sends, pays, buys or publishes something on your behalf'
 

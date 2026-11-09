@@ -834,12 +834,29 @@ the person attention and the product its use. On ERPNext bills (2026-11-08) most
   now"). A form that names no method is not taken as GET, because a script may post it.
 - **A link that only goes somewhere** (found in an eval, 2026-11-09): "Proceed to file / summary", a link to a
   return's summary page, was asked as a filing, and two runs stopped there. A link goes somewhere, and what it leads to
-  is gated there. Now a press the page says only navigates is not asked, whatever its words: the role is link, the
-  anchor leads to an http(s) address (`cdp.link_target`: not a script, not a spot on the same page), and the press
-  submits no form holding values (`core._only_navigates`). The filing on that page ("File with EVC", a posted form)
-  still asks. **Residual risk, said plainly:** a site whose link performs an act by its address alone (a GET that
-  deletes or pays) is let through. That is against HTTP's own rules, and the act's confirmation page, if any, is
+  is gated there. Now such a link is not asked only when two things hold:
+  - **The page says the press only navigates** (`core._only_navigates`): the role is link, the anchor leads to an
+    http(s) address (`cdp.link_target`: not a script, not a spot on the same page), and the press submits no form
+    holding values.
+  - **The label names an act only as where it goes** (`approval.only_steps_into_an_act`): every act the gate's own
+    phrases find in it lies inside a step into that act (`STEP_INTO_ACT`, the existing "proceed / continue / go /
+    move on / next / skip to ..." alternative, now named and shared, with no new words).
+
+  A link whose label names an act on its own ("Pay now", "Send", "Sign", "Approve payment", "Delete invoice", "Buy
+  now", or a step followed by an act, "Continue to payment and pay now") is asked as before, since an older app may
+  act on the address alone. The filing on the next page ("File with EVC", a posted form) still asks. **What
+  remains, said exactly:** a link labelled only as a step into an act, such as "Proceed to checkout", "Continue to
+  payment" or "Proceed to pay", on a site that performs the act itself when the step's address is opened (a GET
+  that charges or files). That is against HTTP's rules, and the act's own confirmation, if the site shows one, is
   still gated.
+- **A sign-in** (found in an eval, 2026-11-09): a tax portal's "Sign in" was held as the save the agreed plan makes
+  "with your OK first", and the run ended there. A sign-in proves who is signing in and keeps nothing. It is told by
+  the form's shape as the page writes it (cdp FORM_FIELDS `signs_in`, `core._signs_in`): one password field that is
+  not a one-time code (`autocomplete="one-time-code"` or a numeric input), beside one filled field naming who signs
+  in, and nothing else. Its submit is no save to check or hold. An OTP that verifies a filing, a signing PIN alone, or
+  a richer form is not that shape. A control whose own label signs or commits ("Sign and file", "Sign document",
+  "E-sign") is still asked and still a save. Typing a password into a site nobody named is asked by its own rule,
+  as before.
 - **Return after Ctrl+L and a typed address** was asked as a press "that cannot be told". The address bar is no part
   of the page. Now two facts together make it the field with the keyboard (`core._location_bar`): this task's own last
   actions put the keyboard there, and the page says its document lost it (`cdp.page_has_keyboard`).

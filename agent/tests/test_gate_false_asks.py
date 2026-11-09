@@ -104,6 +104,16 @@ class ALinkThatOnlyGoesSomewhere(unittest.TestCase):
         self.assertIsNotNone(approval.assess("click", self.link("Proceed to file / summary"),
                                              context={"navigates": False}))
 
+    def test_a_link_that_names_an_act_on_its_own_is_still_asked(self):
+        # An older app may act on the address alone: a link labelled as the act keeps the vocabulary's verdict.
+        for name in ("Pay now", "Send", "Sign", "Approve payment", "Delete invoice",
+                     "Continue to payment and pay now", "Buy now", "Go to checkout - buy now"):
+            self.assertIsNotNone(approval.assess("click", self.link(name), context={}), name)  # asks today
+            self.assertIsNotNone(approval.assess("click", self.link(name), context={"navigates": True}), name)
+        for name in ("Proceed to file / summary", "Continue to payment", "Go to checkout", "Proceed to filing"):
+            self.assertTrue(approval.only_steps_into_an_act(name), name)
+            self.assertIsNone(approval.assess("click", self.link(name), context={"navigates": True}), name)
+
     def test_only_a_link_by_its_role_and_never_a_button(self):
         for name in ("File with EVC", "Pay", "Proceed to file / summary", "Send invoice"):
             self.assertIsNotNone(approval.assess("click", button(name), context={}), name)  # asks today
@@ -124,6 +134,39 @@ class ALinkThatOnlyGoesSomewhere(unittest.TestCase):
             self.assertFalse(core._only_navigates("click", link))
         self.assertFalse(core._only_navigates("click", button("Proceed to file")))
         self.assertFalse(core._only_navigates("click", {"role": "link", "name": "Proceed to file"}))  # not the page's
+
+
+class ASignIn(unittest.TestCase):
+    """Signing in proves who is signing in and keeps nothing: found in an eval (2026-11-09), a tax portal's "Sign in"
+    was held as the agreed plan's save and the run ended there. Signing a document or a filing still asks."""
+
+    LOGIN = {"form": "Sign in", "fields": [["User name", "konkan.coast"]], "submit": "Sign in", "unset": [],
+             "method": "post", "signs_in": True}
+
+    def check(self, element, form):
+        pressed = []
+        with mock.patch.object(core.cdp, "submit_form_fields", return_value=form), \
+                mock.patch.object(core, "_form_check", return_value="CHECKED"):
+            said = core._commit_check("click", element, None, {"elements": []}, pressed=pressed)
+        return said, pressed
+
+    def test_a_sign_in_is_no_save(self):
+        self.assertEqual(self.check(button("Sign in"), self.LOGIN), ("", []))
+        self.assertIsNone(approval.assess("click", button("Sign in")))
+
+    def test_signing_still_asks_and_is_still_a_save(self):
+        for name in ("Sign and file", "Sign document", "E-sign"):
+            self.assertIsNotNone(approval.assess("click", button(name)), name)
+            said, pressed = self.check(button(name), self.LOGIN)
+            self.assertEqual(len(pressed), 1, name)
+
+    def test_only_the_page_shape_makes_a_sign_in(self):
+        # An OTP to verify a filing, a PIN alone, or a form the page did not mark: not a sign-in.
+        for form in (dict(self.LOGIN, signs_in=False), {k: v for k, v in self.LOGIN.items() if k != "signs_in"},
+                     core.cdp.UNREADABLE):
+            self.assertFalse(core._signs_in(form))
+        said, pressed = self.check(button("Verify"), dict(self.LOGIN, signs_in=False))
+        self.assertEqual(len(pressed), 1)
 
 
 class APressFoundByEye(unittest.TestCase):

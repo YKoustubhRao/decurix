@@ -2165,8 +2165,10 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
                                 "could not be made - look at what it holds before it goes")
         if form is None and not approval.commits(element):
             return ""
-        if _queries(form) and not approval.commits(element):
-            return ""  # a form sent as a query (GET) asks for a page and keeps nothing: no save to check or hold
+        if (_queries(form) or _signs_in(form)) and not approval.commits(element):
+            # A form sent as a query (GET) asks for a page and keeps nothing; a sign-in proves who is signing in and
+            # keeps nothing: no save to check or hold.
+            return ""
         if form is None and element.get("source") == "cdp" \
                 and _OPENS_OR_ACCEPTS.match(approval.label_words(element.get("name"))) \
                 and not approval.DIALOG_IN_PATH.search(element.get("path") or "") \
@@ -2181,7 +2183,8 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
     field = element if element is not None else _keyboard_field(before)
     if enter and field is not None and field.get("source") == "cdp":
         form = cdp.enter_form_fields(field)
-        if not form or (_queries(form) and not approval.commits({"role": "button", "name": form.get("submit") or ""})):
+        if not form or ((_queries(form) or _signs_in(form))
+                        and not approval.commits({"role": "button", "name": form.get("submit") or ""})):
             return ""
         if typed_enter:
             # What the field will hold when its new line submits the form: the text typed before it.
@@ -3047,6 +3050,16 @@ def _queries(form):
     and the run stopped there twice. A form whose method cannot be read is not one."""
 
     return isinstance(form, dict) and str(form.get("method") or "").lower() == "get"
+
+
+def _signs_in(form):
+    """Whether a form a press submits is a sign-in, as the page's markup shapes it (cdp FORM_FIELDS "signs_in"): one
+    password field that is not a one-time code, beside one filled field naming who signs in, and nothing else. It
+    proves who is signing in and keeps nothing. Found in an eval (2026-11-09): a tax portal's "Sign in" was held as
+    the save the agreed plan makes "with your OK first", and the run ended there. An OTP to verify a filing, or a
+    signing PIN alone, is no such form, and a control whose label commits ("Sign and file") is still a save."""
+
+    return isinstance(form, dict) and form.get("signs_in") is True
 
 
 def _only_navigates(kind, element):
