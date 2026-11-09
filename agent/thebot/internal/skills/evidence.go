@@ -253,6 +253,13 @@ func (st *operatorState) noteChainedReads(segs []shellSegment, output string) {
 			reads = append(reads, read{name, docFileTypeRe.MatchString(name), at})
 		}
 	}
+	if looped {
+		credited := map[string]bool{}
+		for _, r := range reads {
+			credited[r.source] = true
+		}
+		st.creditLoopMarkers(segs, output, credited)
+	}
 	var whole []read
 	for i := 0; i < len(reads); i++ {
 		if reads[i].at < 0 {
@@ -280,6 +287,85 @@ func (st *operatorState) noteChainedReads(segs []shellSegment, output string) {
 			st.addLines("row", r.source, output[r.at:end])
 		}
 	}
+}
+
+// loopMarkerRe is a line a loop prints to mark whose output follows: a document's name alone, with only decoration
+// around it ("=== 1049 Hampi Residency.docx ===").
+var loopMarkerRe = regexp.MustCompile(`(?m)^[\s=#*\-\[\]<>|]*([^\n:/\\=#*\[\]<>|]{1,200}\.(?:pdf|docx?|odt|rtf|txt|eml))[\s=#*\-\[\]<>|]*$`)
+
+// minCheckedLineChars is how many letters or digits a line under a loop's marker needs to be checked against the file.
+const minCheckedLineChars = 3
+
+// creditLoopMarkers credits a document a loop read under its own marker line, when the loop's body filtered office
+// read's output so its "<name>:" header is gone ("for f in *.docx; do echo "=== $f ==="; office read "$f" | grep ...").
+// A marker alone never earns the credit (a loop can print names without reading anything): code reads the file itself
+// (readDocument) and credits it only when every checkable line under the marker stands in that file's own text, and
+// there is at least one. Found live (2026-11-09): five bills read in such a loop were "never read" to the review, which
+// sent the run back three times until it ran out of time.
+func (st *operatorState) creditLoopMarkers(segs []shellSegment, output string, credited map[string]bool) {
+	if st.readDocument == nil {
+		return
+	}
+	dir := ""
+	for _, seg := range segs {
+		if m := forListRe.FindStringSubmatch(seg.Text); m != nil {
+			for _, w := range shellWords(m[1]) {
+				if p := unquoteWord(w); strings.ContainsAny(p, "*?") && strings.Contains(p, "/") {
+					dir = path.Dir(strings.ReplaceAll(p, `\`, "/"))
+				}
+			}
+		}
+	}
+	if dir == "" {
+		return
+	}
+	marks := loopMarkerRe.FindAllStringSubmatchIndex(output, -1)
+	for i, m := range marks {
+		name := strings.TrimSpace(output[m[2]:m[3]])
+		if credited[name] || strings.ContainsAny(name, "$*?·") {
+			continue
+		}
+		end := len(output)
+		if i+1 < len(marks) {
+			end = marks[i+1][0]
+		}
+		segment := output[m[1]:end]
+		text, ok := st.readDocument(dir + "/" + name)
+		if !ok || !segmentStandsIn(segment, text) {
+			continue
+		}
+		credited[name] = true
+		st.addUnit("document", name, segment)
+	}
+}
+
+// segmentStandsIn reports whether every checkable line of what a loop printed under a file's marker stands in that
+// file's own text (spacing and case aside), with at least one such line. A line holding a masked value ("·": the
+// command gave it) is not checkable either way.
+func segmentStandsIn(segment, text string) bool {
+	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+	whole := norm(text)
+	checked := 0
+	for _, line := range strings.Split(segment, "\n") {
+		l := norm(line)
+		if strings.Contains(l, "·") {
+			continue
+		}
+		n := 0
+		for _, r := range l {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				n++
+			}
+		}
+		if n < minCheckedLineChars {
+			continue
+		}
+		if !strings.Contains(whole, l) {
+			return false
+		}
+		checked++
+	}
+	return checked > 0
 }
 
 // maskedNameRe matches a file's name at a line's start as a header ("<name>:") or after a loop's own marker, with each

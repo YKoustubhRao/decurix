@@ -16,6 +16,7 @@ are skill_task's, handed over at its import (use_run).
 
 import json
 import re
+import time
 import traceback
 from pathlib import Path
 
@@ -149,6 +150,45 @@ def _says_it_could_not(*args, **kwargs):
     """Whether the check reads the engine's report as "I could not do this" (skill_task._says_it_could_not)."""
 
     return _RUN["_says_it_could_not"](*args, **kwargs)
+
+
+def _helped(run, guided):
+    """
+    Whether a run that ends done was helped, so it does not count towards the skill's trust: a person stepped in (a
+    correction, an answer that was more than the plan's plain yes - asked_person), the replay was taken over, or what
+    the run had reported done was reworked in the application (_reworked). Owner's decision 2026-11-09: the worker's
+    own check sending back a closing check or report that changed nothing saved is no help; found live, every gathered
+    month counted as helped because the gather, the replay and the closing check made more than one attempt.
+    """
+
+    return guided["mode"] == "takeover" or bool(run.get("asked_person")) or _reworked(run)
+
+
+def _reworked(run):
+    """Whether anything was saved in an application after the run was first sent back (run["retried_at"]): a record
+    of this task's ledger saved since, or a press the application answered as saved since."""
+
+    since = run.get("retried_at")
+    if not since:
+        return False
+    import datetime
+    from decurix_agent.computer import core, records
+    try:
+        if any((r.get("saved_at") or 0) >= since for r in records.load()):
+            return True
+        for event in evidence._task_events():
+            if event.get("outcome") not in (None, "done") or event.get("kind") not in ("click", "double_click", "key"):
+                continue
+            try:
+                at = datetime.datetime.strptime(str(event.get("at") or ""), "%Y-%m-%dT%H:%M:%S%z").timestamp()
+            except ValueError:
+                continue
+            if at >= since and core._saved(str(event.get("change") or "")):
+                return True
+    except Exception as exc:  # noqa: BLE001 - what cannot be read proves no clean run: helped
+        log(f"Could not tell whether the run's records changed after it was sent back: {exc}")
+        return True
+    return False
 
 
 def _series_question(*args, **kwargs):
@@ -815,8 +855,7 @@ def _gate(reply, kind, engine):
         # reply decides, as any reply to a result not confirmed does.
         state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "engine": engine, "task": guided["task"],
                               "verdict": {"verdict": verify.UNSURE, "confidence": 0.0, "seen": series, "why": ""},
-                              "series": {"helped": guided["mode"] == "takeover" or run.get("attempts", 1) > 1
-                                         or bool(run.get("asked_person")),
+                              "series": {"helped": _helped(run, guided),
                                          "basis": _basis("model", code=bool(made) and facts.compared_clean())}}
         ask_for_query(series, kind="query", engine=engine)
         return True
@@ -831,8 +870,7 @@ def _gate(reply, kind, engine):
             # A takeover, or a run the check had to send back, worked in the
             # end but did not run smoothly: it does not count towards trust.
             _record_verdict(run, True, checked_by="model",
-                            helped=guided["mode"] == "takeover" or run.get("attempts", 1) > 1
-                            or bool(run.get("asked_person")),
+                            helped=_helped(run, guided),
                             basis=_basis("model", code=bool(made) and facts.compared_clean()))
         where = "Checked on the screen" if on_screen else "Checked against the files I wrote"
         text = f"{reply}\n\n{where}: {verdict['seen']}" if verdict.get("seen") else reply
@@ -869,6 +907,8 @@ def _gate(reply, kind, engine):
         note = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
         if run is not None:
             run["attempt_note"], run["attempt_report"] = note, (reply or "").strip()[:1500]
+            # From here on, a save is rework of what the run had reported done (_reworked).
+            run.setdefault("retried_at", time.time())
             _attempt_record(run)
             progress.emit(f"Not done yet: {note} Trying again.")
             _by_model(run)
@@ -1346,6 +1386,8 @@ def _confirm_reply(paused, reply):
         progress.emit("Trying again." if redo else "Trying again with what you said.")
         if run is not None:
             run["attempt_note"], run["attempts"], run["attempt_report"] = note, 0, claim.strip()[:1500]
+            # The person sent it back: whatever comes of it, the run was helped.
+            run["asked_person"] = True
             _attempt_record(run)
             return _by_model(run)
         return _retry_engine({"task": paused.get("task") or claim, "attempt": 0}, note)

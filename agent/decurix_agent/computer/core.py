@@ -1152,6 +1152,31 @@ def _plan_ask_first():
     return [" ".join(v.split()) if isinstance(v, str) else "" for v in value]
 
 
+def _phase_refusal(control):
+    """
+    Why a committing press (control: what _commit_check found it commits with, or None) is refused: the task is in a
+    part that only collects its documents (phase.py, "gather"), and none of that part's taught steps commits
+    with this control. Found live (2026-11-09): told to collect a month's bills, the model entered all five vouchers by
+    hand in that part, then the per-document part found them all "already in the books" and the month went to the
+    model again - 60 minutes and 4.65M tokens for a month the replay does in a few. Decided by structure: the phase
+    and the taught steps' own controls, never the press's words. None otherwise.
+    """
+
+    if control is None:
+        return None
+    from decurix_agent import task_context
+    from decurix_agent.computer import phase
+    noted = phase.read()
+    if noted.get("phase") != "gather" or noted.get("task") != task_context.current():
+        return None
+    label = " ".join(str(control.get("name") or "").split())[:60]
+    taught = [c for c in noted.get("commits") or [] if c]
+    if label and any(approval.names_control(c, control) or approval.names_control(label, {"name": c}) for c in taught):
+        return None
+    return (f'this part only collects the documents; entering them is the next part - "{label or "this press"}" would '
+            "save a record now. Collect the documents and report; the taught steps enter each one after.")
+
+
 def _plan_hold(control):
     """
     Why a committing press (control: what _commit_check found it commits with, or None) is put to the person: the
@@ -3425,6 +3450,10 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             require = str(held)
         elif held:
             refused("pre_save", held)
+        # A part that only collects the documents saves no record (_phase_refusal).
+        out_of_phase = _phase_refusal(pressed[0] if pressed else None)
+        if out_of_phase:
+            refused("phase", out_of_phase)
         # A press the plan of the work told the person is made with their OK first is put to them, as the gate puts
         # its own (_plan_hold).
         promised = _plan_hold(pressed[0] if pressed else None)

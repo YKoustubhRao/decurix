@@ -447,3 +447,26 @@ A hole in the documents' own numbered series is now found in code and put to the
 ### The guard stopped a data file pretty-printed through a named module
 
 TheBot's piped-interpreter rule read any option after the interpreter as "the program comes from stdin", so a named module (Python's module option) fed a downloaded file was stopped; it now decides by the interpreter's first argument (owner-approved narrowing of the frozen guard, 2026-11-09, follow-ups O-1.a.6).
+
+### No gathered month could ever earn trust
+
+A run done once per document declared no record (only a request of one document did), so nothing it saved was read
+back, no verdict had an independent basis, and every gathered month counted as "helped" because the gather, the replay
+and the closing check are more than one attempt. The skill stayed an apprentice forever: the plan asked every month,
+the model did the closing check every month. Each document's record is now declared from its own values and file
+before anything is typed (`skill_task._declare_document_records`), and "helped" is a person stepping in, a takeover,
+or something saved after the run was first sent back (`final_gate._helped`, `_reworked`) - never the count of attempts.
+
+### Told to collect the bills, the model entered them
+
+In the part of a month that only collects its documents, the model entered all five vouchers by hand; the per-document
+part then found them all "already in the books" and gave the month to the model again (60 minutes, 4.65M tokens). A
+committing press the gather part's taught steps do not make is refused while that part runs (`core._phase_refusal`, the
+phase noted by `core.write_phase`), so saving the attachments as taught goes through and saving a voucher does not.
+
+### Bills read through a filtered loop were "never read"
+
+`for f in *.docx; do echo "=== $f ==="; office read "$f" | grep ...; done` strips office read's "<name>:" header, the
+soul's evidence of a read; the review sent the run back three times. A loop's marker line now earns the credit only
+when code's own read of that file holds every checkable line printed under it (`creditLoopMarkers`): a marker over
+nothing, or over lines the file does not hold, earns nothing.

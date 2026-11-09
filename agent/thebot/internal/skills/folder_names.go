@@ -298,3 +298,13 @@ func quoteAll(xs []string) []string {
 func shellQuote(p string) string {
 	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }
+
+// shellPath quotes a path for sh, keeping a leading "~/" or "$HOME/" the home folder (quoted, sh would not expand it).
+func shellPath(p string) string {
+	for _, home := range []string{"~/", "$HOME/"} {
+		if strings.HasPrefix(p, home) {
+			return `"$HOME"/` + shellQuote(strings.TrimPrefix(p, home))
+		}
+	}
+	return shellQuote(p)
+}

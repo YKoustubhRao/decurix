@@ -545,6 +545,9 @@ func unmarkedCommand(reply string) string {
 // on from exactly where it paused.
 type operatorState struct {
 	Messages []llm.Message
+	// readDocument is code's own read of a document file (office read), or nil: what a loop showed under a file's
+	// name is credited as that file's only when it stands in the file (creditLoopMarkers).
+	readDocument func(file string) (string, bool)
 	// approvedRun is the command the person's OK is letting through right now (already counted in CommitsRun), so
 	// execute does not count it a second time as a commit that needed no approval.
 	approvedRun string
@@ -934,6 +937,11 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 		ScreenTextChars: caps.ScreenTextChars(),
 		Turns:           caps.OperatorTurns(),
 		Hosted:          caps.Hosted,
+	}
+	// Code's own read of a document, for checking what a loop showed of it (creditLoopMarkers).
+	st.readDocument = func(file string) (string, bool) {
+		res := runShell(rc.Ctx, rc.Dir(), "office read "+shellPath(file), 90*time.Second, st.guiEnv()...)
+		return res.Output, res.ExitCode == 0
 	}
 	vision := ""
 	if caps.Hosted {

@@ -14,6 +14,7 @@ from decurix_agent import (attachments, binding, config, guidance, llm_client, m
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
                                     mimic, records, replay, skills)
 from decurix_agent.computer import elements as el
+from decurix_agent.computer import phase as phase_note
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
 from decurix_agent.messaging import ask_for_query, write_final_reply
@@ -657,6 +658,17 @@ def _item_loop(skill):
     return max(loops, key=lambda loop: (loop.get("length") or 0) * (loop.get("reps") or 0), default=None)
 
 
+def _gather_commits(skill):
+    """The controls the taught steps before the per-document block commit with (a press that saves): the saves the
+    gather part may make - saving the attachments, if the person did - and no other."""
+
+    start = _loop_start(skill)
+    return [" ".join(str((s.get("target") or {}).get("name") or "").split())
+            for s in skill.get("steps") or []
+            if start and (s.get("n") or 0) < start and (s.get("consequential") or replay._step_commits(s))
+            and (s.get("target") or {}).get("name")]
+
+
 def _loop_start(skill):
     """The number of the first step of the per-item block, or 0 when the skill has none."""
 
@@ -732,6 +744,7 @@ def _after_phase(run, phase, reply, kind):
 
     skill = run["skill"]
     report = " ".join((reply or "").split())[:1500]
+    phase_note.write(task_context.current(), None)  # (the part that only collected is over)
 
     if phase == REST_PHASE:
         # The model entered the documents the fill set aside; the replay's result and the model's report are judged as
@@ -805,6 +818,7 @@ def _after_phase(run, phase, reply, kind):
         return True
 
     _same_addresses(run)
+    _declare_document_records(run)
     if _stage(run) == experience.APPRENTICE and not run.get("plan_ok"):
         _pause(run, "plan", _plan_text(run))
         return True
@@ -1055,6 +1069,87 @@ def _taught_rows(run):
     return []
 
 
+def _declarable(run, candidates, document):
+    """
+    {label: value} of `candidates` a record may be declared with from `document`: only what stands in that document or
+    the request - a declaration refuses whole over one value nothing backs. A date is declared as the document writes
+    it (binding.date_in): the value is how the form takes it, and the save compares the form with the document under
+    each side's order.
+    """
+
+    given = records._source_text(document) + "\n" + str(run.get("context") or "")
+    fields = {}
+    for label, v in candidates.items():
+        written = binding.date_in(v, [given])
+        if written and _day_open(v):
+            # Declared, it would be compared with the form under an order nobody has said, and the save would wait
+            # for a person to say which day the form's date is. Found live (2026-11-08): it did, the model read the
+            # refusal as a wrong format, and typed "2026-10-11", which the application took as 20-10-2011. Left
+            # out, the date is the check's to read, as it was before dates were declared.
+            continue
+        if written or records.stands_in(v, given):
+            fields[label] = written or v
+    return fields
+
+
+def _item_fields(run, n):
+    """
+    {label: value} of document n's record in a run done once per document: each list's item n, by the label of the
+    field its step types into (as _taught_fields labels a field), and the run's other values a labelled field takes.
+    A field its document leaves empty (binding.EMPTY_ITEM) is no value; a label given two different values is dropped.
+    """
+
+    skill = run["skill"]
+    steps = {s.get("n"): s for s in skill.get("steps") or []}
+    fields, clash = {}, set()
+    for param in skills.list_params(skill):
+        items = skills.split_items(run["values"].get(param["name"]))
+        target = (steps.get(param.get("step")) or {}).get("target") or {}
+        label = " ".join(str(target.get("name") or "").split())
+        if n >= len(items) or items[n] == binding.EMPTY_ITEM or not label or target.get("role") not in FIELD_ROLES:
+            continue
+        if label in fields and not records.same_value(fields[label], items[n]):
+            clash.add(label)
+        fields.setdefault(label, " ".join(items[n].split()))
+    for label, value in _taught_fields(run).items():
+        fields.setdefault(label, value)
+    return {label: value for label, value in fields.items() if label not in clash}
+
+
+def _declare_document_records(run):
+    """
+    Declare, in code, the record each document of a run done once per document makes, before anything is typed: from
+    THAT document's values (the fill's item for it) and THAT file, by the same rules as one document's record
+    (_declare_taught_record). Each save is then compared with its document before and read back after, whoever types
+    it, so a clean month is checked independently and counts. Found live (2026-11-09): a month of bills declared no
+    record at all - only a request of one document did - so nothing was read back, no run counted, and the skill never
+    left its apprenticeship. Sets run["declared_documents"] to the keys declared. Never raises.
+    """
+
+    run["declared_documents"] = []
+    gone = {x["document"] for x in (run.get("left_out") or []) + (run.get("by_hand") or [])}
+    entered = [d for d in run.get("documents") or [] if d not in gone]
+    for n, document in enumerate(entered):
+        try:
+            fields = _declarable(run, _item_fields(run, n), document)
+            key = next((v for label, v in fields.items() if records.identifier_field(label)), "")
+            if not key or len(fields) < MIN_DECLARED_FIELDS:
+                log(f"Skill {run['skill']['name']}: no record declared for {Path(document).name} - "
+                    + ("no field names a number" if not key else f"only {len(fields)} field(s) stand in it"))
+                continue
+            _rec, lines = records.declare(key, document, fields)
+        except Exception as exc:  # noqa: BLE001 - that document's record is not declared; the run goes on
+            log(f"Skill {run['skill']['name']}: the record of {Path(document).name} was not declared: {exc}")
+            continue
+        run["declared_documents"].append(key)
+        log(f"Skill {run['skill']['name']}: declared record {key} from {document}: {' | '.join(lines)}")
+    if run["declared_documents"]:
+        progress.emit(f"Declared {len(run['declared_documents'])} record(s), one per document, before typing them - "
+                      "each form is compared with its document before the save and read back after: "
+                      + ", ".join(run["declared_documents"][:12]))
+    return run["declared_documents"]
+
+
 def _declare_taught_record(run):
     """
     Declare the record this run makes from its document, in code, before anything is typed (records.declare): its
@@ -1079,21 +1174,7 @@ def _declare_taught_record(run):
         if len(files) != 1:
             log(f"Skill {run['skill']['name']}: no record declared - the request has {len(files)} documents, not one")
             return ""  # which document a record comes from is not code's to choose among several
-        # Only what stands in the document or the request: a declaration refuses whole over one value nothing backs.
-        given = records._source_text(files[0]) + "\n" + str(run.get("context") or "")
-        fields = {}
-        for label, v in _taught_fields(run).items():
-            # A date is declared as the document writes it (binding.date_in): the value is how the form takes it, and
-            # the save compares the form with the document under each side's order.
-            written = binding.date_in(v, [given])
-            if written and _day_open(v):
-                # Declared, it would be compared with the form under an order nobody has said, and the save would wait
-                # for a person to say which day the form's date is. Found live (2026-11-08): it did, the model read the
-                # refusal as a wrong format, and typed "2026-10-11", which the application took as 20-10-2011. Left
-                # out, the date is the check's to read, as it was before dates were declared.
-                continue
-            if written or records.stands_in(v, given):
-                fields[label] = written or v
+        fields = _declarable(run, _taught_fields(run), files[0])
         key = next((v for label, v in fields.items() if records.identifier_field(label)), "")
         if not key or len(fields) < MIN_DECLARED_FIELDS:
             log(f"Skill {run['skill']['name']}: no record declared - " + ("no field names a number" if not key else
@@ -1162,6 +1243,7 @@ def _need_text(skill, missing):
 
 def _execute(run):
     skill = run["skill"]
+    phase_note.write(task_context.current(), None)  # (the replay enters the documents: no gather part now)
     program, values = skills.expand(skill, run["values"])
     run["expanded"] = program
 
@@ -2755,6 +2837,9 @@ def _by_model(run, from_step=None, note="", ran=False, phase=None):
     request = _engine_request(run, phase)
     run.setdefault("attempts", 0)
     run["attempts"] += 1
+    # The gather part only collects: the gui command refuses a save its taught steps do not make (core._phase_refusal).
+    # Any other part clears it.
+    phase_note.write(task_context.current(), "gather" if phase == GATHER_PHASE else None, _gather_commits(skill))
 
     guidance.begin(skill=skill["name"], task=request, text=_procedure(run, from_step, note, ran, phase=phase),
                    values=run["values"], mode="phase" if phase else ("takeover" if from_step else "model"), run=run,

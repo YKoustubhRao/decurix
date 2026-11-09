@@ -151,3 +151,13 @@ it is never the model's.
   it is fine as it is (done, checked by the person), or what to do about the missing one (the model carries on with
   their words). A hole the person already named, in this task or on this worker's earlier ones, is not asked again.
   It never blocks and never decides by itself.
+
+## A month of documents earns trust like one document (2026-11-09)
+
+- Each document of a run done once per document declares its record before anything is typed, from that document's
+  item of each list and that file (`skill_task._declare_document_records`, the same rules as one document's record:
+  the labels the demonstration typed into, the key the identifier-labelled field, only values that stand in that
+  document). Every save is compared before and read back after; `records.all_read_back` covers them all.
+- "Helped" (no count towards trust) is a person stepping in - any answer beyond the plan's plain yes, or sending a
+  result back - a takeover of the replay, or a save in the application after the run was first sent back
+  (`final_gate._helped`). How many model passes a run took (gather, replay, closing check) is not help.

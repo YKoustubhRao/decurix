@@ -704,3 +704,39 @@ func TestAChecksErrorIsNotAPass(t *testing.T) {
 		}
 	}
 }
+
+// A loop that filters office read's output under its own marker lines ("=== NAME ===") is credited only with what
+// code finds in the file itself: a filtered line of the bill is its line; a marker over nothing, or over lines the
+// file does not hold, earns nothing (found live 2026-11-09: five bills read so were "never read", three times over).
+func TestALoopsMarkerIsCreditedOnlyWithTheFilesOwnLines(t *testing.T) {
+	bills := map[string]string{
+		"/w/bills/1048 Vasco Bay.docx":        "1048 Vasco Bay.docx: 4 table(s)\nBASIC PRICE | 40,000.00\nIGST @ 18% | 7,200.00\nGRAND TOTAL | 47,200.00\n",
+		"/w/bills/1049 Hampi Residency.docx":  "1049 Hampi Residency.docx: 4 table(s)\nBASIC PRICE | 12,000.00\nCGST @ 9% | 1,080.00\nGRAND TOTAL | 14,160.00\n",
+		"/w/bills/1050 Bhuvana Hospital.docx": "1050 Bhuvana Hospital.docx: 4 table(s)\nBASIC PRICE | 18,000.00\nGRAND TOTAL | 21,240.00\n",
+	}
+	st := &operatorState{readDocument: func(file string) (string, bool) {
+		text, ok := bills[file]
+		return text, ok
+	}}
+	out := "=== 1048 Vasco Bay.docx ===\nBASIC PRICE | 40,000.00\nGRAND TOTAL | 47,200.00\n" +
+		"=== 1049 Hampi Residency.docx ===\nGRAND TOTAL | 99,999.00\n" + // (not in the file: invented)
+		"=== 1050 Bhuvana Hospital.docx ===\n\n" // (nothing under it)
+	st.noteEvidence(`for f in /w/bills/*.docx; do echo "=== $(basename "$f") ==="; office read "$f" | grep -i "total\|basic"; done`, out)
+	var docs []string
+	for _, u := range st.Units {
+		if u.Kind == "document" {
+			docs = append(docs, u.Source)
+		}
+	}
+	if strings.Join(docs, "|") != "1048 Vasco Bay.docx" {
+		t.Fatalf("documents credited = %v, want only the one whose lines stand in it", docs)
+	}
+	// Without code's own read of the file, a marker earns nothing.
+	st = &operatorState{}
+	st.noteEvidence(`for f in /w/bills/*.docx; do echo "=== $f ==="; office read "$f" | grep total; done`, out)
+	for _, u := range st.Units {
+		if u.Kind == "document" {
+			t.Fatalf("credited with no read of the file: %+v", u)
+		}
+	}
+}
