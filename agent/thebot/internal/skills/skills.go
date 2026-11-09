@@ -123,6 +123,10 @@ type RunContext struct {
 	// CollectOnly is the host's word (a flag, never text) that this job is a phase of a taught task whose rule is to
 	// collect the documents and enter nothing: the review asks no document's figures to be entered (coverageIssues).
 	CollectOnly bool
+	// EnteredEarlier is what earlier jobs of this task typed into forms the application then saved (the host's
+	// recording of the task): a later job's review counts it as entered, so a document an earlier job already
+	// entered is not "read; none of its figures went into what was entered". Data, never prompt.
+	EnteredEarlier []string
 }
 
 // Said is one reply of the person's with the question it answered.
@@ -138,6 +142,9 @@ const (
 	// Bounds on the picked fields a job is sent (PickedFields).
 	MaxPickedFields    = 40
 	MaxPickedFieldText = 300
+	// Bounds on the values a job is told were entered earlier in its task (EnteredEarlier).
+	MaxEnteredEarlier     = 400
+	MaxEnteredEarlierText = 300
 )
 
 // Reading is what the host read a reply to an approval as - the one reading every part of the worker acts on (the

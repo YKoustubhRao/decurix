@@ -148,6 +148,8 @@ type Request struct {
 	PickedFields []string
 	// CollectOnly is the host's word that the job collects documents and enters nothing (skills.RunContext).
 	CollectOnly bool
+	// EnteredEarlier is what earlier jobs of the task entered and saved (skills.RunContext).
+	EnteredEarlier []string
 }
 
 type Scheduler struct {

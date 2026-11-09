@@ -68,3 +68,24 @@ class ThePickedFieldsField(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheEnteredEarlierField(unittest.TestCase):
+    """A job is told what its task already typed into forms the application saved, never a withheld value."""
+
+    def test_saved_entries_go_and_secrets_do_not(self):
+        from decurix_agent import task_context
+        from decurix_agent.computer import privacy, recording, records
+        typed = [("Voucher No.", "1054"), ("Party", "Sharada Residency"), ("Password", "hunter2")]
+        with patch.object(task_context, "current", return_value="t1234567890abcdef"), \
+                patch.object(recording, "load", return_value=({}, [])), \
+                patch.object(records, "typed_into_saved", return_value=typed), \
+                patch.object(privacy, "withhold_known", side_effect=lambda t: "[withheld]" if t == "hunter2" else t):
+            self.assertEqual(thebot_harness._entered_earlier(), ["1054", "Sharada Residency"])
+
+    def test_no_recording_sends_nothing(self):
+        from decurix_agent import task_context
+        from decurix_agent.computer import recording
+        with patch.object(task_context, "current", return_value="t1234567890abcdef"), \
+                patch.object(recording, "load", side_effect=FileNotFoundError("none")):
+            self.assertEqual(thebot_harness._entered_earlier(), [])

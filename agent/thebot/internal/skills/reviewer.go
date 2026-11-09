@@ -89,6 +89,21 @@ func (st *operatorState) personWords() []string {
 	return personSaid(st.Messages)
 }
 
+// seedEnteredEarlier counts what earlier jobs of this task typed into forms the application saved as entered by this
+// goal (Written), bounded: a later job of the task is the same work, and its review asked a correct second attempt -
+// which rightly entered nothing twice - to "enter what" documents the first attempt had entered (found live 2026-11-08,
+// eight send-backs until the case timed out).
+func (st *operatorState) seedEnteredEarlier(values []string) {
+	for i, v := range values {
+		if i == MaxEnteredEarlier {
+			break
+		}
+		if v = strings.TrimSpace(truncateText(v, MaxEnteredEarlierText)); v != "" {
+			st.Written = append(st.Written, v)
+		}
+	}
+}
+
 // seedPicked keeps the taught task's fields that are filled by picking an existing entry from the application's own
 // list (RunContext.PickedFields), bounded, for the review: the record holds the entry's own name, which may differ from
 // the document's words that searched for it. Found live (2026-11-08): told only the run's values, the review sent a

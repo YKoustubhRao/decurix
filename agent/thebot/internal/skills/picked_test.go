@@ -54,3 +54,16 @@ func TestACollectOnlyGoalIsAskedNoFiguresEntered(t *testing.T) {
 		t.Fatalf("a collect-only goal was asked to enter figures: %+v", issues)
 	}
 }
+
+// What an earlier job of the task entered counts as entered: a document whose figures it holds is no coverage point.
+func TestWhatAnEarlierJobEnteredCountsAsEntered(t *testing.T) {
+	st := &operatorState{}
+	st.Units = append(st.Units, evidenceUnit{Kind: "document", Source: "/home/w/1054 Sharada.docx", Text: "Invoice No : 1054 Sharada Residency 15,000.00"})
+	if len(st.coverageIssues("entered 1054 earlier")) == 0 {
+		t.Fatal("a read document nothing reflects should be a point")
+	}
+	st.seedEnteredEarlier([]string{"1054", "15,000.00", " "})
+	if issues := st.coverageIssues("entered 1054 earlier"); len(issues) != 0 {
+		t.Fatalf("a document an earlier job entered is still a point: %+v", issues)
+	}
+}

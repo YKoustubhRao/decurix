@@ -549,6 +549,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		PickedFields []string `json:"pickedFields"`
 		// CollectOnly is the host's word that this job collects documents and enters nothing (skills.RunContext).
 		CollectOnly bool `json:"collectOnly"`
+		// EnteredEarlier is what earlier jobs of this task entered and saved (skills.RunContext.EnteredEarlier).
+		EnteredEarlier []string `json:"enteredEarlier"`
 		// TaskID is the control plane's task this request belongs to (PLAN-P2 C2). It tags every model call and command
 		// of the job (llm.WithTags) and names its trace; one not of llm.TaskIDShape is ignored.
 		TaskID string `json:"taskId"`
@@ -599,7 +601,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history,
 		Reading: body.ApprovalReading, PlanAgreed: body.PlanAgreed, EarlierSaid: body.EarlierSaid,
-		PickedFields: body.PickedFields, CollectOnly: body.CollectOnly}
+		PickedFields: body.PickedFields, CollectOnly: body.CollectOnly,
+		EnteredEarlier: body.EnteredEarlier}
 	if paused := s.takePaused(body.SessionID); paused != nil {
 		// The paused job's prompt is withheld by its own values and this request's, before it is cut or quoted.
 		pausedSecrets := withheld.Clean(append(append([]string{}, body.Secrets...), paused.Secrets...))

@@ -551,6 +551,35 @@ def _picked_fields():
         return []
 
 
+# The values a job is told were entered earlier in its task at most (soul's skills.MaxEnteredEarlier bounds it too).
+MAX_ENTERED_EARLIER = 400
+
+
+def _entered_earlier():
+    """What this task typed or chose into forms the application then saved, from the task's own recording
+    (records.typed_into_saved): a later job of the task - one the final check sent back - is told it, so its review does
+    not ask it to enter again what an earlier job entered (found live 2026-11-08: eight send-backs of a correct second
+    attempt). A value privacy withholds is never sent. [] when the task saved nothing yet, or it cannot be read."""
+
+    try:
+        from decurix_agent.computer import privacy, recording, records
+        task_id = task_context.current()
+        if not task_id:
+            return []
+        _meta, events = recording.load(f"task-{task_id}")
+        out = []
+        for _label, value in records.typed_into_saved(events):
+            text = " ".join(str(value or "").split())
+            if text and privacy.withhold_known(text) == text and text not in out:
+                out.append(text)
+        return out[:MAX_ENTERED_EARLIER]
+    except (FileNotFoundError, ValueError):
+        return []
+    except Exception as exc:  # noqa: BLE001 - a fact that cannot be worked out is not sent
+        log(f"TheBot: could not read what this task entered before: {exc}")
+        return []
+
+
 def _collect_only():
     """Whether this job is the phase of a taught task that collects its documents and enters nothing (skill_task's
     gather phase), from the guidance's own phase - structure, never the request's words. Soul's review then asks no
@@ -727,6 +756,8 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 "pickedFields": _picked_fields(),
                 # This job is a taught task's phase that collects documents and enters nothing (_collect_only).
                 "collectOnly": _collect_only(),
+                # What earlier jobs of this task typed into forms the application saved (_entered_earlier).
+                "enteredEarlier": _entered_earlier(),
                 # The control plane's task this job works for (C2): soul tags every model call it makes for the job
                 # with it, so the proxy's record joins each call to its task.
                 "taskId": task_context.current(),
