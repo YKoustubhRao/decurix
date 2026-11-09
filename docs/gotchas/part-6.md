@@ -507,3 +507,12 @@ taught case ended on the number of questions. Now such a date is never declared 
 (`task_context.kept_app_order`, read before asking), a question they could not settle is not put again in the task
 (`date_left_open`), and the eval's expert answers it from the case's own fact of how its apps write dates
 (`Case.DateOrders`, `confirmReply`).
+
+### A ledger saved with its state unset went out as done
+
+An untaught worker declared no record, created a party's ledger with State left "-- Select --" after the person said
+they did not know it, disclosed that in its report, and the run ended "done, not checked" on the model's look alone:
+nothing had read a single save back, and nothing in the report said which saves were unchecked. Now the final gate
+never writes a checked done while the task saved a record nothing read back against a source
+(`records.saved_unread`): the report says "NOT checked", lists where each such record was saved, and the run counts as
+no checked run.

@@ -152,6 +152,18 @@ def _says_it_could_not(*args, **kwargs):
     return _RUN["_says_it_could_not"](*args, **kwargs)
 
 
+def _saved_unread():
+    """The records this task saved that nothing read back (records.saved_unread); [] when they cannot be read - a
+    check that cannot be made then shows in the ledger's own findings, as before."""
+
+    try:
+        from decurix_agent.computer import records
+        return records.saved_unread(task_context.current())
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not tell which saved records were read back: {exc}")
+        return []
+
+
 def _helped(run, guided):
     """
     Whether a run that ends done was helped, so it does not count towards the skill's trust: a person stepped in (a
@@ -954,6 +966,23 @@ def _gate(reply, kind, engine):
                               "series": {"helped": _helped(run, guided),
                                          "basis": _basis("model", code=bool(made) and facts.compared_clean())}}
         ask_for_query(series, kind="query", engine=engine)
+        return True
+
+    unread_saves = _saved_unread() if decided["status"] == verify.DONE else []
+    if unread_saves:
+        # Records this task saved that nothing read back against a source: the judge's word is all that stands behind
+        # them, and that is no checked done (found live 2026-11-09: a party's ledger saved with its state left unset
+        # went out as done). Said as what was saved and not checked; counted as no checked run.
+        guidance.end()
+        if run is not None:
+            _record_verdict(run, True, checked_by="model", helped=_helped(run, guided), basis=["model"])
+        text = (f"{reply}\n\nNOT checked: {len(unread_saves)} record(s) this task saved were not read back against "
+                "any source, so nothing but the model's look at the screen stands behind them:\n"
+                + "\n".join(f"- saved at {where}" for where in unread_saves[:12])
+                + "\nLook at each before relying on it.")
+        write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=False,
+                          verdict=verdicts.make(verdicts.UNCHECKED, "skill_gate" if run is not None else "verify",
+                                                why=f"{len(unread_saves)} saved record(s) not read back"))
         return True
 
     if decided["status"] == verify.DONE:

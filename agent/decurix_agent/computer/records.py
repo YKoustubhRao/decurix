@@ -1995,6 +1995,45 @@ def listing(task_id=None):
     return out
 
 
+def saved_unread(task_id=None, events=None):
+    """
+    The new records this task saved that nothing read back against a source, each as where it was saved (the page or
+    window the save left): a save answered as saved on a new record's page (core.records_created) that no declared
+    record read back whole matches. Found live (2026-11-09): a worker that declared nothing created a party's ledger
+    with its state left unset, and the run ended done on the model's word - nothing had read a single save back. A
+    final report says these, never a checked done over them.
+    """
+
+    from decurix_agent.computer import core
+    if events is None:
+        from decurix_agent.computer import evidence
+        events = evidence._task_events(task_id)
+    read = set()
+    for r in load(task_id):
+        rb = r.get("readback") or {}
+        if r.get("saved_at") and rb.get("seen") and not rb.get("absent") and not _rows_unread(r):
+            read.add(" ".join(str(r.get("saved") or "").split())[:300])
+    out, new_page = [], False
+    for event in events or []:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if core._FORM_START.search(change) or core._FORM_START.search("page is now " + str(event.get("target") or "")):
+            new_page = True
+        if event.get("kind") in ("click", "key") and core._saved(change) and new_page:
+            new_page = False
+            if " ".join(change.split())[:300] not in read:
+                moved = re.search(r"page is now (\S+)", change)
+                out.append(moved.group(1).rstrip(";,") if moved else str(event.get("window") or "a form"))
+            continue
+        moved = re.search(r"page is now (\S+)", change)
+        if moved:
+            new_page = bool(core._NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
+        elif core._NEW_RECORD_PAGE.search(change) or core._NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+            new_page = True
+    return out
+
+
 def all_read_back(task_id=None):
     """Whether the task declared at least one record and every one was saved and read back with each of its declared
     values shown (the ledger's "matched"): the independent check a run's trust may rest on (experience.INDEPENDENT)."""
