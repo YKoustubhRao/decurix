@@ -272,7 +272,11 @@ def worth_reading(request):
 
 
 class Unavailable(Exception):
-    """The model service did not answer the reading of a request (read)."""
+    """The model service did not answer the reading of a request, or twice gave no readable answer (read)."""
+
+
+# The second reading of a request whose first answer could not be read: room for a reasoning model's thinking.
+READ_RETRY_TOKENS = 8000
 
 
 def read(request):
@@ -313,8 +317,18 @@ def read(request):
         log(f"request reading: the model could not be asked ({exc})")
         raise Unavailable(str(exc)) from exc
     except ValueError as exc:
-        log(f"request reading: the model's answer could not be read ({exc})")
-        return None
+        # An empty or unreadable answer (a reasoning model that spent its budget thinking) is asked once more with
+        # room; still unreadable, the request is not handed on as untaught - found live (2026-11-08): an empty answer
+        # sent a taught bill to the generic operator.
+        log(f"request reading: the model's answer could not be read ({exc}); asking once more with room")
+        try:
+            data = study._call(READ_SYSTEM, content, max_tokens=READ_RETRY_TOKENS)
+        except llm_client.LLMError as again:
+            raise Unavailable(str(again)) from again
+        except ValueError as again:
+            # Twice unreadable: decided without the model, by the recordings' own words (the caller's fallback).
+            log(f"request reading: the model's answer could not be read twice ({again})")
+            return None
 
     why = " ".join(str(data.get("why") or "").split())[:300]
     chosen = data.get("task")

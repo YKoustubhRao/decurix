@@ -273,4 +273,24 @@ class AModelServiceThatDoesNotAnswer(unittest.TestCase):
             skill_task.perform_mimic("Enter this bill: ~/work/bill.pdf")
         self.assertEqual(engine, [])
         self.assertEqual(finals[0][1]["kind"], "error")
-        self.assertIn("not answering", finals[0][0])
+        self.assertIn("Nothing was done", finals[0][0])
+
+
+class AnUnreadableReading(unittest.TestCase):
+    """An empty answer to the reading of a request is asked once more with room (found live 2026-11-08: an empty answer
+    sent a taught bill to the generic operator); twice unreadable, the recordings' own words decide, as before."""
+
+    def test_asked_once_more_then_not_handed_on(self):
+        from decurix_agent import request_reading
+        calls = []
+
+        def unreadable(system, content, max_tokens=0):
+            calls.append(max_tokens)
+            raise ValueError("the model did not answer in JSON: ''")
+        with mock.patch.object(request_reading, "available", return_value=True), \
+                mock.patch.object(request_reading, "_candidates", return_value=[{"name": "enter-bill"}]), \
+                mock.patch.object(request_reading, "_describe", return_value="enter-bill"), \
+                mock.patch.object(request_reading.lessons, "known", return_value=""), \
+                mock.patch.object(request_reading.study, "_call", side_effect=unreadable):
+            self.assertIsNone(request_reading.read("Enter this bill: ~/work/bill.pdf"))
+        self.assertEqual(calls, [800, request_reading.READ_RETRY_TOKENS])
