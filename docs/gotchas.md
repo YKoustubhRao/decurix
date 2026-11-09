@@ -1019,3 +1019,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A corrected rule stayed beside its correction
 - [part-6.md](gotchas/part-6.md): Every save of a month asked which day "04-11-2026" is
 - [part-6.md](gotchas/part-6.md): A ledger saved with its state unset went out as done
+- [part-6.md](gotchas/part-6.md): A command's output went to the person as the question

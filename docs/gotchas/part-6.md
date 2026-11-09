@@ -516,3 +516,11 @@ nothing had read a single save back, and nothing in the report said which saves 
 never writes a checked done while the task saved a record nothing read back against a source
 (`records.saved_unread`): the report says "NOT checked", lists where each such record was saved, and the run counts as
 no checked run.
+
+### A command's output went to the person as the question
+
+When the model kept repeating one command, the soul ended the loop by putting the command's output to the person as
+the answer to check ("`gui scroll down 5` printed: Scrolled the focused window ... Tell me whether this answers the
+request") - five times in one goal of a filing case. The question is now the worker's own ("I kept running the same
+command ... is what it shows the answer, or how should I go on?") with the output quoted under it, and it is asked once
+per goal: a second loop ends the goal (`repeatedCommandQuestion`, `RepeatAsked`).

@@ -695,6 +695,9 @@ type operatorState struct {
 	SaveRefusal    string `json:",omitempty"`
 	SaveRefusals   int    `json:",omitempty"`
 	SaveRefusalAsk string `json:",omitempty"`
+	// RepeatAsked: the person was asked once in this goal about the model repeating one command
+	// (repeatedCommandQuestion); repeating again then ends the goal instead of asking again.
+	RepeatAsked bool `json:",omitempty"`
 	// OnScreenNudged: a question quoting what a listing shows was pushed back once, NamesNudged: one naming a list a
 	// listing shows (screen_answer.go); RecordLedger is
 	// the record ledger as gui records last printed it, read before a review (knowledge.go).
@@ -2103,8 +2106,15 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// 5.10.124 before running anything; the real answer was 6.6.87.
 				rc.Logf("operator", "still repeating the same command - ending with what it printed")
 				if st.LastResult.ExitCode == 0 {
-					return unchecked("`"+value+"` printed:\n\n"+answerFromCommand(value, *st.LastResult, st.outputChars()),
-						"the model kept repeating this command instead of reporting a result, so no check of the answer ran")
+					printed := answerFromCommand(value, *st.LastResult, st.outputChars())
+					if st.RepeatAsked {
+						// Asked once in this goal already: a second loop ends it, never a second identical question.
+						return finish("I kept running `"+value+"` again instead of moving the work on, after you were "+
+							"asked about it once, so I have stopped. It last printed:\n\n"+printed, false,
+							map[string]any{"needsUserInput": true, "failureReasoning": "the same command keeps repeating"})
+					}
+					st.RepeatAsked = true
+					return ask(repeatedCommandQuestion(value, printed))
 				}
 				return finish(fmt.Sprintf("I kept retrying `%s`, and it keeps failing with exit code %d:\n\n%s",
 					value, st.LastResult.ExitCode, truncateText(st.LastResult.Output, 1000)), false,
@@ -2373,6 +2383,25 @@ func shownOutput(r shellResult) string {
 		return out
 	}
 	return "(no output)"
+}
+
+// repeatedCommandQuestion is what the person is asked when the model keeps running one command instead of moving the
+// work on: the worker's own question first, the command's output only quoted under it as what it showed. Found live
+// (2026-11-09): the output itself went out as the question ("`gui scroll down 5` printed: Scrolled the focused
+// window ...") five times in one goal.
+func repeatedCommandQuestion(command, printed string) string {
+	return "I kept running the same command, `" + command + "`, instead of moving the work on, so I have stopped to " +
+		"ask you: is what it shows the answer to the request, or how should I go on?\n\nWhat it last showed (quoted, " +
+		"not checked):\n\n" + quoteLines(printed)
+}
+
+// quoteLines marks each line of a text as quoted ("> ").
+func quoteLines(text string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "> " + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 func repeatedCommandNudge(command string, r shellResult, limit int) string {
