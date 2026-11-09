@@ -205,3 +205,47 @@ func TestTheExpertSaysYesToAListedApprovalThroughTheGate(t *testing.T) {
 		}
 	}
 }
+
+// manySavesWorker asks the gate's approval before each of `saves` saves, then reports them done.
+func manySavesWorker(saves int) worker {
+	return func(fs *fakeSandbox, caseID, content string, n int) {
+		if n > 1 && content != ApprovalYes {
+			fs.final("I was not allowed to save.", false)
+			return
+		}
+		if n <= saves {
+			gate := map[string]string{"id": fmt.Sprintf("g%d", n), "question": saveBillGate, "sig": "gate-signed"}
+			fs.callback("/api/querytext", map[string]any{"kind": "approval", "reply": "May I save it?", "gate": gate})
+			return
+		}
+		fs.addRecord("bills", map[string]any{"number": "B-3"})
+		fs.final("Saved B-3.", true)
+	}
+}
+
+// Approvals the case lists are counted (q_required) but never end a case for "too many questions": a worker that asks
+// before each of a month's saves is measured on its work, not cut off at the sixth save (owner's decision 2026-11-09).
+// Only a runaway past maxListedApprovals ends it.
+func TestListedApprovalsDoNotCountTowardTheQuestionLimit(t *testing.T) {
+	run := func(saves int) Row {
+		s, _, _, _, _ := newService(t, manySavesWorker(saves))
+		r, err := s.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t, approveCase()), Repeats: 1,
+			Cases: []string{"approve-save"}, Arms: []Arm{{Name: "arm", Kind: ArmModel, Expert: true}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitDone(t, s, r.ID)
+		rows, _ := s.Store.Rows(r.ID)
+		if len(rows) != 1 {
+			t.Fatalf("rows: %+v", rows)
+		}
+		return rows[0]
+	}
+	many := MaxQuestions + 3
+	if row := run(many); !row.Passed || row.Observed != OutcomeComplete || row.QRequired != many {
+		t.Fatalf("%d listed approvals: %+v", many, row)
+	}
+	if row := run(maxListedApprovals + 1); row.Passed || !containsString(row.Problems, "too many approvals") {
+		t.Fatalf("a runaway of approvals: %+v", row)
+	}
+}

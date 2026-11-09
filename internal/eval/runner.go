@@ -48,6 +48,9 @@ const (
 	MaxRepeats     = 20
 	MaxQuestions   = 5
 	maxLedgerBytes = 1 << 20
+	// maxListedApprovals bounds the approvals a case lists that one case may use (they do not count toward
+	// MaxQuestions): enough for a month of documents saved one by one, low enough to stop a worker that saves in a loop.
+	maxListedApprovals = 40
 )
 
 var armName = regexp.MustCompile(`^[a-z0-9][a-z0-9+@._:-]{0,63}$`)
@@ -1112,7 +1115,7 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 		notDelivered(ev, err, "The request could not be sent to the worker.")
 		return problems
 	}
-	questions := 0
+	questions, approvals := 0, 0
 	exhausted := s.Broker.CaseExhausted()
 	for {
 		select {
@@ -1167,11 +1170,16 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				// bound to the gate's request and its own words, signed for the gate (practice.ApprovalGateNotice).
 				// Any other approval, or one the gate did not sign, is refused: nothing is granted and the case ends.
 				if _, ok := c.ApprovalFor(o.Gate); ok && signed && arm.Expert {
-					questions++
-					if questions > MaxQuestions {
+					// An approval the case lists is the person's OK to a save the work needs, not a question the worker
+					// could have answered itself: it is counted (q_required) but never ends the case for "too many
+					// questions" (owner's decision 2026-11-09: a worker that asks before each of a month's six saves
+					// was cut off at the sixth, and the comparison measured the cap, not the work). Only a runaway is
+					// stopped (maxListedApprovals).
+					approvals++
+					if approvals > maxListedApprovals {
 						ev.Questions = append(ev.Questions, asked)
 						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
-						ev.Unfinished = append(ev.Unfinished, "too many questions")
+						ev.Unfinished = append(ev.Unfinished, "too many approvals")
 						return problems
 					}
 					asked.Reply = ApprovalYes

@@ -302,7 +302,7 @@ at it as observed, as every approval did before (so `stopped_at_approval` cases 
 kept in the row's questions with its reply, counts as required, and counts toward the five a case may ask
 (`TestTheExpertSaysYesToAListedApprovalThroughTheGate`, `TestTheExpertApprovesOnlyAListedControl`). Why: a worker's plan rightly
 promises a bill's save "with your OK first", and the gate holds it. An eval that never answered approvals measured
-nothing on such a case: every bill of the first learn-v1 model run ended at "Save bill". At most 5 questions a case; the 6th ends it with "too many questions". Without the expert, a
+nothing on such a case: every bill of the first learn-v1 model run ended at "Save bill". At most 5 questions a case; the 6th ends it with "too many questions". An approval the case lists is counted (`q_required`) but is no such question: a worker that asks before each of a month's saves is measured on its work, not cut off at the sixth (owner's decision 2026-11-09); only a runaway past 40 listed approvals ends a case ("too many approvals"). Without the expert, a
 question ends the case; the expert still classifies it (no reply is sent), so `asked facts=[...]` and the
 required/other split are decided the same way in both modes.
 
