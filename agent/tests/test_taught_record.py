@@ -227,3 +227,32 @@ class ARunWithItsDocumentInHand(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ACheckThatCouldNotBeMade(unittest.TestCase):
+    """A final check the provider failed (a 504) is asked once more, then put to the person: never a finding that
+    sends the skill under the model's eye for good. Found live (2026-11-08, ERPNext bill 11)."""
+
+    def setUp(self):
+        self.supervised, self.paused, self.by_model = [], [], []
+        patches = [
+            mock.patch.object(skill_task, "CHECK_RETRY_SECONDS", 0),
+            mock.patch.object(skill_task, "_supervise", lambda run, why: self.supervised.append(why)),
+            mock.patch.object(skill_task, "_pause", lambda run, kind, text, **kw: self.paused.append(kind)),
+            mock.patch.object(skill_task, "_by_model", lambda run, **kw: self.by_model.append(kw)),
+            mock.patch.object(skill_task, "_engine_can_drive", return_value=True),
+            mock.patch.object(skill_task.verify, "available", return_value=True),
+            mock.patch.object(skill_task, "_spot", return_value=False),
+            mock.patch.object(skill_task.progress, "emit"),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_two_failed_checks_ask_the_person_and_mark_nothing(self):
+        failed = {"verdict": skill_task.verify.UNSURE, "confidence": 0.0, "seen": "", "why": "the check could not be made (504)",
+                  "error": "504"}
+        with mock.patch.object(skill_task, "_judge", return_value=failed) as judge:
+            skill_task._finish({"skill": bill_skill(), "values": {}}, {"outcome": "completed_unverified", "text": "ran"})
+        self.assertEqual(judge.call_count, 2)
+        self.assertEqual((self.supervised, self.by_model, self.paused), ([], [], ["confirm"]))

@@ -509,8 +509,9 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
             found = _parse(message.get("content") or "") if decided is None else _decided(decided)
         except (llm_client.LLMError, ValueError) as exc:
             log(f"verify: could not judge: {exc}")
+            # "error": the check was not made (a provider's 504, a timeout) - no finding about the work (skill_task._finish).
             return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": f"the check could not be made ({exc})",
-                    "look": []}
+                    "look": [], "error": str(exc)[:300]}
         if decided is None and found["verdict"] == DONE and found["confidence"] < DONE_CONFIDENCE:
             # Soul's decision comes with this applied (internal/judge Decide).
             found["why"] = f"not sure enough ({found['confidence']:.2f}): {found['why']}"

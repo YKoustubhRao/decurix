@@ -1258,6 +1258,17 @@ def _finish(run, result):
     progress.emit("Checking the screen to see that the task was really done.")
     # A gathered run's files are a fact code decides (_documents_note, added in _judge): weighed as found, not claimed.
     verdict = _judge(run, result["text"], purpose="py.judge.spot" if spot else "py.judge")
+    if verdict.get("error"):
+        # The check was not made (the provider failed): asked once more, then the person - never taken as a finding.
+        # Found live (2026-11-08): a 504 marked a skill "always under the model's eye" for good, and the model went
+        # over a correct replayed bill again at full price.
+        time.sleep(CHECK_RETRY_SECONDS)
+        verdict = _judge(run, result["text"], purpose="py.judge.spot" if spot else "py.judge")
+        if verdict.get("error"):
+            if screen_checked:
+                return _succeed(run, result, "screen")
+            _pause(run, "confirm", _doubt_text(result["text"], verdict), result=result, verdict=verdict)
+            return
 
     if verdict["verdict"] == verify.DONE:
         return _succeed(run, result, "model", seen=verdict["seen"])
@@ -1288,6 +1299,9 @@ def _finish(run, result):
 
     _pause(run, "confirm", _doubt_text(result["text"], verdict), result=result, verdict=verdict)
 
+
+# How long the final check waits before it is asked once more after a provider error.
+CHECK_RETRY_SECONDS = 20
 
 # What a person says when a task has something to look at before it starts.
 CHECK_FIRST = re.compile(
