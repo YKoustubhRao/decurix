@@ -30,5 +30,25 @@ class AnExplainedChoice(unittest.TestCase):
         self.assertIsNone(learning._leading_choice("coordinates", "keep"))  # (a bare choice is _choose's)
 
 
+class ValuesInClauses(unittest.TestCase):
+    """A values reply in clauses, each with its reason, decides each value (learning._clause_choices)."""
+
+    def question(self):
+        return {"values": [{"id": f"s{i}"} for i in range(1, 6)]}
+
+    def test_each_clause_decides_its_values(self):
+        got = learning._variable_choices(self.question(), "3 and 4 change; 1, 2 and 5 stay (5 is the client's GSTIN)")
+        self.assertEqual(got, {"s1": "same", "s2": "same", "s3": "changes", "s4": "changes", "s5": "same"})
+
+    def test_a_value_left_unnamed_or_named_twice_is_not_guessed(self):
+        self.assertIsNone(learning._variable_choices(self.question(), "3 and 4 change; 1 and 2 stay"))
+        self.assertIsNone(learning._variable_choices(self.question(), "3 and 4 change; 3, 1, 2 and 5 stay"))
+
+    def test_a_single_clause_with_its_reason_in_brackets_still_reads(self):
+        got = learning._variable_choices(self.question(), "3 and 4 change (the others are the client's own)")
+        self.assertEqual(got["s3"], "changes")
+        self.assertEqual(got["s1"], "same")
+
+
 if __name__ == "__main__":
     unittest.main()

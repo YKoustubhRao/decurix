@@ -1567,6 +1567,33 @@ OPPOSITE = {"changes": "same", "same": "changes"}
 EXCEPT = re.compile(r"\b(?:except|but not|other than|apart from|besides)\b", re.I)
 
 
+def _clause_choices(question, text):
+    """
+    A reply in clauses, each naming its values and its choice ("3 and 4 change; 1, 2 and 5 stay (5 is the GSTIN)"):
+    {step id: changes|same} when every value is named exactly once, else None. A clause's explanation - after a dash or
+    colon, or in brackets - is the person's reason, not their choice. Found live (2026-11-08): such a reply got "I did
+    not catch that", and only the bare "3 and 4 change" was taken.
+    """
+
+    clauses = [c for c in re.split(r"[;\n]", text or "") if c.strip()]
+    if len(clauses) < 2:
+        return None
+    named = {}
+    for clause in clauses:
+        head = re.sub(r"\([^)]*\)", " ", _leading_choice_head(clause))
+        choice, numbers = _choose("variable", head), _step_numbers(head)
+        if choice is None or not numbers:
+            return None
+        for n in numbers:
+            if named.get(n, choice) != choice:
+                return None
+            named[n] = choice
+    values = question["values"]
+    if set(named) != set(range(1, len(values) + 1)):
+        return None
+    return {item["id"]: named[i] for i, item in enumerate(values, 1)}
+
+
 def _variable_choices(question, text):
     """
     What a reply to the grouped values question decides for each step:
@@ -1576,6 +1603,11 @@ def _variable_choices(question, text):
     """
 
     count = len(question["values"])
+    clauses = _clause_choices(question, text)
+    if clauses is not None:
+        return clauses
+    # A reason in brackets is the person explaining, not choosing ("3 and 4 change (the rest is the client's)").
+    text = re.sub(r"\([^)]*\)", " ", text)
     parts = EXCEPT.split(text, maxsplit=1)
     head, tail = parts[0], (parts[1] if len(parts) > 1 else "")
 
@@ -1854,7 +1886,8 @@ def _confirm(skill):
 # model's to read (_read_choice), and with no model it is asked again - never guessed.
 PLAIN = {
     "variable": {"same": {"same", "constant", "fixed", "static", "unchanged", "never changes", "does not change",
-                          "doesn't change", "stays same", "same every time", "same each time"},
+                          "doesn't change", "stays same", "same every time", "same each time", "stay", "stays",
+                          "stay same", "stay the same", "stays the same"},
                  "changes": {"changes", "change", "changing", "differs", "different", "varies", "vary", "variable",
                              "changes every time", "changes each time", "different every time",
                              "different each time"}},
