@@ -1101,13 +1101,19 @@ DONE_CHOICES = {
     "redo": "try it again as it was, with nothing to change",
     "correction": "something is wrong, missing or still to do - their words say what: try again with them",
     "stop": "it is not done and is not to be tried again: mark it a failure",
+    "leave": "the person cannot check it now: leave it as it is, reported as not confirmed - neither done nor tried again",
 }
+# The reply of a person who cannot check the result now - the scripted expert's (internal/eval.NotConfirmed) among
+# them: settled in code, so it is never read as a correction that sends the work round again (owner's decision,
+# 2026-11-08: a correct result was retried for 50 minutes on "I don't know").
+NOT_CONFIRMED_REPLY = "I can't check that from here - report it as you see it, not confirmed."
 DONE_PLAIN = {
     "done": ("done", "it's done", "it is done", "its done", "all done", "yes done", "ok done", "correct", "confirmed",
              "it worked", "looks good", "looks right", "looks fine", "that is correct", "that's correct"),
     "redo": ("retry", "try again", "redo", "again", "do it again"),
     "stop": ("stop", "cancel", "abort", "no", "nope", "nah", "not done", "it's not done", "it is not done",
              "its not done"),
+    "leave": (NOT_CONFIRMED_REPLY, "leave it unconfirmed", "leave it as it is", "i can't check"),
 }
 # A reply that is only a yes may answer some other question: it is not taken for "done".
 VAGUE_YES = {"yes", "y", "yep", "yeah", "ok", "okay", "good", "right", "sure", "fine", "go ahead", "proceed"}
@@ -1278,6 +1284,11 @@ def _confirm_reply(paused, reply):
             _record_verdict(run, True, checked_by="person", helped=True, basis=["person"])
         return write_final_reply(f"{claim}\n\nYou confirmed it was done.", kind="final", engine=engine, checked=True,
                                  verdict=_success_verdict("person", ["person"]))
+
+    if choice == "leave":
+        # Not checked by anyone: ends as reported, not confirmed - no verdict for or against the skill, never "done".
+        return write_final_reply(f"{claim}\n\nNot confirmed: you could not check it, so it stands as reported, "
+                                 "unchecked.", kind="final", engine=engine, checked=False)
 
     if choice == "stop":
         if run is not None:

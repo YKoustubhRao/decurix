@@ -268,6 +268,25 @@ the new one was right 93 of 93, and still gives none to a question on the same s
 (which ledger the IGST goes to, the IGST amount, the due date, the supplier's GSTIN, a date's reading).
 `TestTheExpertCountsARuleAndNeverGivesLeave` holds the prompt's two rules.
 
+**Confirmation questions are answered in code** (owner decision 2026-11-08, `confirm.go`). Two questions only ask the
+person to confirm the worker's own reading, and before this both got "don't know", which the worker read as a change to
+its plan (a taught run never replayed) or as a reason to try again (a correct ob-3 result went round for 50 minutes and
+7.7M tokens). They never reach the expert's model:
+- **A taught run's plan** (it opens with the agent's `PLAN_QUESTION`), only in a suite with `"confirms_plans": true`
+  (the three office suites): each `Label = "value"` / `Label: "value"` the plan shows is set against the case's facts
+  that name its field by their `refers_to`; a fact stating one figure the plan's value does not hold gets
+  `No - <field> should be as I said: <the fact's words>`, else `Yes, go ahead.` (`eval.PlanYes`). A yes cannot fake a
+  result: the graders still judge what was entered. Other suites answer a plan as any question.
+- **"Is it done?"** (the agent's question that asks for a reply of done or retry, `eval.DoneQuestionMark`), in every suite:
+  `I can't check that from here - report it as you see it, not confirmed.` (`eval.NotConfirmed`). The agent reads it,
+  in code and with no model, as "leave it" (`final_gate.NOT_CONFIRMED_REPLY`): the run ends as reported, unchecked,
+  with no verdict for or against the skill - never "done", never a retry - and the graders decide pass or fail.
+Both are recorded like every expert reply, with `"confirm": "plan" | "done"` and `"by": "the scripted expert"` in the
+judgement's payload, so a report says the plan was approved by the scripted expert, not by a person.
+`TestAPlanIsConfirmedOrCorrectedByTheFacts`, `TestOnlyASuiteThatConfirmsPlansDoesSo`,
+`TestTheConfirmationWordsAreTheAgents` (the words are the agent's own, kept the same on both sides),
+`test_not_confirmed_reply`.
+
 **Approvals are case data, decided in code** (owner decision 2026-11-08). The expert's model never sees an approval.
 When the gate stops an action the case lists under `approves`, the arm has the expert, and the question is the gate's
 own (its signature checked against the desktop's gate key, `VerifyGateQuestion`), the worker is answered

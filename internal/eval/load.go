@@ -161,6 +161,7 @@ func Load(tarBytes []byte) (Suite, error) {
 			continue
 		}
 		c, caseProblems := loadCase(s, id, files)
+		c.ConfirmsPlans = s.ConfirmsPlans
 		problems = append(problems, caseProblems...)
 		s.Cases = append(s.Cases, c)
 	}

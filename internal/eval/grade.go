@@ -30,6 +30,9 @@ type Asked struct {
 	Fact     string   `json:"fact"`
 	Required bool     `json:"required"`
 	Reply    string   `json:"reply,omitempty"`
+	// Confirm is "plan" or "done" when the question only asked the person to confirm the worker's own reading and the
+	// scripted expert answered it as confirm.go says (never a person: plan rule 5).
+	Confirm string `json:"confirm,omitempty"`
 }
 
 // Evidence is what the runner collected for one case, never the worker's claim alone.

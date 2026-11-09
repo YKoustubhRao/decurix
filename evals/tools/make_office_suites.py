@@ -375,7 +375,10 @@ def case_doc(cid, category, kind, request, files, facts, approves, graders, orac
 def suite_doc(name, description, cases, minutes, tokens):
     return {"schema": "decurix.eval-suite/v1", "name": name, "description": description,
             "mocks": {MOCK: {"hosts": HOSTS}}, "budget": {"max_tokens": tokens, "max_minutes": minutes},
-            "cases": cases, "carry_state": False}
+            "cases": cases, "carry_state": False,
+            # The person glances at a taught worker's plan and says yes, or corrects a value against their facts
+            # (internal/eval/confirm.go; owner's decision 2026-11-08).
+            "confirms_plans": True}
 
 
 def base_app(today, now="17:21:07", **extra):

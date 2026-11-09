@@ -1050,7 +1050,9 @@ func (s *Service) recordExpertReply(id, workerID, taskID, question string, asked
 	if !ok || s.Tasks == nil {
 		return
 	}
-	payload, _ := json.Marshal(map[string]string{"asked": clipText(question, 2000), "fact": asked.Fact})
+	// "confirm": the expert confirmed the worker's own plan or result (confirm.go) - a report says so, never "a person".
+	payload, _ := json.Marshal(map[string]string{"asked": clipText(question, 2000), "fact": asked.Fact,
+		"confirm": asked.Confirm, "by": "the scripted expert"})
 	if _, err := adder.AddJudgement(tasks.Judgement{ID: id, Actor: ExpertActor, Door: "eval", Kind: tasks.JudgementAnswer,
 		WorkerID: workerID, TaskID: taskID, Text: asked.Reply, Payload: payload}); err != nil {
 		log.Printf("eval: recording the expert's reply on %s: %v", taskID, err)
@@ -1102,7 +1104,8 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 					ev.Unfinished = append(ev.Unfinished, "too many questions")
 					return problems
 				}
-				if !o.Secret {
+				confirm, confirmKind := confirmReply(c, o.Text)
+				if !o.Secret && confirm == "" {
 					problems = append(problems, s.classify(ctx, desktopID, taskID, c, expert, &asked)...)
 				}
 				if !arm.Expert || o.Secret {
@@ -1112,6 +1115,9 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 					return problems
 				}
 				asked.Reply = Reply(c, asked.Fact)
+				if confirm != "" {
+					asked.Reply, asked.Confirm = confirm, confirmKind
+				}
 				ev.Questions = append(ev.Questions, asked)
 				// The expert's words are the person's on this desktop: kept where its control plane (the broker) serves
 				// a person's judgements, and sent with their id as the control plane sends a person's reply, so what

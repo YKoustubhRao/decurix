@@ -23,5 +23,6 @@
     "oc-3-december",
     "oc-4-nil-month"
   ],
-  "carry_state": false
+  "carry_state": false,
+  "confirms_plans": true
 }
