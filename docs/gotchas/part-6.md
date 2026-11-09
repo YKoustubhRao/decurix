@@ -443,3 +443,7 @@ The mail held bills 1058, 1059 and 1061; the taught rules said to ask for a bill
 entered the three and reported done, and the final judge, with the rule in hand, confirmed it (the eval's false done).
 A hole in the documents' own numbered series is now found in code and put to the person once, instead of a done
 (`skill_task._series_question`; docs/learning-and-verification.md).
+
+### The guard stopped a data file pretty-printed through a named module
+
+TheBot's piped-interpreter rule read any option after the interpreter as "the program comes from stdin", so a named module (Python's module option) fed a downloaded file was stopped; it now decides by the interpreter's first argument (owner-approved narrowing of the frozen guard, 2026-11-09, follow-ups O-1.a.6).

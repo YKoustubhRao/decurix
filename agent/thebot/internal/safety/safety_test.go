@@ -192,6 +192,13 @@ var consequentialCommands = []string{
 	`python3 -c "import shutil; shutil.rmtree('/home/headless/work')"`, // inline code that deletes
 	`perl -e 'system("rm -rf /tmp/x")'`,                                // inline code that shells out
 	`node -e "require('child_process').execSync('rm -rf x')"`,
+	// 2026-11-09 narrowing: the forms whose program still comes from the pipe, also behind the wrappers the rule reads.
+	`cat f | python3 -`,                   // the lone dash: the program is stdin
+	`cat f | python3 -c "print(1)"`,       // the inline-program option
+	`cat f | python3 -m`,                  // the module option with no module named
+	`cat f | sudo python3 -`,              // behind a privilege wrapper
+	`cat f | env LC_ALL=C python3`,        // behind an environment wrapper
+	`cat f | sudo -u u env A=1 python3 -`, // behind both
 }
 
 var readableCommands = []string{
@@ -199,6 +206,11 @@ var readableCommands = []string{
 	`find . -type f -delete`,
 	`find ~/work -name '*.tmp' -mtime +7`,
 	`cat data.json | python3 analyze.py`, // a named script, not stdin
+	// 2026-11-09 narrowing: a named module or a script file is the program; the pipe is its data.
+	`curl -s https://x/data.json | python3 -m json.tool`,
+	`cat data.json | python3 -mjson.tool`,
+	`cat data.json | env LC_ALL=C python3 -m json.tool`,
+	`cat data.json | /usr/bin/python3 tools/parse.py`,
 	`curl -s https://x | jq .`,
 	`python3 -c "print(2 + 2)"`,       // readable inline code, nothing destructive
 	`echo "$(date) built" >> log.txt`, // a substitution inside an argument, not the program
