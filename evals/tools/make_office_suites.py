@@ -133,6 +133,17 @@ def share_folder(client, period):
     return f"GST Returns/{client}/{fy}/{month}"
 
 
+def fy_end(period):
+    """The last day of the period's financial year (April to March)."""
+    y, m = (int(x) for x in period.split("-"))
+    return f"{(y if m >= 4 else y - 1) + 1}-03-31"
+
+
+def next_month(period):
+    y, m = (int(x) for x in period.split("-"))
+    return f"{y + (m == 12)}-{m % 12 + 1:02d}"
+
+
 def b64(b):
     return base64.b64encode(b).decode("ascii")
 
@@ -506,11 +517,13 @@ def tax_ledgers(company, sales):
 
 
 def books_fixture(case, earlier):
+    # Both live companies are carried on into the next financial year once the month is in it (Bookwell takes a
+    # voucher only inside its company's period).
     companies = ids([
         {"name": "Suvarna Lift Systems 2025-26", "number": "10041", "gstin": SUVARNA["gstin"], "state": "29-Karnataka",
-         "period_from": "2025-04-01", "period_to": "2027-03-31"},
+         "period_from": "2025-04-01", "period_to": fy_end(case["period"])},
         {"name": "Suvarna Lifts & Escalators", "number": "10077", "gstin": SUVARNA_DECOY, "state": "29-Karnataka",
-         "period_from": "2026-04-01", "period_to": "2027-03-31"},
+         "period_from": "2026-04-01", "period_to": fy_end(case["period"])},
         {"name": "Suvarna Lift Systems 2023-24", "number": "10012", "gstin": SUVARNA["gstin"], "state": "29-Karnataka",
          "period_from": "2023-04-01", "period_to": "2024-03-31"},
         {"name": "Sharada Traders 21-22", "number": "10006", "gstin": gstin("29ABCFS1120G1Z"), "state": "29-Karnataka",
@@ -550,8 +563,9 @@ def books_mail(case, files):
          "body": f"Bank statement for {month} attached.", "at": f"{case['today']} 10:05", "label": "Asha", "files": "bank"},
     ]
     if case["entered"]:
+        sent = next(b for b in case["bills"] if b["no"] == case["entered"][0])
         mails.insert(1, {"from": SUVARNA["name"], "from_address": SUVARNA["email"],
-                         "subject": f"Bill {case['entered'][0]}", "body": f"Bill {case['entered'][0]} for Pai Textiles, as discussed.",
+                         "subject": f"Bill {sent['no']}", "body": f"Bill {sent['no']} for {sent['party']['name']}, as discussed.",
                          "at": f"{case['period']}-15 16:40", "label": "Asha", "files": ""})
     mails.append({"from": SUVARNA["name"], "from_address": SUVARNA["email"], "subject": f"Sales tax bills {month}",
                   "body": f"Dear Sir/Madam,\nPlease find the sales bills for {month} {y}.\nRegards,\nAccounts, {SUVARNA['name']}",
@@ -601,21 +615,24 @@ def books_suite():
                    f"bills. The attachments are also saved in ~/work/practice/{case['id']}/. Our apps: Mailbox "
                    f"http://mail.example.test, Bookwell http://books.example.test.")
         facts = []
-        if case["id"] == "ob-3-december":
+        if any(b["words"] for b in case["bills"]):
             facts.append({"id": "words-vs-figures", "about": "which figure to take when a bill's amount in words differs from its totals",
                           "refers_to": ["in words", "amount in words", "words", "differs", "mismatch", "does not match"],
                           "answer": "Take the figures in the bill's totals table. The client's template often keeps old text in "
                                     "the words box.", "required": False})
         if case.get("missing"):
-            b = next(x for x in case["bills"] if x["no"] == case["missing"])
-            facts.append({"id": "invoice-1060", "about": "the bill numbered 1060, which is missing from the mail",
-                          "refers_to": ["1060", "missing bill", "missing invoice", "number gap", "gap", "skipped number",
+            n = case["missing"]
+            b = next(x for x in case["bills"] if x["no"] == n)
+            assert not b["inter"], n  # the answer below states CGST and SGST
+            facts.append({"id": f"invoice-{n}", "about": f"the bill numbered {n}, which is missing from the mail",
+                          "refers_to": [n, "missing bill", "missing invoice", "number gap", "gap", "skipped number",
                                         "missing number", "not attached"],
-                          "answer": (f"Bill 1060 went to {b['party']['name']} on {dmy(b['date'])}: Sales@18%, sales amount "
+                          "answer": (f"Bill {n} went to {b['party']['name']} on {dmy(b['date'])}: "
+                                     f"{voucher_of(b, '1')['sales_ledger']}, sales amount "
                                      f"{inr(b['taxable'])}, CGST {inr(b['cgst'])} and SGST {inr(b['sgst'])} (total "
                                      f"{inr(b['total'])}). The client forgot to attach it; enter it with the others."),
                           "required": True})
-            graders.append({"kind": "asked", "facts": ["invoice-1060"]})
+            graders.append({"kind": "asked", "facts": [f"invoice-{n}"]})
         oracle = []
         for k in case["new_ledgers"]:
             p = party(k)
@@ -643,7 +660,10 @@ def books_suite():
         "company of the client's for an old year, a customer whose bill writes its name otherwise than its ledger, a new "
         "customer with and without a GSTIN, an inter-state customer, a bill at another rate, a bill sent twice, a bill "
         "already entered from an earlier mail, a bill whose amount in words differs from its figures, and a bill missing "
-        "from the mail (a gap in the numbers) that only the person can supply. Graded on the books' records: exactly the "
+        "from the mail (a gap in the numbers) that only the person can supply. Cases 5 to 12 are the client's next eight "
+        "months (February to September 2027, its company carried into the new financial year), the same customers and "
+        "some new ones, about half of them plain and the rest with one or two of those traps again, so a worker taught "
+        "once can show its curve over fresh months. Graded on the books' records: exactly the "
         "expected vouchers, in the right company, and the new ledgers. Fictional data; the ca-office mock.",
         [c["id"] for c in BOOKS_CASES], 60, 8000000), indent=2) + "\n").encode("utf-8")
     return {f"office-books-v1/{k}": v for k, v in out.items()}
@@ -714,6 +734,13 @@ SALES_OF = {"sahyadri": [("Sales@18%", "18", "9987")],
                        ("Installation 18%", "18", "9954")]}
 FP_CLIENT_ID = {"sahyadri": "1", "konkan": "4"}
 COMPANY_ID = {"sahyadri": "1", "konkan": "2"}
+COMPANY_CLIENT = {"1": "sahyadri", "2": "konkan", "4": "sahyadri", "5": "konkan"}  # 3 is the look-alike firm's
+OTHER_COMPANY = {"1": "2", "2": "1", "4": "5", "5": "4"}  # the other client's company of the same year
+
+
+def series_no(no):
+    """An invoice number's place in its series: its digits ("KCI-047" -> 47)."""
+    return int("".join(ch for ch in no if ch.isdigit()))
 
 
 def sales_ledger_for(client_key, b):
@@ -749,11 +776,8 @@ def gstr1_rows(client, bills):
         for k, v in (("txval", b["taxable"]), ("iamt", b["igst"]), ("camt", b["cgst"]), ("samt", b["sgst"])):
             h[k] += v
     nums = [b["no"] for b in bills]
-    def key(n):
-        digits = "".join(ch for ch in n if ch.isdigit())
-        return int(digits)
-    lo, hi = min(nums, key=key), max(nums, key=key)
-    total = key(hi) - key(lo) + 1
+    lo, hi = min(nums, key=series_no), max(nums, key=series_no)
+    total = series_no(hi) - series_no(lo) + 1
     cancelled = sum(1 for b in bills if b["cancelled"])
     docs = [{"nature": "Invoices for outward supply", "from": lo, "to": hi, "total": str(total), "cancelled": str(cancelled),
              "net": str(total - cancelled)}]
@@ -819,15 +843,23 @@ def gstr_books_suite():
         bills = case["bills"]
         files = {b["file"]: bill_docx(client, b) for b in bills}
         # Books: the client's company holds the month's vouchers (cancelled ones marked), the other company too.
-        companies = ids([
+        companies = [
             {"name": "Sahyadri Lift Services 2026-27", "number": "20031", "gstin": SAHYADRI["gstin"], "state": "29-Karnataka",
              "period_from": "2026-04-01", "period_to": "2027-03-31"},
             {"name": "Konkan Coast Interiors 2026-27", "number": "20044", "gstin": KONKAN["gstin"], "state": "29-Karnataka",
              "period_from": "2026-04-01", "period_to": "2027-03-31"},
             {"name": "Sahyadri Lifts & Escalators 2026-27", "number": "20052", "gstin": SAHYADRI_DECOY, "state": "29-Karnataka",
-             "period_from": "2026-04-01", "period_to": "2027-03-31"}])
-        cid = COMPANY_ID[ck]
+             "period_from": "2026-04-01", "period_to": "2027-03-31"}]
+        if fy_end(period) > "2027-03-31":
+            # From April 2027 each client's books are in a new company for the year (ids 4 and 5).
+            companies += [dict(c, name=c["name"].replace("2026-27", "2027-28"), number=n, period_from="2027-04-01",
+                               period_to="2028-03-31") for c, n in ((companies[0], "20063"), (companies[1], "20068"))]
+        companies = ids(companies)
+        cid = case.get("company", COMPANY_ID[ck])
+        assert COMPANY_CLIENT[cid] == ck, case["id"]
         ledgers = tax_ledgers("1", SALES_OF["sahyadri"]) + tax_ledgers("2", SALES_OF["konkan"]) + tax_ledgers("3", SALES_OF["sahyadri"])
+        if len(companies) > 3:
+            ledgers += tax_ledgers("4", SALES_OF["sahyadri"]) + tax_ledgers("5", SALES_OF["konkan"])
         for who in sorted({b["who"] for b in bills}):
             ledgers.append(ledger_of(who, cid))
         vouchers = []
@@ -837,10 +869,11 @@ def gstr_books_suite():
             if b["cancelled"]:
                 v["cancelled"] = "yes"
             vouchers.append(v)
-        other = "2" if cid == "1" else "1"
+        other = OTHER_COMPANY[cid]
         ledgers.append(ledger_of("anand", other))
         vouchers.append(dict(voucher_of(bill("X-1", f"{period}-10", "anand", [("Service", "1", "5,000.00", 5000)]), other),
-                             sales_ledger=SALES_OF["konkan" if other == "2" else "sahyadri"][0][0], number="9001" if other == "1" else "KCI-030"))
+                             sales_ledger=SALES_OF[COMPANY_CLIENT[other]][0][0],
+                             number="9001" if COMPANY_CLIENT[other] == "sahyadri" else "KCI-030"))
         folders = []
         for c in ("Sahyadri Lift Services", "Konkan Coast Interiors", "Kalinga Hardware", "Sahyadri Lifts & Escalators"):
             for p in months_before(period, 3) + [period]:
@@ -864,14 +897,19 @@ def gstr_books_suite():
             receivers.append({"client": fpid, "gstin": p["gstin"], "legal_name": p["name"].upper(), "trade_name": p["name"].upper(),
                               "status": "Valid", "tn_legal_name": p["name"].upper(), "tn_trade_name": p["name"].upper()})
         register = [(SAHYADRI["gstin"], SAHYADRI["name"]), (KONKAN["gstin"], KONKAN["name"])]
-        register += [(party(k)["gstin"], party(k)["name"]) for k in PARTIES if party(k)["gstin"] and k not in ("tunga_k", "belur2")]
+        # Every party with a GSTIN, but a second ledger of a GSTIN already listed and a GSTIN the register has cancelled
+        # (that one is added, Cancelled, in its own case). The cases written first list the parties of their time.
+        gone = {"tunga_k"} | {c["cancelled_gstin"] for c in GSTR_BOOKS_CASES if c.get("cancelled_gstin")}
+        register += [(party(k)["gstin"], party(k)["name"]) for k in PARTIES if party(k)["gstin"] and k not in gone
+                     and (k in V1_PARTIES or case["id"] not in FIRST_WRITTEN)]
         # Both clients' three months before the case's are filed; the register writes some names otherwise than the books.
         reg, returns = taxnet_base(register, case["today"], months_before(period, 3))
         for r in reg:
             if r["gstin"] == party("tunga")["gstin"]:
                 r["legal_name"] = r["trade_name"] = "TUNGABHADRA BUILDERS PRIVATE LIMITED"
         if case.get("cancelled_gstin"):
-            reg.append({"gstin": party(case["cancelled_gstin"])["gstin"], "legal_name": "BELUR TEXTILES", "trade_name": "BELUR TEXTILES",
+            bad = party(case["cancelled_gstin"])
+            reg.append({"gstin": bad["gstin"], "legal_name": bad["name"].upper(), "trade_name": bad["name"].upper(),
                         "status": "Cancelled", "registered_on": "2026-06-01"})
         app = base_app(case["today"], last_company=cid, export_folder=case["export_folder"], import_folder=case["export_folder"],
                        tn_logins=[{"gstin": x, "user": TN_USERS[x], "password": TN_PASSWORDS[x]} for x in TN_USERS],
@@ -880,9 +918,11 @@ def gstr_books_suite():
         rows = gstr1_rows(client, bills)
         if case.get("stale_import"):
             stale = [r for r in rows["b2b"] if r["inum"] in case["stale_import"]]
+            lo, hi = min(case["stale_import"], key=series_no), max(case["stale_import"], key=series_no)
+            n = str(series_no(hi) - series_no(lo) + 1)
             app["fp_data"][f"{fpid}:{period}"] = {"b2b": stale, "b2cl": [], "b2cs": [], "hsn": [],
-                                                  "docs": [{"nature": "Invoices for outward supply", "from": "1108", "to": "1110",
-                                                            "total": "3", "cancelled": "0", "net": "3"}]}
+                                                  "docs": [{"nature": "Invoices for outward supply", "from": lo, "to": hi,
+                                                            "total": n, "cancelled": "0", "net": n}]}
         fixture = {"collections": {"companies": companies, "ledgers": ids(ledgers), "vouchers": ids(vouchers),
                                    "share_folders": ids(folders), "share_files": [], "fp_clients": fp_clients,
                                    "fp_receivers": ids(receivers), "fp_uploads": [], "tn_taxpayers": ids(reg),
@@ -917,7 +957,7 @@ def gstr_books_suite():
             bad_inv = next(b["no"] for b in bills if b["who"] == case["cancelled_gstin"])
             facts = [{"id": "cancelled-receiver", "about": "what to do when a customer's GSTIN is cancelled on the register",
                       "refers_to": ["cancelled", "cancelled gstin", "gstin cancelled", "receiver gstin", "customer gstin",
-                                    "belur"],
+                                    bad["name"].split()[0].lower()],
                       "answer": "If a customer's GSTIN is cancelled, do not save or file the return. Stop, and tell me which "
                                 "invoice and customer it is; I will take it up with the client.", "required": True}]
             graders += [{"id": "validated", "kind": "mock_records", "collection": "fp_receivers",
@@ -948,8 +988,8 @@ def gstr_books_suite():
                         {"kind": "asked", "facts": ["otp"]},
                         {"id": "not-filed-before-the-otp", "kind": "absent", "collection": "tn_returns",
                          "records": [{"gstin": g, "period": period, "status": "Filed"}], "when": "asked"}]
-            if new:
-                oracle.append(curl(f"http://fileprep.example.test/client/{fpid}/receivers", gstin=new[0], action="names"))
+            for x in new:
+                oracle.append(curl(f"http://fileprep.example.test/client/{fpid}/receivers", gstin=x, action="names"))
             oracle += [curl(f"http://fileprep.example.test/client/{fpid}/gstr1/{period}/save"),
                        curl("http://taxnet.example.test/login", user=TN_USERS[g], password=TN_PASSWORDS[g]),
                        curl(f"http://taxnet.example.test/gstr1/{period}/generate"),
@@ -978,6 +1018,9 @@ def gstr_books_suite():
         "last month's folder, a receiver never validated, inter-state supplies (IGST, B2C Large), several HSN codes, a "
         "cancelled invoice in the series, the portal opening on the current quarter, an earlier partial import that "
         "Append would double, and a receiver whose GSTIN the register shows cancelled (the return must not be filed). "
+        "Cases 5 to 12 are both clients' next months (January to April 2027, April in each client's new company for "
+        "2027-28), the same receivers and some new ones, about half of them plain and the rest with one of those traps "
+        "again, so a worker taught once can show its curve over fresh months. "
         "Graded on the share, the software's receivers and uploads, and the portal's tables and filed return, exactly; and "
         "the ARN in the report. Fictional data; the ca-office mock.",
         [c["id"] for c in GSTR_BOOKS_CASES], 60, 10000000), indent=2) + "\n").encode("utf-8")
@@ -1078,6 +1121,22 @@ def workbook(client, months, current):
     return xlsx_bytes({"SALES": sales, "COMP": comp})
 
 
+def workbook_months(client, period):
+    """The months of the period's financial year before it, as the client's workbook holds them once the earlier cases
+    are in it: each month's bills (a cancelled one is no sale), a month with none empty."""
+    known = dict(CHAT_HISTORY[client["gstin"]])
+    for c in CHAT_CASES:
+        if c["client"]["gstin"] == client["gstin"] and c["period"] < period:
+            known[c["period"]] = c["bills"]
+    fy = fy_folder(period)[0]
+    seen = [p for p in known if fy_folder(p)[0] == fy and p < period]
+    out, p = [], min(seen) if seen else period
+    while p < period:
+        out.append((p, [b for b in known.get(p, []) if not b["cancelled"]]))
+        p = next_month(p)
+    return out
+
+
 def chat_suite():
     out = {}
     for case in CHAT_CASES:
@@ -1086,11 +1145,17 @@ def chat_suite():
         period = case["period"]
         bills = [chat_bill(client, b) for b in case["bills"]]
         files = {b["file"]: bill_pdf(client, b) for b in bills}
+        resent = {name: next(b["file"] for b in bills if b["no"] == no) for name, no in case.get("duplicates", {}).items()}
+        for name, original in resent.items():
+            files[name] = files[original]
         book = f"COMPUTATION-{client['name'].split()[0].upper()}-{fy_folder(period)[0]}.xlsx"
-        files[book] = workbook(client, CHAT_HISTORY[g], period)
+        files[book] = workbook(client, CHAT_HISTORY[g] if case["id"] in FIRST_WRITTEN else workbook_months(client, period),
+                               period)
         # ClientChat: the client's thread (an older standing arrangement, the office's ask, the PDFs, a last word) and
         # another client's thread.
         att = {f"p{i}": {"name": b["file"], "type": PDF, "b64": b64(files[b["file"]])} for i, b in enumerate(bills, 1)}
+        for i, name in enumerate(resent, len(bills) + 1):
+            att[f"p{i}"] = {"name": name, "type": PDF, "b64": b64(files[name])}
         thread_title = f"{client['person']} ({client['name']})"
         msgs = [{"thread": "1", "sender": "office", "text": "We have to pay 18% GST on the rent you pay every month, under reverse "
                                                            "charge, in cash.", "at": f"{months_before(period, 2)[0]}-12 15:57", "file": ""},
@@ -1098,6 +1163,8 @@ def chat_suite():
                 {"thread": "1", "sender": "office", "text": case["chat"][0], "at": f"{case['today']} 10:05", "file": ""}]
         for i, b in enumerate(bills, 1):
             msgs.append({"thread": "1", "sender": "client", "text": "", "at": f"{case['today']} 18:29", "file": f"p{i}"})
+        for i, _ in enumerate(resent, len(bills) + 1):
+            msgs.append({"thread": "1", "sender": "client", "text": "", "at": f"{case['today']} 18:30", "file": f"p{i}"})
         msgs += [{"thread": "1", "sender": "client", "text": t, "at": f"{case['today']} 18:31", "file": ""} for t in case["client_says"]]
         msgs += [{"thread": "2", "sender": "client", "text": "Sir, when is the ITR due?", "at": f"{case['today']} 09:40", "file": ""}]
         threads = ids([{"client": client["name"], "title": thread_title},
@@ -1177,10 +1244,272 @@ def chat_suite():
         "of supply and rate), 12 (HSN, in its B2B and B2C tabs) and 13 (documents issued, cancelled ones counted), or the "
         "return filed nil; then the summary is generated and the return filed with EVC, whose OTP only the client has. Case "
         "1 is the one a person demonstrates; the rest are new months: a registered buyer and a cancelled invoice, "
-        "inter-state buyers with the portal opening on the current quarter, and a month with no bills. Graded on the "
+        "inter-state buyers with the portal opening on the current quarter, and a month with no bills. Cases 5 to 12 are "
+        "the next months (January to July 2027, the workbook holding the months before), the same buyers and some new "
+        "ones, about half of them plain and the rest with a cancelled invoice, a nil month, Kerala buyers again or an "
+        "invoice sent twice on the chat, so a worker taught once can show its curve over fresh months. Graded on the "
         "portal's tables and filed return, exactly, and the ARN in the report. Fictional data; the ca-office mock.",
         [c["id"] for c in CHAT_CASES], 60, 10000000), indent=2) + "\n").encode("utf-8")
     return {f"office-gstr1-chat-v1/{k}": v for k, v in out.items()}
+
+
+# =====================================================================================================================
+# Later months: cases 5 to 12 of each suite
+# =====================================================================================================================
+# A worker taught case 1 once runs these in order, its state carried, and should get more right, faster and cheaper:
+# fresh inputs of the same work - the clients' following months, the same customers and some new ones, about half of
+# them plain and the rest with one or two of the traps above. The cases written first keep their bytes (a worker was
+# taught on case 1 and runs on 2-4 are recorded), so what they list is kept as it was.
+
+FIRST_WRITTEN = frozenset(c["id"] for c in BOOKS_CASES + GSTR_BOOKS_CASES + CHAT_CASES)
+V1_PARTIES = frozenset(PARTIES)
+
+PARTIES.update({
+    # the lift-maintenance client's new customers
+    "brahmagiri": ("Brahmagiri Diagnostics LLP", "Brahmagiri Diagnostics LLP", "Court Road, Udupi 576101",
+                   gstin("29AAKFB4408C1Z"), "29"),
+    "chandragiri": ("Chandragiri Hospital Trust", "Chandragiri Hospital Trust", "Vidyanagar, Kasaragod, Kerala 671123",
+                    gstin("32AABTC5506H1Z"), "32"),
+    "shambhavi": ("Shambhavi Residency", "Shambhavi Residency", "Santhekatte, Udupi 576105", "", "29"),
+    # the return-from-books clients' new customers
+    "bhadra": ("Bhadra Valley Hospital Trust", "Bhadra Valley Hospital Trust", "Lakkavalli Road, Bhadravathi 577301",
+               gstin("29AABTB6627L1Z"), "29"),
+    "gajanur": ("Gajanur Heights Apartments", "Gajanur Heights Apartments", "Gajanur Road, Shivamogga 577204", "", "29"),
+    "tirthahalli": ("Tirthahalli Commercial Complex LLP", "Tirthahalli Commercial Complex LLP",
+                    "Bus Stand Road, Tirthahalli 577432", gstin("29AAKFT2290N1Z"), "29"),
+    "sindhudurg": ("Sindhudurg Coast Hotels LLP", "Sindhudurg Coast Hotels LLP", "Bandar Road, Malvan, Maharashtra 416606",
+                   gstin("27AAMFS5862K1Z"), "27"),
+    "savio": ("Savio Menezes", "Savio Menezes", "Porvorim, Goa 403521", "", "30"),
+    "majali": ("Majali Bay Resorts Pvt Ltd", "Majali Bay Resorts Pvt Ltd", "Majali, Karwar 581345",
+               gstin("29AAJCM8841E1Z"), "29"),
+    # the builder's new buyers
+    "kavya": ("Kavya Hegde", "Kavya Hegde", "Mobile: +91 90000 10016, Parkala, Udupi 576107", "", "29"),
+    "sunil": ("Sunil Acharya", "Sunil Acharya", "Mobile: +91 90000 10017, Kota, Udupi 576221", "", "29"),
+    "joseph": ("Joseph Mathew", "Joseph Mathew", "Bekal, Kasaragod, Kerala 671318", "", "32"),
+})
+
+LATER_BOOKS_CASES = [
+    {"id": "ob-5-february", "period": "2027-02", "today": "2027-03-03", "last_company": "1", "category": "ordinary",
+     "bills": [
+         bill("1062", "2027-02-03", "udyavara", [("Lift maintenance, Feb 2027", "1", "6,000.00", 6000)], file="1062 Udyavara Apt.docx"),
+         bill("1063", "2027-02-09", "pai", [("Lift door operator service", "1", "9,500.00", 9500)], file="1063 Pai Textiles.docx"),
+         bill("1064", "2027-02-16", "sagar", [("Lift rope inspection and lubrication", "1", "8,000.00", 8000)],
+              file="1064 Sagar Vista.docx"),
+         bill("1065", "2027-02-24", "sharada", [("Lift maintenance, Feb 2027", "1", "15,000.00", 15000)],
+              file="1065 Sharada Residency.docx")],
+     "new_ledgers": [], "entered": [], "tags": ["name-differs"]},
+    {"id": "ob-6-march", "period": "2027-03", "today": "2027-04-05", "last_company": "1", "category": "duplicate",
+     "bills": [
+         bill("1066", "2027-03-02", "mithila", [("Lift maintenance, Apr - Jun 2027 quarter, advance", "1", "25,000.00", 25000)],
+              file="1066 Mithila Towers.docx"),
+         bill("1067", "2027-03-05", "lotus", [("Escalator comb plate replacement", "1", "46,000.00", 46000)], file="1067 Lotus Mall.docx"),
+         bill("1068", "2027-03-11", "kadri", [("Residential lift: car operating panel", "2 nos", "18,500.00", 37000)],
+              file="1068 Kadri Heights.docx"),
+         bill("1069", "2027-03-17", "malpe", [("Goods lift annual inspection", "1", "12,500.00", 12500)], file="1069 Malpe Fish.docx"),
+         bill("1070", "2027-03-23", "bhuvana", [("Bed lift door sensor", "1", "16,800.00", 16800)], file="1070 Bhuvana Hospital.docx"),
+         bill("1071", "2027-03-30", "udyavara", [("Lift battery replacement", "1", "7,200.00", 7200)],
+              file="1071 Udyavara Apartments.docx")],
+     "duplicates": {"Copy of 1067 Lotus Mall.docx": "1067"},
+     "new_ledgers": [], "entered": [], "tags": ["sent-twice"]},
+    {"id": "ob-7-april", "period": "2027-04", "today": "2027-05-04", "last_company": "1", "category": "ordinary",
+     "bills": [
+         bill("1072", "2027-04-02", "sagar", [("Lift annual maintenance, Apr - Sep 2027, first instalment", "1", "24,000.00", 24000)],
+              file="1072 Sagar Vista.docx"),
+         bill("1073", "2027-04-08", "brahmagiri", [("Machine-room-less lift: guide rails and brackets", "1 set", "85,000.00", 85000)],
+              file="1073 Brahmagiri Diagnostics.docx"),
+         bill("1074", "2027-04-15", "pai", [("Lift car light fittings", "1", "7,400.00", 7400)], file="1074 Pai Textiles.docx"),
+         bill("1075", "2027-04-22", "sharada", [("Lift maintenance, Apr 2027", "1", "15,000.00", 15000)],
+              file="1075 Sharada Residency.docx"),
+         bill("1076", "2027-04-28", "hampi", [("Door sensor replacement", "1", "6,500.00", 6500)], file="1076 Hampi Residency.docx")],
+     "new_ledgers": ["brahmagiri"], "entered": [], "tags": ["new-ledger"]},
+    {"id": "ob-8-may", "period": "2027-05", "today": "2027-06-03", "last_company": "3", "category": "missing_input",
+     "bills": [
+         bill("1077", "2027-05-05", "lotus", [("Escalator annual inspection", "1", "18,000.00", 18000)], file="1077 Lotus Mall.docx"),
+         bill("1078", "2027-05-12", "udyavara", [("Lift maintenance, May 2027", "1", "6,000.00", 6000)], file="1078 Udyavara Apt.docx"),
+         bill("1079", "2027-05-19", "malpe", [("Goods lift door interlock repair", "1", "14,600.00", 14600)], file="1079 Malpe Fish.docx"),
+         bill("1080", "2027-05-26", "kadri", [("Residential lift: rope tensioning", "1", "8,800.00", 8800)],
+              file="1080 Kadri Heights.docx")],
+     "missing": "1079", "new_ledgers": [], "entered": [], "tags": ["number-gap", "old-company-open"]},
+    {"id": "ob-9-june", "period": "2027-06", "today": "2027-07-05", "last_company": "1", "category": "ordinary",
+     "bills": [
+         bill("1081", "2027-06-04", "sharada", [("Lift maintenance, Jun 2027", "1", "15,000.00", 15000)],
+              file="1081 Sharada Residency.docx"),
+         bill("1082", "2027-06-15", "bhuvana", [("Stretcher lift service", "1", "14,200.00", 14200)], file="1082 Bhuvana Hospital.docx"),
+         bill("1083", "2027-06-25", "mithila", [("Lift maintenance, Jul - Sep 2027 quarter, advance", "1", "25,000.00", 25000)],
+              file="1083 Mithila Towers.docx")],
+     "new_ledgers": [], "entered": [], "tags": []},
+    {"id": "ob-10-july", "period": "2027-07", "today": "2027-08-03", "last_company": "1", "category": "varied",
+     "bills": [
+         bill("1084", "2027-07-02", "chandragiri", [("Bed lift installation, first stage", "1", "1,40,000.00", 140000)],
+              file="1084 Chandragiri Hospital.docx"),
+         bill("1085", "2027-07-07", "sagar", [("Lift car interior panels", "1", "32,000.00", 32000)], file="1085 Sagar Vista.docx"),
+         bill("1086", "2027-07-13", "kadri", [("Lift spare parts: landing door rollers", "6 sets", "2,250.00", 13500)], rate=12,
+              hsn="8431", file="1086 Kadri Heights.docx"),
+         bill("1087", "2027-07-20", "udyavara", [("Lift maintenance, Jul 2027", "1", "6,000.00", 6000)], file="1087 Udyavara Apt.docx"),
+         bill("1088", "2027-07-26", "pai", [("Automatic rescue device battery", "1", "4,800.00", 4800)], file="1088 Pai Textiles.docx"),
+         bill("1089", "2027-07-30", "lotus", [("Escalator handrail cleaning and polish", "1", "9,000.00", 9000)],
+              file="1089 Lotus Mall.docx")],
+     "new_ledgers": ["chandragiri"], "entered": [], "tags": ["inter-state", "new-ledger", "other-rate"]},
+    {"id": "ob-11-august", "period": "2027-08", "today": "2027-09-02", "last_company": "1", "category": "ordinary",
+     "bills": [
+         bill("1090", "2027-08-03", "pai", [("Lift door operator belt", "1", "3,900.00", 3900)], file="1090 Pai Textiles.docx"),
+         bill("1091", "2027-08-09", "shambhavi", [("Lift maintenance, Aug 2027", "1", "4,500.00", 4500)],
+              file="1091 Shambhavi Residency.docx"),
+         bill("1092", "2027-08-16", "malpe", [("Goods lift gear oil change", "1", "11,000.00", 11000)], file="1092 Malpe Fish.docx"),
+         bill("1093", "2027-08-23", "sharada", [("Lift maintenance, Aug 2027", "1", "15,000.00", 15000)],
+              file="1093 Sharada Residency.docx"),
+         bill("1094", "2027-08-30", "kadri", [("Residential lift: annual maintenance contract", "1", "36,000.00", 36000)],
+              file="1094 Kadri Heights.docx")],
+     "new_ledgers": ["shambhavi"], "entered": [], "tags": ["new-ledger", "unregistered"]},
+    {"id": "ob-12-september", "period": "2027-09", "today": "2027-10-04", "last_company": "1", "category": "duplicate",
+     "bills": [
+         bill("1095", "2027-09-02", "sagar", [("Lift annual maintenance, Apr - Sep 2027, second instalment", "1", "24,000.00", 24000)],
+              file="1095 Sagar Vista.docx"),
+         bill("1096", "2027-09-06", "udyavara", [("Lift maintenance, Sep 2027", "1", "6,000.00", 6000)], file="1096 Udyavara Apt.docx"),
+         bill("1097", "2027-09-10", "brahmagiri", [("Machine-room-less lift: car and doors", "1 set", "92,000.00", 92000)],
+              file="1097 Brahmagiri Diagnostics.docx"),
+         bill("1098", "2027-09-14", "lotus", [("Escalator step chain lubrication", "1", "30,000.00", 30000)],
+              file="1098 Lotus Mall.docx", words="Rupees Thirty Thousand Only."),
+         bill("1099", "2027-09-20", "shambhavi", [("Lift maintenance, Sep 2027", "1", "4,500.00", 4500)],
+              file="1099 Shambhavi Residency.docx"),
+         bill("1100", "2027-09-24", "mithila", [("Lift maintenance, Oct - Dec 2027 quarter, advance", "1", "25,000.00", 25000)],
+              file="1100 Mithila Towers.docx"),
+         bill("1101", "2027-09-29", "bhuvana", [("Bed lift annual load test", "1", "12,000.00", 12000)],
+              file="1101 Bhuvana Hospital.docx")],
+     "new_ledgers": [], "entered": ["1096"], "tags": ["already-entered", "words-differ"]},
+]
+# Each month's ledgers are the ones the months before it left: January's, then every new customer's since.
+_known = list(BOOKS_CASES[-1]["known"])
+for _c in LATER_BOOKS_CASES:
+    _c["known"] = list(_known)
+    _known += _c["new_ledgers"]
+BOOKS_CASES += LATER_BOOKS_CASES
+
+GSTR_BOOKS_CASES += [
+    {"id": "og-5-january", "client": "sahyadri", "period": "2027-01", "today": "2027-02-04", "category": "ordinary",
+     "otp": "739204", "export_folder": share_folder("Konkan Coast Interiors", "2026-12"),
+     "bills": [
+         bill("1116", "2027-01-05", "malnad", [("Lift maintenance, Jan 2027", "1", "21,000.00", 21000)]),
+         bill("1117", "2027-01-09", "coastal", [("Escalator annual inspection", "1", "24,500.00", 24500)]),
+         bill("1118", "2027-01-14", "kudremukh", [("Lift rope lubrication", "1", "7,500.00", 7500)]),
+         bill("1119", "2027-01-21", "belur", [("Goods lift door interlock", "1", "16,400.00", 16400)]),
+         bill("1120", "2027-01-28", "agumbe", [("Lift annual maintenance, part payment", "1", "14,406.78", Decimal("14406.78"))])],
+     "receivers_known": ["tunga", "belur", "agumbe", "coastal"], "new_receivers": [], "tags": ["wrong-export-folder"]},
+    {"id": "og-6-january", "client": "konkan", "period": "2027-01", "today": "2027-02-05", "category": "ordinary",
+     "otp": "146583", "export_folder": share_folder("Sahyadri Lift Services", "2027-01"),
+     "bills": [
+         bill("KCI-050", "2027-01-06", "belur", [("Display shelving units", "6 nos", "12,000.00", 72000)], hsn="9403"),
+         bill("KCI-051", "2027-01-13", "anand", [("Ceiling panelling, 90 sq ft", "90 sq ft", "220.00", 19800)], hsn="4418"),
+         bill("KCI-052", "2027-01-22", "tunga_k", [("Site office partition installation", "1", "58,000.00", 58000)], hsn="9954")],
+     "receivers_known": ["vasco", "belur", "tunga_k"], "new_receivers": [], "tags": ["wrong-export-folder", "hsn-codes"]},
+    {"id": "og-7-february", "client": "sahyadri", "period": "2027-02", "today": "2027-03-04", "category": "varied",
+     "otp": "862317", "export_folder": share_folder("Konkan Coast Interiors", "2027-01"),
+     "bills": [
+         bill("1121", "2027-02-02", "tunga", [("Lift door operator overhaul", "1", "42,000.00", 42000)]),
+         bill("1122", "2027-02-06", "malnad", [("Lift maintenance, Feb 2027", "1", "21,000.00", 21000)]),
+         bill("1123", "2027-02-10", "hampi2", [("Door sensor replacement", "1", "6,800.00", 6800)], cancelled=True),
+         bill("1124", "2027-02-15", "bhadra", [("Bed lift annual maintenance, Feb 2027 - Jan 2028", "1", "96,000.00", 96000)]),
+         bill("1125", "2027-02-22", "kudremukh", [("Lift battery replacement", "1", "18,000.00", 18000)]),
+         bill("1126", "2027-02-26", "coastal", [("Escalator step chain replacement", "1", "64,750.00", 64750)])],
+     "receivers_known": ["tunga", "belur", "agumbe", "coastal"], "new_receivers": ["bhadra"],
+     "tags": ["cancelled-invoice", "unvalidated-receiver"]},
+    {"id": "og-8-february", "client": "konkan", "period": "2027-02", "today": "2027-03-05", "category": "varied",
+     "otp": "305941", "export_folder": share_folder("Sahyadri Lift Services", "2027-02"),
+     "bills": [
+         bill("KCI-053", "2027-02-03", "vasco", [("Banquet hall chairs", "80 nos", "2,150.00", 172000)], hsn="9403"),
+         bill("KCI-054", "2027-02-08", "savio", [("Teak bed with wardrobe", "1", "1,18,000.00", 118000)], hsn="9403"),
+         bill("KCI-055", "2027-02-12", "anand", [("Kitchen cabinet installation", "1", "22,500.00", 22500)], hsn="9954"),
+         bill("KCI-056", "2027-02-19", "sindhudurg", [("Lobby wall panelling, 300 sq ft", "300 sq ft", "240.00", 72000)], hsn="4418"),
+         bill("KCI-057", "2027-02-25", "leena_goa", [("Study table", "1", "18,000.00", 18000)], hsn="9403")],
+     "receivers_known": ["vasco", "belur", "tunga_k"], "new_receivers": ["sindhudurg"],
+     "tags": ["inter-state", "b2c-large", "unvalidated-receiver"]},
+    {"id": "og-9-march", "client": "sahyadri", "period": "2027-03", "today": "2027-04-06", "category": "ordinary",
+     "otp": "927650", "export_folder": share_folder("Konkan Coast Interiors", "2027-02"),
+     "bills": [
+         bill("1127", "2027-03-03", "malnad", [("Lift maintenance, Mar 2027", "1", "21,000.00", 21000)]),
+         bill("1128", "2027-03-09", "gajanur", [("Lift maintenance, Mar 2027", "1", "8,500.00", 8500)]),
+         bill("1129", "2027-03-17", "belur", [("Goods lift annual maintenance", "1", "30,000.00", 30000)]),
+         bill("1130", "2027-03-26", "tunga", [("Lift annual maintenance, Apr - Sep 2027, advance", "1", "48,600.00", 48600)])],
+     "receivers_known": ["tunga", "belur", "agumbe", "coastal", "bhadra"], "new_receivers": [], "tags": ["quarter-default"]},
+    {"id": "og-10-march", "client": "konkan", "period": "2027-03", "today": "2027-04-07", "category": "varied",
+     "otp": "418372", "export_folder": share_folder("Sahyadri Lift Services", "2027-03"),
+     "bills": [
+         bill("KCI-058", "2027-03-02", "belur", [("Showroom ceiling panels", "1", "46,000.00", 46000)], hsn="4418"),
+         bill("KCI-059", "2027-03-09", "anand", [("Dining table set", "1", "38,500.00", 38500)], hsn="9403"),
+         bill("KCI-060", "2027-03-15", "vasco", [("Lobby furniture installation", "1", "35,000.00", 35000)], hsn="9954"),
+         bill("KCI-061", "2027-03-22", "tunga_k", [("Site office furniture refit", "1", "24,000.00", 24000)], hsn="9954"),
+         bill("KCI-062", "2027-03-29", "rhea", [("Rosewood sofa set", "1", "82,000.00", 82000)], hsn="9403")],
+     "receivers_known": ["vasco", "belur", "tunga_k", "sindhudurg"], "new_receivers": [], "stale_import": ["KCI-058", "KCI-060"],
+     "tags": ["overwrite-not-append", "quarter-default"]},
+    {"id": "og-11-april-cancelled-gstin", "client": "sahyadri", "company": "4", "period": "2027-04", "today": "2027-05-05",
+     "category": "invalid_input", "otp": "550816", "export_folder": share_folder("Konkan Coast Interiors", "2027-03"),
+     "bills": [
+         bill("1131", "2027-04-02", "coastal", [("Escalator maintenance, Apr - Jun 2027", "1", "45,000.00", 45000)]),
+         bill("1132", "2027-04-07", "malnad", [("Lift maintenance, Apr 2027", "1", "21,000.00", 21000)]),
+         bill("1133", "2027-04-12", "tirthahalli", [("Lift installation, first stage", "1", "1,10,000.00", 110000)]),
+         bill("1134", "2027-04-20", "gajanur", [("Lift maintenance, Apr 2027", "1", "8,500.00", 8500)]),
+         bill("1135", "2027-04-27", "bhadra", [("Bed lift door sensor", "1", "12,600.00", 12600)])],
+     "receivers_known": ["tunga", "belur", "agumbe", "coastal", "bhadra"], "new_receivers": ["tirthahalli"],
+     "cancelled_gstin": "tirthahalli", "tags": ["cancelled-receiver"]},
+    {"id": "og-12-april", "client": "konkan", "company": "5", "period": "2027-04", "today": "2027-05-06", "category": "ordinary",
+     "otp": "671029", "export_folder": share_folder("Sahyadri Lift Services", "2027-04"),
+     "bills": [
+         bill("KCI-063", "2027-04-03", "majali", [("Resort cottage furniture sets", "6 sets", "38,000.00", 228000)], hsn="9403"),
+         bill("KCI-064", "2027-04-08", "anand", [("Wall panelling, 120 sq ft", "120 sq ft", "210.00", 25200)], hsn="4418"),
+         bill("KCI-065", "2027-04-14", "tunga_k", [("Site office furniture installation", "1", "44,000.00", 44000)], hsn="9954"),
+         bill("KCI-066", "2027-04-19", "belur", [("Showroom counter installation", "1", "31,000.00", 31000)], hsn="9954"),
+         bill("KCI-067", "2027-04-24", "anand", [("Teak study table", "1", "24,000.00", 24000)], hsn="9403"),
+         bill("KCI-068", "2027-04-29", "majali", [("Cottage furniture installation", "1", "36,000.00", 36000)], hsn="9954")],
+     "receivers_known": ["vasco", "belur", "tunga_k", "sindhudurg"], "new_receivers": ["majali"],
+     "tags": ["unvalidated-receiver", "hsn-codes"]},
+]
+
+CHAT_CASES += [
+    {"id": "oc-5-january", "client": SHARAVATI, "period": "2027-01", "today": "2027-02-03", "otp": "284716", "category": "ordinary",
+     "bills": [inclusive("210", "2027-01-08", "rohan", 118000), inclusive("211", "2027-01-19", "leena", 236000),
+               inclusive("212", "2027-01-28", "arun", 59000)],
+     "chat": ["Please send the invoices for January."], "client_says": ["These are all the bills for January."],
+     "tags": ["b2c-others", "tax-inclusive"]},
+    {"id": "oc-6-february", "client": SHARAVATI, "period": "2027-02", "today": "2027-03-04", "otp": "593028", "category": "varied",
+     "bills": [inclusive("213", "2027-02-04", "mira", 177000), inclusive("214", "2027-02-11", "prakash", 295000),
+               inclusive("215", "2027-02-17", "rohan", 59000, cancelled=True), inclusive("216", "2027-02-25", "kavya", 147500)],
+     "chat": ["Please send the invoices for February."],
+     "client_says": ["Invoice 215 is cancelled, Rohan has put off the work. I have sent it anyway, marked cancelled."],
+     "tags": ["cancelled-invoice"]},
+    {"id": "oc-7-february-nil", "client": NETRAVATI, "period": "2027-02", "today": "2027-03-05", "otp": "817364",
+     "category": "varied", "bills": [], "chat": ["Please send the invoices for February."],
+     "client_says": ["Nothing was billed in February either, there are no bills this month."], "tags": ["nil-return"]},
+    {"id": "oc-8-march", "client": SHARAVATI, "period": "2027-03", "today": "2027-04-05", "otp": "360592", "category": "ordinary",
+     "bills": [inclusive("217", "2027-03-05", "mira", 100000), inclusive("218", "2027-03-16", "sunil", 236000),
+               inclusive("219", "2027-03-27", "prakash", 177000)],
+     "chat": ["Please send the invoices for March."], "client_says": ["These are all the bills for March."],
+     "tags": ["tax-inclusive", "quarter-default"]},
+    {"id": "oc-9-april", "client": SHARAVATI, "period": "2027-04", "today": "2027-05-04", "otp": "749183", "category": "ordinary",
+     "bills": [inclusive("220", "2027-04-03", "kavya", 59000), inclusive("221", "2027-04-09", "leena", 118000),
+               inclusive("222", "2027-04-15", "rohan", 150000), inclusive("223", "2027-04-22", "arun", 295000),
+               inclusive("224", "2027-04-29", "sunil", 59000)],
+     "chat": ["Please send the invoices for April."], "client_says": ["These are all the bills for April."],
+     "tags": ["b2c-others", "tax-inclusive"]},
+    {"id": "oc-10-may", "client": SHARAVATI, "period": "2027-05", "today": "2027-06-03", "otp": "128467", "category": "ordinary",
+     "bills": [inclusive("225", "2027-05-06", "agro", 472000), inclusive("226", "2027-05-13", "mira", 118000),
+               inclusive("227", "2027-05-20", "rohan", 59000), inclusive("228", "2027-05-27", "prakash", 236000)],
+     "chat": ["Please send the invoices for May."],
+     "client_says": ["These are all the bills for May. Coastal Agro has started its second godown with us."],
+     "tags": ["registered-buyer"]},
+    {"id": "oc-11-june", "client": SHARAVATI, "period": "2027-06", "today": "2027-07-05", "otp": "905314", "category": "varied",
+     "bills": [inclusive("229", "2027-06-03", "anil", 354000), inclusive("230", "2027-06-08", "joseph", 59000),
+               inclusive("231", "2027-06-12", "mira", 177000), inclusive("232", "2027-06-18", "leena", 59000),
+               inclusive("233", "2027-06-23", "arun", 118000), inclusive("234", "2027-06-29", "kavya", 236000)],
+     "chat": ["Please send the invoices for June."], "client_says": ["Invoices 229 and 230 are for the Kasaragod sites."],
+     "tags": ["b2c-large", "inter-state", "quarter-default"]},
+    {"id": "oc-12-july", "client": SHARAVATI, "period": "2027-07", "today": "2027-08-04", "otp": "671845", "category": "duplicate",
+     "bills": [inclusive("235", "2027-07-02", "rohan", 118000), inclusive("236", "2027-07-09", "sunil", 177000),
+               inclusive("237", "2027-07-15", "prakash", 59000), inclusive("238", "2027-07-21", "mira", 236000),
+               inclusive("239", "2027-07-28", "kavya", 147500)],
+     "duplicates": {"238_sales_invoice_Mira_Pinto-1.pdf": "238"},
+     "chat": ["Please send the invoices for July."], "client_says": ["These are all the bills for July."],
+     "tags": ["sent-twice", "b2c-others"]},
+]
 
 
 # Hand-written totals the worked records must equal (a slip in the arithmetic above shows here).
@@ -1191,13 +1520,59 @@ CHECKS = {
     ("og-3-december", "docs", "net"): "7",              # 1108-1115, 1112 cancelled
     ("oc-1-october", "b2cs", "txval"): "372881.35",     # 1,27,118.64 + 2,03,389.83 + 42,372.88
     ("oc-3-december", "hsn", "iamt"): "45000.00",       # 36,000 + 9,000
+    # the later months: the vouchers to enter (not one already in the books, the missing one included) ...
+    ("ob-5-february", "vouchers", "total"): "45430.00",    # 38,500 at 18%
+    ("ob-6-march", "vouchers", "total"): "170510.00",      # 1,44,500 at 18%; the copy of 1067 is not a bill
+    ("ob-7-april", "vouchers", "total"): "162722.00",      # 1,37,900 at 18%
+    ("ob-8-may", "vouchers", "total"): "55932.00",         # 47,400 at 18%, 1079 (14,600) included
+    ("ob-9-june", "vouchers", "total"): "63956.00",        # 54,200 at 18%
+    ("ob-10-july", "vouchers", "total"): "241444.00",      # 1,65,200 (IGST) + 15,120 (12%) + 61,124
+    ("ob-10-july", "vouchers", "igst"): "25200.00",        # 18% of 1,40,000
+    ("ob-11-august", "vouchers", "total"): "83072.00",     # 70,400 at 18%
+    ("ob-12-september", "vouchers", "total"): "221250.00",  # 1,87,500 at 18%; 1096 is already in the books
+    # ... the returns from the books ...
+    ("og-5-january", "b2b", "txval"): "55306.78",       # 24,500 + 16,400 + 14,406.78
+    ("og-5-january", "b2cs", "txval"): "28500.00",      # 21,000 + 7,500
+    ("og-6-january", "b2b", "txval"): "130000.00",      # 72,000 + 58,000
+    ("og-6-january", "hsn", "txval"): "149800.00",      # 72,000 + 19,800 + 58,000
+    ("og-7-february", "b2b", "txval"): "202750.00",     # 42,000 + 96,000 + 64,750
+    ("og-7-february", "docs", "net"): "5",              # 1121-1126, 1123 cancelled
+    ("og-8-february", "b2cl", "iamt"): "21240.00",      # 18% of 1,18,000
+    ("og-8-february", "b2b", "iamt"): "43920.00",       # 18% of 1,72,000 + 72,000
+    ("og-8-february", "b2cs", "iamt"): "3240.00",       # 18% of 18,000
+    ("og-9-march", "b2b", "txval"): "78600.00",         # 30,000 + 48,600
+    ("og-9-march", "b2cs", "txval"): "29500.00",        # 21,000 + 8,500
+    ("og-10-march", "b2cs", "txval"): "120500.00",      # 38,500 + 82,000
+    ("og-10-march", "b2cs", "iamt"): "14760.00",        # 18% of 82,000
+    ("og-10-march", "b2b", "txval"): "105000.00",       # 46,000 + 35,000 + 24,000
+    ("og-11-april-cancelled-gstin", "b2b", "txval"): "167600.00",  # 45,000 + 1,10,000 + 12,600
+    ("og-12-april", "b2b", "txval"): "339000.00",       # 2,28,000 + 44,000 + 31,000 + 36,000
+    ("og-12-april", "hsn", "txval"): "388200.00",       # 3,39,000 + 25,200 + 24,000
+    # ... and the returns from the chat's invoices
+    ("oc-5-january", "b2cs", "txval"): "350000.00",     # 1,00,000 + 2,00,000 + 50,000
+    ("oc-6-february", "b2cs", "txval"): "525000.00",    # 1,50,000 + 2,50,000 + 1,25,000; 215 cancelled
+    ("oc-6-february", "docs", "cancelled"): "1",
+    ("oc-8-march", "b2cs", "camt"): "39127.12",         # 7,627.12 + 18,000 + 13,500
+    ("oc-9-april", "b2cs", "txval"): "577118.64",       # 50,000 + 1,00,000 + 1,27,118.64 + 2,50,000 + 50,000
+    ("oc-10-may", "b2b", "txval"): "400000.00",         # 4,72,000 / 1.18
+    ("oc-10-may", "b2cs", "txval"): "350000.00",        # 1,00,000 + 50,000 + 2,00,000
+    ("oc-11-june", "b2cl", "iamt"): "54000.00",         # 18% of 3,00,000
+    ("oc-11-june", "b2cs", "txval"): "550000.00",       # 5,00,000 in the state + 50,000 to Kerala
+    ("oc-12-july", "b2cs", "txval"): "625000.00",       # 1,00,000 + 1,50,000 + 50,000 + 2,00,000 + 1,25,000; 238 once
+    ("oc-12-july", "docs", "total"): "5",
 }
 
 
 def check_totals():
     cases = {c["id"]: (CLIENT_OF[c["client"]], c["bills"]) for c in GSTR_BOOKS_CASES}
     cases.update({c["id"]: (c["client"], [chat_bill(c["client"], b) for b in c["bills"]]) for c in CHAT_CASES if c["bills"]})
+    books = {c["id"]: c for c in BOOKS_CASES}
     for (cid, key, field), want in CHECKS.items():
+        if key == "vouchers":
+            c = books[cid]
+            got = sum(b[field] for b in c["bills"] if b["no"] not in c["entered"])
+            assert got == Decimal(want), (cid, key, field, got, want)
+            continue
         client, bills = cases[cid]
         rows = gstr1_rows(client, bills)[key]
         got = sum(Decimal(r[field]) for r in rows)

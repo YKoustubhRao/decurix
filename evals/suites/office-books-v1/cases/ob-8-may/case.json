@@ -1,0 +1,189 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "ob-8-may",
+  "category": "missing_input",
+  "kind": "sales_bills_to_books",
+  "request": "Suvarna Lift Systems has emailed its sales bills for May 2027 to our Mailbox. Enter each bill as a Sales voucher in the client's company in Bookwell, then check the month's sales in the books against the bills. The attachments are also saved in ~/work/practice/ob-8-may/. Our apps: Mailbox http://mail.example.test, Bookwell http://books.example.test.",
+  "start": {
+    "files": [
+      "1077 Lotus Mall.docx",
+      "1078 Udyavara Apt.docx",
+      "1080 Kadri Heights.docx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "invoice-1079",
+      "about": "the bill numbered 1079, which is missing from the mail",
+      "refers_to": [
+        "1079",
+        "missing bill",
+        "missing invoice",
+        "number gap",
+        "gap",
+        "skipped number",
+        "missing number",
+        "not attached"
+      ],
+      "answer": "Bill 1079 went to Malpe Fish Processors Pvt Ltd on 19-05-2027: Sales@18%, sales amount 14,600.00, CGST 1,314.00 and SGST 1,314.00 (total 17,228.00). The client forgot to attach it; enter it with the others.",
+      "required": true
+    }
+  ],
+  "approves": [
+    {
+      "control": "Save voucher",
+      "role": "button"
+    },
+    {
+      "control": "Save ledger",
+      "role": "button"
+    }
+  ],
+  "date_orders": {
+    "app": "day",
+    "source": "day"
+  },
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "vouchers",
+        "kind": "mock_records",
+        "collection": "vouchers",
+        "exact_count": true,
+        "records": [
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1077",
+            "date": {
+              "date": "2027-05-05"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "18000.00"
+            },
+            "cgst": {
+              "number": "1620.00"
+            },
+            "sgst": {
+              "number": "1620.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "21240.00"
+            },
+            "party": "Lotus Mall Management LLP"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1078",
+            "date": {
+              "date": "2027-05-12"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "6000.00"
+            },
+            "cgst": {
+              "number": "540.00"
+            },
+            "sgst": {
+              "number": "540.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "7080.00"
+            },
+            "party": "Udyavara Apartments"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1079",
+            "date": {
+              "date": "2027-05-19"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "14600.00"
+            },
+            "cgst": {
+              "number": "1314.00"
+            },
+            "sgst": {
+              "number": "1314.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "17228.00"
+            },
+            "party": "Malpe Fish Processors Pvt Ltd"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1080",
+            "date": {
+              "date": "2027-05-26"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "8800.00"
+            },
+            "cgst": {
+              "number": "792.00"
+            },
+            "sgst": {
+              "number": "792.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "10384.00"
+            },
+            "party": "Kadri Heights Builders LLP"
+          }
+        ]
+      },
+      {
+        "id": "ledgers",
+        "kind": "absent",
+        "collection": "ledgers"
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "invoice-1079"
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1077' --data-urlencode 'date=05-05-2027' --data-urlencode 'party=Lotus Mall Management LLP' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=18000.00' --data-urlencode 'cgst=1620.00' --data-urlencode 'sgst=1620.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1078' --data-urlencode 'date=12-05-2027' --data-urlencode 'party=Udyavara Apartments' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=6000.00' --data-urlencode 'cgst=540.00' --data-urlencode 'sgst=540.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1079' --data-urlencode 'date=19-05-2027' --data-urlencode 'party=Malpe Fish Processors Pvt Ltd' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=14600.00' --data-urlencode 'cgst=1314.00' --data-urlencode 'sgst=1314.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1080' --data-urlencode 'date=26-05-2027' --data-urlencode 'party=Kadri Heights Builders LLP' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=8800.00' --data-urlencode 'cgst=792.00' --data-urlencode 'sgst=792.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    {
+      "answer": "Entered 4 Sales vouchers for May 2027 in Suvarna Lift Systems 2025-26: 1077, 1078, 1079, 1080."
+    }
+  ],
+  "budget": {
+    "max_minutes": 60,
+    "max_tokens": 8000000
+  },
+  "tags": [
+    "number-gap",
+    "old-company-open"
+  ]
+}

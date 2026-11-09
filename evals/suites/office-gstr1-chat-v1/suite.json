@@ -1,7 +1,7 @@
 {
   "schema": "decurix.eval-suite/v1",
   "name": "office-gstr1-chat-v1",
-  "description": "A CA office files a small client's monthly GSTR-1 from the sales invoices the client sends as PDFs on chat: each invoice is read (tax-inclusive round amounts, the taxable value backed out at 18%), the client's computation workbook shows the series and the earlier months, and the portal's tables are entered by hand: 4A (B2B, a buyer with a GSTIN), 5 (B2C Large: inter-state to an unregistered buyer over 1,00,000), 7 (B2C Others, one row per place of supply and rate), 12 (HSN, in its B2B and B2C tabs) and 13 (documents issued, cancelled ones counted), or the return filed nil; then the summary is generated and the return filed with EVC, whose OTP only the client has. Case 1 is the one a person demonstrates; the rest are new months: a registered buyer and a cancelled invoice, inter-state buyers with the portal opening on the current quarter, and a month with no bills. Graded on the portal's tables and filed return, exactly, and the ARN in the report. Fictional data; the ca-office mock.",
+  "description": "A CA office files a small client's monthly GSTR-1 from the sales invoices the client sends as PDFs on chat: each invoice is read (tax-inclusive round amounts, the taxable value backed out at 18%), the client's computation workbook shows the series and the earlier months, and the portal's tables are entered by hand: 4A (B2B, a buyer with a GSTIN), 5 (B2C Large: inter-state to an unregistered buyer over 1,00,000), 7 (B2C Others, one row per place of supply and rate), 12 (HSN, in its B2B and B2C tabs) and 13 (documents issued, cancelled ones counted), or the return filed nil; then the summary is generated and the return filed with EVC, whose OTP only the client has. Case 1 is the one a person demonstrates; the rest are new months: a registered buyer and a cancelled invoice, inter-state buyers with the portal opening on the current quarter, and a month with no bills. Cases 5 to 12 are the next months (January to July 2027, the workbook holding the months before), the same buyers and some new ones, about half of them plain and the rest with a cancelled invoice, a nil month, Kerala buyers again or an invoice sent twice on the chat, so a worker taught once can show its curve over fresh months. Graded on the portal's tables and filed return, exactly, and the ARN in the report. Fictional data; the ca-office mock.",
   "mocks": {
     "ca-office": {
       "hosts": [
@@ -21,7 +21,15 @@
     "oc-1-october",
     "oc-2-november",
     "oc-3-december",
-    "oc-4-nil-month"
+    "oc-4-nil-month",
+    "oc-5-january",
+    "oc-6-february",
+    "oc-7-february-nil",
+    "oc-8-march",
+    "oc-9-april",
+    "oc-10-may",
+    "oc-11-june",
+    "oc-12-july"
   ],
   "carry_state": false,
   "confirms_plans": true,

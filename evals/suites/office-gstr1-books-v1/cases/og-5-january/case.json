@@ -1,0 +1,389 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "og-5-january",
+  "category": "ordinary",
+  "kind": "gstr1_from_books",
+  "request": "File the January 2027 GSTR-1 of Sahyadri Lift Services (GSTIN 29AALFS8842N1Z6) from its books. The month's sales are entered in Bookwell, and the month's invoices are in ~/work/practice/og-5-january/. Our apps: Bookwell http://books.example.test, FilePrep GST http://fileprep.example.test (it opens TaxNet signed in as the client), TaxNet http://taxnet.example.test.",
+  "start": {
+    "files": [
+      "1116 Malnad Heights Apartment Owners Association.docx",
+      "1117 Coastal Mall Management LLP.docx",
+      "1118 Kudremukh Apartments.docx",
+      "1119 Belur Textiles.docx",
+      "1120 Agumbe Hotels.docx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "otp",
+      "about": "the one-time password the portal sent to the client's registered mobile for filing",
+      "refers_to": [
+        "otp",
+        "one time password",
+        "one-time password",
+        "verification code",
+        "evc code"
+      ],
+      "answer": "I called the client: the OTP is 739204.",
+      "required": true
+    }
+  ],
+  "approves": [
+    {
+      "control": "Export",
+      "role": "button"
+    },
+    {
+      "control": "Import",
+      "role": "button"
+    },
+    {
+      "control": "Validate selected",
+      "role": "button"
+    },
+    {
+      "control": "Update names from TaxNet",
+      "role": "button"
+    },
+    {
+      "control": "Save to portal",
+      "role": "button"
+    },
+    {
+      "control": "File with EVC",
+      "role": "button"
+    },
+    {
+      "control": "Verify",
+      "role": "button"
+    }
+  ],
+  "date_orders": {
+    "app": "day",
+    "source": "day"
+  },
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "export",
+        "kind": "mock_records",
+        "collection": "share_files",
+        "records": [
+          {
+            "folder": "GST Returns/Sahyadri Lift Services/2026-27/10. JANUARY",
+            "gstin": "29AALFS8842N1Z6",
+            "period": "012027"
+          }
+        ]
+      },
+      {
+        "id": "no-export-in-the-folder-left-open",
+        "kind": "absent",
+        "collection": "share_files",
+        "records": [
+          {
+            "folder": "GST Returns/Konkan Coast Interiors/2026-27/9. DECEMBER",
+            "gstin": "29AALFS8842N1Z6"
+          }
+        ]
+      },
+      {
+        "id": "receivers",
+        "kind": "mock_records",
+        "collection": "fp_receivers",
+        "records": [
+          {
+            "client": "1",
+            "status": "Valid"
+          }
+        ]
+      },
+      {
+        "id": "saved",
+        "kind": "mock_records",
+        "collection": "fp_uploads",
+        "records": [
+          {
+            "client": "1",
+            "period": "2027-01",
+            "status": "Processed"
+          }
+        ]
+      },
+      {
+        "id": "tn-b2b",
+        "kind": "mock_records",
+        "collection": "tn_b2b",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-01",
+            "ctin": "29AAQFC6610D1ZG",
+            "inum": "1117",
+            "idt": {
+              "date": "2027-01-09"
+            },
+            "val": {
+              "number": "28910.00"
+            },
+            "pos": "29",
+            "rt": "18",
+            "txval": {
+              "number": "24500.00"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "2205.00"
+            },
+            "samt": {
+              "number": "2205.00"
+            }
+          },
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-01",
+            "ctin": "29ACQPB2207N1ZE",
+            "inum": "1119",
+            "idt": {
+              "date": "2027-01-21"
+            },
+            "val": {
+              "number": "19352.00"
+            },
+            "pos": "29",
+            "rt": "18",
+            "txval": {
+              "number": "16400.00"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "1476.00"
+            },
+            "samt": {
+              "number": "1476.00"
+            }
+          },
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-01",
+            "ctin": "29AAKFA9902J1Z2",
+            "inum": "1120",
+            "idt": {
+              "date": "2027-01-28"
+            },
+            "val": {
+              "number": "17000.00"
+            },
+            "pos": "29",
+            "rt": "18",
+            "txval": {
+              "number": "14406.78"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "1296.61"
+            },
+            "samt": {
+              "number": "1296.61"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-b2cl",
+        "kind": "absent",
+        "collection": "tn_b2cl"
+      },
+      {
+        "id": "tn-b2cs",
+        "kind": "mock_records",
+        "collection": "tn_b2cs",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-01",
+            "pos": "29",
+            "typ": "INTRA",
+            "rt": "18",
+            "txval": {
+              "number": "28500.00"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "2565.00"
+            },
+            "samt": {
+              "number": "2565.00"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-hsn",
+        "kind": "mock_records",
+        "collection": "tn_hsn",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-01",
+            "tab": "B2C",
+            "hsn": "9987",
+            "uqc": "NA",
+            "qty": {
+              "number": "0"
+            },
+            "rt": "18",
+            "txval": {
+              "number": "28500.00"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "2565.00"
+            },
+            "samt": {
+              "number": "2565.00"
+            },
+            "csamt": {
+              "number": "0.00"
+            }
+          },
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-01",
+            "tab": "B2B",
+            "hsn": "9987",
+            "uqc": "NA",
+            "qty": {
+              "number": "0"
+            },
+            "rt": "18",
+            "txval": {
+              "number": "55306.78"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "4977.61"
+            },
+            "samt": {
+              "number": "4977.61"
+            },
+            "csamt": {
+              "number": "0.00"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-docs",
+        "kind": "mock_records",
+        "collection": "tn_docs",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-01",
+            "nature": "Invoices for outward supply",
+            "from": "1116",
+            "to": "1120",
+            "total": {
+              "number": "5"
+            },
+            "cancelled": {
+              "number": "0"
+            },
+            "net": {
+              "number": "5"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-returns",
+        "kind": "mock_records",
+        "collection": "tn_returns",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-01",
+            "status": "Filed",
+            "arn": "AA290127785627H",
+            "method": "EVC",
+            "signatory": "Prakash Hegde",
+            "nil": "no",
+            "filed_on": {
+              "date": "2027-02-04"
+            }
+          }
+        ]
+      },
+      {
+        "id": "reports-arn",
+        "kind": "final_text_contains",
+        "words": [
+          "AA290127785627H"
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "otp"
+        ]
+      },
+      {
+        "id": "not-filed-before-the-otp",
+        "kind": "absent",
+        "collection": "tn_returns",
+        "records": [
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-01",
+            "status": "Filed"
+          }
+        ],
+        "when": "asked"
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'month=2027-01' --data-urlencode 'folder=GST Returns/Sahyadri Lift Services/2026-27/10. JANUARY' http://books.example.test/company/1/gstr1/export",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'folder=GST Returns/Sahyadri Lift Services/2026-27/10. JANUARY' --data-urlencode 'file=29AALFS8842N1Z6_GSTR1_JAN-2027_04022027_172107.json' --data-urlencode 'mode=overwrite' http://fileprep.example.test/client/1/gstr1/2027-01/import",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'submit=1' http://fileprep.example.test/client/1/gstr1/2027-01/save",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'user=sahyadri.lift' --data-urlencode 'password=Sahyadri#Demo26' http://taxnet.example.test/login",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'submit=1' http://taxnet.example.test/gstr1/2027-01/generate",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'declare=yes' --data-urlencode 'signatory=Prakash Hegde' http://taxnet.example.test/gstr1/2027-01/file-evc",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'otp=739204' http://taxnet.example.test/gstr1/2027-01/verify",
+    {
+      "answer": "Filed Sahyadri Lift Services's GSTR-1 for January 2027 with EVC. ARN AA290127785627H."
+    }
+  ],
+  "budget": {
+    "max_minutes": 60,
+    "max_tokens": 10000000
+  },
+  "tags": [
+    "wrong-export-folder"
+  ],
+  "oracle_secrets": [
+    "Sahyadri#Demo26",
+    "Konkan#Demo26"
+  ]
+}

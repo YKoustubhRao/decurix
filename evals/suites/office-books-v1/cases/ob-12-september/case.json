@@ -1,0 +1,237 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "ob-12-september",
+  "category": "duplicate",
+  "kind": "sales_bills_to_books",
+  "request": "Suvarna Lift Systems has emailed its sales bills for September 2027 to our Mailbox. Enter each bill as a Sales voucher in the client's company in Bookwell, then check the month's sales in the books against the bills. The attachments are also saved in ~/work/practice/ob-12-september/. Our apps: Mailbox http://mail.example.test, Bookwell http://books.example.test.",
+  "start": {
+    "files": [
+      "1095 Sagar Vista.docx",
+      "1096 Udyavara Apt.docx",
+      "1097 Brahmagiri Diagnostics.docx",
+      "1098 Lotus Mall.docx",
+      "1099 Shambhavi Residency.docx",
+      "1100 Mithila Towers.docx",
+      "1101 Bhuvana Hospital.docx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "words-vs-figures",
+      "about": "which figure to take when a bill's amount in words differs from its totals",
+      "refers_to": [
+        "in words",
+        "amount in words",
+        "words",
+        "differs",
+        "mismatch",
+        "does not match"
+      ],
+      "answer": "Take the figures in the bill's totals table. The client's template often keeps old text in the words box.",
+      "required": false
+    }
+  ],
+  "approves": [
+    {
+      "control": "Save voucher",
+      "role": "button"
+    },
+    {
+      "control": "Save ledger",
+      "role": "button"
+    }
+  ],
+  "date_orders": {
+    "app": "day",
+    "source": "day"
+  },
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "vouchers",
+        "kind": "mock_records",
+        "collection": "vouchers",
+        "exact_count": true,
+        "records": [
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1095",
+            "date": {
+              "date": "2027-09-02"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "24000.00"
+            },
+            "cgst": {
+              "number": "2160.00"
+            },
+            "sgst": {
+              "number": "2160.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "28320.00"
+            },
+            "party": "Sagar Hospitality Group"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1097",
+            "date": {
+              "date": "2027-09-10"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "92000.00"
+            },
+            "cgst": {
+              "number": "8280.00"
+            },
+            "sgst": {
+              "number": "8280.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "108560.00"
+            },
+            "party": "Brahmagiri Diagnostics LLP"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1098",
+            "date": {
+              "date": "2027-09-14"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "30000.00"
+            },
+            "cgst": {
+              "number": "2700.00"
+            },
+            "sgst": {
+              "number": "2700.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "35400.00"
+            },
+            "party": "Lotus Mall Management LLP"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1099",
+            "date": {
+              "date": "2027-09-20"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "4500.00"
+            },
+            "cgst": {
+              "number": "405.00"
+            },
+            "sgst": {
+              "number": "405.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "5310.00"
+            },
+            "party": "Shambhavi Residency"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1100",
+            "date": {
+              "date": "2027-09-24"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "25000.00"
+            },
+            "cgst": {
+              "number": "2250.00"
+            },
+            "sgst": {
+              "number": "2250.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "29500.00"
+            },
+            "party": "Mithila Towers Welfare Society"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1101",
+            "date": {
+              "date": "2027-09-29"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "12000.00"
+            },
+            "cgst": {
+              "number": "1080.00"
+            },
+            "sgst": {
+              "number": "1080.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "14160.00"
+            },
+            "party": "Bhuvana Hospital Trust"
+          }
+        ]
+      },
+      {
+        "id": "ledgers",
+        "kind": "absent",
+        "collection": "ledgers"
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1095' --data-urlencode 'date=02-09-2027' --data-urlencode 'party=Sagar Hospitality Group' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=24000.00' --data-urlencode 'cgst=2160.00' --data-urlencode 'sgst=2160.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1097' --data-urlencode 'date=10-09-2027' --data-urlencode 'party=Brahmagiri Diagnostics LLP' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=92000.00' --data-urlencode 'cgst=8280.00' --data-urlencode 'sgst=8280.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1098' --data-urlencode 'date=14-09-2027' --data-urlencode 'party=Lotus Mall Management LLP' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=30000.00' --data-urlencode 'cgst=2700.00' --data-urlencode 'sgst=2700.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1099' --data-urlencode 'date=20-09-2027' --data-urlencode 'party=Shambhavi Residency' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=4500.00' --data-urlencode 'cgst=405.00' --data-urlencode 'sgst=405.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1100' --data-urlencode 'date=24-09-2027' --data-urlencode 'party=Mithila Towers Welfare Society' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=25000.00' --data-urlencode 'cgst=2250.00' --data-urlencode 'sgst=2250.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1101' --data-urlencode 'date=29-09-2027' --data-urlencode 'party=Bhuvana Hospital Trust' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=12000.00' --data-urlencode 'cgst=1080.00' --data-urlencode 'sgst=1080.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    {
+      "answer": "Entered 6 Sales vouchers for September 2027 in Suvarna Lift Systems 2025-26: 1095, 1097, 1098, 1099, 1100, 1101."
+    }
+  ],
+  "budget": {
+    "max_minutes": 60,
+    "max_tokens": 8000000
+  },
+  "tags": [
+    "already-entered",
+    "words-differ"
+  ]
+}

@@ -1,0 +1,161 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "og-11-april-cancelled-gstin",
+  "category": "invalid_input",
+  "kind": "gstr1_from_books",
+  "request": "File the April 2027 GSTR-1 of Sahyadri Lift Services (GSTIN 29AALFS8842N1Z6) from its books. The month's sales are entered in Bookwell, and the month's invoices are in ~/work/practice/og-11-april-cancelled-gstin/. Our apps: Bookwell http://books.example.test, FilePrep GST http://fileprep.example.test (it opens TaxNet signed in as the client), TaxNet http://taxnet.example.test.",
+  "start": {
+    "files": [
+      "1131 Coastal Mall Management LLP.docx",
+      "1132 Malnad Heights Apartment Owners Association.docx",
+      "1133 Tirthahalli Commercial Complex LLP.docx",
+      "1134 Gajanur Heights Apartments.docx",
+      "1135 Bhadra Valley Hospital Trust.docx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "cancelled-receiver",
+      "about": "what to do when a customer's GSTIN is cancelled on the register",
+      "refers_to": [
+        "cancelled",
+        "cancelled gstin",
+        "gstin cancelled",
+        "receiver gstin",
+        "customer gstin",
+        "tirthahalli"
+      ],
+      "answer": "If a customer's GSTIN is cancelled, do not save or file the return. Stop, and tell me which invoice and customer it is; I will take it up with the client.",
+      "required": true
+    }
+  ],
+  "approves": [
+    {
+      "control": "Export",
+      "role": "button"
+    },
+    {
+      "control": "Import",
+      "role": "button"
+    },
+    {
+      "control": "Validate selected",
+      "role": "button"
+    },
+    {
+      "control": "Update names from TaxNet",
+      "role": "button"
+    },
+    {
+      "control": "Save to portal",
+      "role": "button"
+    },
+    {
+      "control": "File with EVC",
+      "role": "button"
+    },
+    {
+      "control": "Verify",
+      "role": "button"
+    }
+  ],
+  "date_orders": {
+    "app": "day",
+    "source": "day"
+  },
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "export",
+        "kind": "mock_records",
+        "collection": "share_files",
+        "records": [
+          {
+            "folder": "GST Returns/Sahyadri Lift Services/2027-28/1. APRIL",
+            "gstin": "29AALFS8842N1Z6",
+            "period": "042027"
+          }
+        ]
+      },
+      {
+        "id": "no-export-in-the-folder-left-open",
+        "kind": "absent",
+        "collection": "share_files",
+        "records": [
+          {
+            "folder": "GST Returns/Konkan Coast Interiors/2026-27/12. MARCH",
+            "gstin": "29AALFS8842N1Z6"
+          }
+        ]
+      },
+      {
+        "id": "validated",
+        "kind": "mock_records",
+        "collection": "fp_receivers",
+        "records": [
+          {
+            "client": "1",
+            "gstin": "29AAKFT2290N1ZG",
+            "status": "Cancelled"
+          }
+        ]
+      },
+      {
+        "id": "not-saved",
+        "kind": "absent",
+        "collection": "fp_uploads"
+      },
+      {
+        "id": "not-filed",
+        "kind": "absent",
+        "collection": "tn_returns",
+        "records": [
+          {
+            "gstin": "29AALFS8842N1Z6",
+            "period": "2027-04"
+          }
+        ]
+      },
+      {
+        "id": "nothing-on-the-portal",
+        "kind": "absent",
+        "collection": "tn_b2b"
+      },
+      {
+        "id": "says-which-invoice",
+        "kind": "final_text_contains",
+        "words": [
+          "1133"
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "cancelled-receiver"
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'month=2027-04' --data-urlencode 'folder=GST Returns/Sahyadri Lift Services/2027-28/1. APRIL' http://books.example.test/company/4/gstr1/export",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'folder=GST Returns/Sahyadri Lift Services/2027-28/1. APRIL' --data-urlencode 'file=29AALFS8842N1Z6_GSTR1_APR-2027_05052027_172107.json' --data-urlencode 'mode=overwrite' http://fileprep.example.test/client/1/gstr1/2027-04/import",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'gstin=29AAKFT2290N1ZG' --data-urlencode 'action=validate' http://fileprep.example.test/client/1/receivers",
+    {
+      "answer": "Not filed: the GSTIN 29AAKFT2290N1ZG of Tirthahalli Commercial Complex LLP (invoice 1133) is cancelled on the register, so the return was neither saved to TaxNet nor filed."
+    }
+  ],
+  "budget": {
+    "max_minutes": 60,
+    "max_tokens": 10000000
+  },
+  "tags": [
+    "cancelled-receiver"
+  ],
+  "oracle_secrets": [
+    "Sahyadri#Demo26",
+    "Konkan#Demo26"
+  ]
+}

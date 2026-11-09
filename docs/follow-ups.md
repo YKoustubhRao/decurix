@@ -236,6 +236,26 @@ taught run no longer declares an ambiguous digit date when the application's ord
 - Supplier and item picks from a long description under load take 2-15 minutes per search set (each search waits for
   the list as long as a look takes); 10 minutes to conclude a supplier is missing. **Open.**
 
+## Found during the learning-curve pilots, fixed after the curves (2026-11-10)
+
+The curves run on one frozen build; these were seen on it or on the pilot build (2896eaa1) and wait for the curves to end.
+
+- **The approval question loses the reason for a Return that submits a form.** Eval case oc-3 (task t6e8c37d37a9d58b0):
+  the step said the plan makes "Verify" wait for the person's OK, but the question read "press Return in the screen: it
+  needs your approval". The hold was right (the Return would have submitted the OTP form with a URL typed into the OTP
+  field). Fix: describe a key whose Enter submits a form by that form's submit control (approval.describe_action).
+  Gate area.
+- **ctrl+l did not reach the browser's address bar** in the same run ("nothing visible changed; focus: textbox 'Enter
+  the one-time password (OTP)'"), and the worker then typed a URL into the OTP field. Check the key event's backend: a
+  browser chord (ctrl+l, alt+d, f6, ctrl+t, ctrl+w) must go to the window, not into the page. Then: an untargeted
+  `gui type` right after a key meant to move focus, with a secret field still holding the keyboard, could refuse with
+  "the keyboard is still in <field>"; guidance should prefer `gui open URL` for navigation.
+- **The scripted expert cannot answer two questions a person would.** A pick confirmation ("please confirm the
+  entries I chose from the application's own lists") and the summary confirmation before filing ("I have prepared the
+  GSTR-1 ... The summary shows ...") were both answered "I don't know" (oc-2, oc-3). Options: a per-case `picks` fact
+  like `date_orders`, and a confirm reply for a summary whose figures the case's expected tables hold.
+- **File with EVC was asked twice in one run** (oc-3, events e1376 and e1571). Not yet read.
+
 ## Live checks after the next build
 
 The writers could not run these. Run them on the next build, before calling this review done.

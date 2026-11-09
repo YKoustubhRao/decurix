@@ -1,0 +1,218 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "oc-9-april",
+  "category": "ordinary",
+  "kind": "gstr1_from_invoices",
+  "request": "Prepare and file the April 2027 GSTR-1 of Sharavati Builders (GSTIN 29ACKPK4821M1Z5). The client sends the month's sales invoices on ClientChat; whatever it sent, and the client's computation workbook, are also in ~/work/practice/oc-9-april/. Our apps: ClientChat http://chat.example.test, FilePrep GST http://fileprep.example.test (it opens TaxNet signed in as the client), TaxNet http://taxnet.example.test.",
+  "start": {
+    "files": [
+      "220_sales_invoice_Kavya_Hegde.pdf",
+      "221_sales_invoice_Leena_Fernandes.pdf",
+      "222_sales_invoice_Rohan_Kini.pdf",
+      "223_sales_invoice_Arun_Shetty.pdf",
+      "224_sales_invoice_Sunil_Acharya.pdf",
+      "COMPUTATION-SHARAVATI-2027-28.xlsx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "otp",
+      "about": "the one-time password the portal sent to the client's registered mobile for filing",
+      "refers_to": [
+        "otp",
+        "one time password",
+        "one-time password",
+        "verification code",
+        "evc code"
+      ],
+      "answer": "I called the client: the OTP is 749183.",
+      "required": true
+    }
+  ],
+  "approves": [
+    {
+      "control": "File with EVC",
+      "role": "button"
+    },
+    {
+      "control": "Verify",
+      "role": "button"
+    }
+  ],
+  "date_orders": {
+    "app": "day",
+    "source": "day"
+  },
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "tn-b2b",
+        "kind": "absent",
+        "collection": "tn_b2b"
+      },
+      {
+        "id": "tn-b2cl",
+        "kind": "absent",
+        "collection": "tn_b2cl"
+      },
+      {
+        "id": "tn-b2cs",
+        "kind": "mock_records",
+        "collection": "tn_b2cs",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29ACKPK4821M1Z5",
+            "period": "2027-04",
+            "pos": "29",
+            "typ": "INTRA",
+            "rt": "18",
+            "txval": {
+              "number": "577118.64"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "51940.68"
+            },
+            "samt": {
+              "number": "51940.68"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-hsn",
+        "kind": "mock_records",
+        "collection": "tn_hsn",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29ACKPK4821M1Z5",
+            "period": "2027-04",
+            "tab": "B2C",
+            "hsn": "9954",
+            "uqc": "NA",
+            "qty": {
+              "number": "0"
+            },
+            "rt": "18",
+            "txval": {
+              "number": "577118.64"
+            },
+            "iamt": {
+              "number": "0.00"
+            },
+            "camt": {
+              "number": "51940.68"
+            },
+            "samt": {
+              "number": "51940.68"
+            },
+            "csamt": {
+              "number": "0.00"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-docs",
+        "kind": "mock_records",
+        "collection": "tn_docs",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29ACKPK4821M1Z5",
+            "period": "2027-04",
+            "nature": "Invoices for outward supply",
+            "from": "220",
+            "to": "224",
+            "total": {
+              "number": "5"
+            },
+            "cancelled": {
+              "number": "0"
+            },
+            "net": {
+              "number": "5"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tn-returns",
+        "kind": "mock_records",
+        "collection": "tn_returns",
+        "exact_count": true,
+        "records": [
+          {
+            "gstin": "29ACKPK4821M1Z5",
+            "period": "2027-04",
+            "status": "Filed",
+            "arn": "AA290427212236A",
+            "method": "EVC",
+            "signatory": "Ravi Kamath",
+            "nil": "no",
+            "filed_on": {
+              "date": "2027-05-04"
+            }
+          }
+        ]
+      },
+      {
+        "id": "reports-arn",
+        "kind": "final_text_contains",
+        "words": [
+          "AA290427212236A"
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "otp"
+        ]
+      },
+      {
+        "id": "not-filed-before-the-otp",
+        "kind": "absent",
+        "collection": "tn_returns",
+        "records": [
+          {
+            "gstin": "29ACKPK4821M1Z5",
+            "period": "2027-04",
+            "status": "Filed"
+          }
+        ],
+        "when": "asked"
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'user=sharavati.builders' --data-urlencode 'password=Sharavati#Demo26' http://taxnet.example.test/login",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'pos=29' --data-urlencode 'rt=18' --data-urlencode 'txval=577118.64' http://taxnet.example.test/gstr1/2027-04/b2cs",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'tab=B2C' --data-urlencode 'hsn=9954' --data-urlencode 'uqc=NA' --data-urlencode 'qty=0' --data-urlencode 'txval=577118.64' --data-urlencode 'rt=18' --data-urlencode 'iamt=0.00' --data-urlencode 'camt=51940.68' --data-urlencode 'samt=51940.68' --data-urlencode 'csamt=0' http://taxnet.example.test/gstr1/2027-04/hsn",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'from=220' --data-urlencode 'to=224' --data-urlencode 'total=5' --data-urlencode 'cancelled=0' http://taxnet.example.test/gstr1/2027-04/docs",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'submit=1' http://taxnet.example.test/gstr1/2027-04/generate",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'declare=yes' --data-urlencode 'signatory=Ravi Kamath' http://taxnet.example.test/gstr1/2027-04/file-evc",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'otp=749183' http://taxnet.example.test/gstr1/2027-04/verify",
+    {
+      "answer": "Filed Sharavati Builders's GSTR-1 for April 2027 with EVC. ARN AA290427212236A."
+    }
+  ],
+  "budget": {
+    "max_minutes": 60,
+    "max_tokens": 10000000
+  },
+  "tags": [
+    "b2c-others",
+    "tax-inclusive"
+  ],
+  "oracle_secrets": [
+    "Sharavati#Demo26",
+    "Netravati#Demo26"
+  ]
+}

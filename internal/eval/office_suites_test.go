@@ -10,7 +10,7 @@ import (
 )
 
 func TestOfficeBooksV1SuiteLoads(t *testing.T) {
-	s := calibrateSuite(t, "office-books-v1", 4, 4)
+	s := calibrateSuite(t, "office-books-v1", 12, 12)
 	checkOfficeSuite(t, s, []string{"Save voucher", "Save ledger"})
 	// The bill missing from the mail is the person's to give: no input holds its number, so only asking passes.
 	c, _ := s.Case("ob-4-january")
@@ -28,12 +28,12 @@ func TestOfficeBooksV1SuiteLoads(t *testing.T) {
 }
 
 func TestOfficeGSTR1BooksV1SuiteLoads(t *testing.T) {
-	s := calibrateSuite(t, "office-gstr1-books-v1", 4, 4)
+	s := calibrateSuite(t, "office-gstr1-books-v1", 12, 12)
 	checkOfficeSuite(t, s, []string{"Save to portal", "File with EVC"})
 }
 
 func TestOfficeGSTR1ChatV1SuiteLoads(t *testing.T) {
-	s := calibrateSuite(t, "office-gstr1-chat-v1", 4, 4)
+	s := calibrateSuite(t, "office-gstr1-chat-v1", 12, 12)
 	checkOfficeSuite(t, s, []string{"File with EVC"})
 }
 

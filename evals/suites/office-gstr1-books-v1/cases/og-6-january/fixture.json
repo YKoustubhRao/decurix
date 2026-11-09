@@ -1,0 +1,917 @@
+{
+ "app": {
+  "export_folder": "GST Returns/Sahyadri Lift Services/2026-27/10. JANUARY",
+  "fp_data": {},
+  "hsn_master": {
+   "4418": "Builders' joinery and carpentry of wood",
+   "8431": "Parts of lifts and escalators",
+   "9403": "Other furniture and parts thereof",
+   "9954": "Construction services",
+   "9987": "Maintenance, repair and installation (except construction) services"
+  },
+  "import_folder": "GST Returns/Sahyadri Lift Services/2026-27/10. JANUARY",
+  "last_company": "2",
+  "mobiles": {
+   "29AAGFK7314L1ZY": "98xxxxxx4L",
+   "29AALFS8842N1Z6": "98xxxxxx2N"
+  },
+  "now": "17:21:07",
+  "otps": {
+   "29AAGFK7314L1ZY:2027-01": "146583"
+  },
+  "signatories": {
+   "29AAGFK7314L1ZY": [
+    "Nandini Kamath"
+   ],
+   "29AALFS8842N1Z6": [
+    "Prakash Hegde"
+   ]
+  },
+  "tn_logins": [
+   {
+    "gstin": "29AALFS8842N1Z6",
+    "password": "Sahyadri#Demo26",
+    "user": "sahyadri.lift"
+   },
+   {
+    "gstin": "29AAGFK7314L1ZY",
+    "password": "Konkan#Demo26",
+    "user": "konkan.coast"
+   }
+  ],
+  "today": "2027-02-05"
+ },
+ "collections": {
+  "companies": [
+   {
+    "gstin": "29AALFS8842N1Z6",
+    "id": "1",
+    "name": "Sahyadri Lift Services 2026-27",
+    "number": "20031",
+    "period_from": "2026-04-01",
+    "period_to": "2027-03-31",
+    "state": "29-Karnataka"
+   },
+   {
+    "gstin": "29AAGFK7314L1ZY",
+    "id": "2",
+    "name": "Konkan Coast Interiors 2026-27",
+    "number": "20044",
+    "period_from": "2026-04-01",
+    "period_to": "2027-03-31",
+    "state": "29-Karnataka"
+   },
+   {
+    "gstin": "29AAMFS1176P1ZC",
+    "id": "3",
+    "name": "Sahyadri Lifts & Escalators 2026-27",
+    "number": "20052",
+    "period_from": "2026-04-01",
+    "period_to": "2027-03-31",
+    "state": "29-Karnataka"
+   }
+  ],
+  "fp_clients": [
+   {
+    "group": "Asha",
+    "gstin": "29AALFS8842N1Z6",
+    "id": "1",
+    "legal_name": "SAHYADRI LIFT SERVICES",
+    "name": "Sahyadri Lift Services",
+    "registration": "Regular",
+    "state": "Karnataka",
+    "taxnet_user": "sahyadri.lift"
+   },
+   {
+    "group": "Rajesh",
+    "gstin": "29AAMFS1176P1ZC",
+    "id": "2",
+    "legal_name": "SAHYADRI LIFTS AND ESCALATORS",
+    "name": "Sahyadri Lifts & Escalators",
+    "registration": "Regular",
+    "state": "Karnataka",
+    "taxnet_user": ""
+   },
+   {
+    "group": "Handled by client",
+    "gstin": "29ABCPS5508R1ZV",
+    "id": "3",
+    "legal_name": "RAGHU SAHYADRI",
+    "name": "Sahyadri Traders",
+    "registration": "Composition",
+    "state": "Karnataka",
+    "taxnet_user": ""
+   },
+   {
+    "group": "Asha",
+    "gstin": "29AAGFK7314L1ZY",
+    "id": "4",
+    "legal_name": "KONKAN COAST INTERIORS",
+    "name": "Konkan Coast Interiors",
+    "registration": "Regular",
+    "state": "Karnataka",
+    "taxnet_user": "konkan.coast"
+   },
+   {
+    "group": "Rajesh",
+    "gstin": "29AAJFK2093B1ZE",
+    "id": "5",
+    "legal_name": "KALINGA HARDWARE",
+    "name": "Kalinga Hardware",
+    "registration": "Regular",
+    "state": "Karnataka",
+    "taxnet_user": ""
+   }
+  ],
+  "fp_receivers": [
+   {
+    "client": "4",
+    "gstin": "30AAHFV3391G1Z9",
+    "id": "1",
+    "legal_name": "VASCO BAY HOTELS",
+    "status": "Valid",
+    "tn_legal_name": "VASCO BAY HOTELS",
+    "tn_trade_name": "VASCO BAY HOTELS",
+    "trade_name": "VASCO BAY HOTELS"
+   },
+   {
+    "client": "4",
+    "gstin": "29ACQPB2207N1ZE",
+    "id": "2",
+    "legal_name": "BELUR TEXTILES",
+    "status": "Valid",
+    "tn_legal_name": "BELUR TEXTILES",
+    "tn_trade_name": "BELUR TEXTILES",
+    "trade_name": "BELUR TEXTILES"
+   },
+   {
+    "client": "4",
+    "gstin": "29AAGCT9183K1ZI",
+    "id": "3",
+    "legal_name": "TUNGABHADRA BUILDERS",
+    "status": "Valid",
+    "tn_legal_name": "TUNGABHADRA BUILDERS",
+    "tn_trade_name": "TUNGABHADRA BUILDERS",
+    "trade_name": "TUNGABHADRA BUILDERS"
+   }
+  ],
+  "fp_uploads": [],
+  "ledgers": [
+   {
+    "address": "",
+    "company": "1",
+    "gstin": "",
+    "hsn": "9987",
+    "id": "1",
+    "mailing_name": "",
+    "name": "Sales@18%",
+    "pincode": "",
+    "rate": "18",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Sales Accounts"
+   },
+   {
+    "address": "",
+    "company": "1",
+    "gstin": "",
+    "hsn": "",
+    "id": "2",
+    "mailing_name": "",
+    "name": "CGST@9%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "1",
+    "gstin": "",
+    "hsn": "",
+    "id": "3",
+    "mailing_name": "",
+    "name": "SGST@9%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "1",
+    "gstin": "",
+    "hsn": "",
+    "id": "4",
+    "mailing_name": "",
+    "name": "IGST@18%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "1",
+    "gstin": "",
+    "hsn": "",
+    "id": "5",
+    "mailing_name": "",
+    "name": "CGST@6%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "1",
+    "gstin": "",
+    "hsn": "",
+    "id": "6",
+    "mailing_name": "",
+    "name": "SGST@6%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "1",
+    "gstin": "",
+    "hsn": "",
+    "id": "7",
+    "mailing_name": "",
+    "name": "IGST@12%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "2",
+    "gstin": "",
+    "hsn": "9403",
+    "id": "8",
+    "mailing_name": "",
+    "name": "Sales - Furniture 18%",
+    "pincode": "",
+    "rate": "18",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Sales Accounts"
+   },
+   {
+    "address": "",
+    "company": "2",
+    "gstin": "",
+    "hsn": "4418",
+    "id": "9",
+    "mailing_name": "",
+    "name": "Sales - Wood Panels 18%",
+    "pincode": "",
+    "rate": "18",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Sales Accounts"
+   },
+   {
+    "address": "",
+    "company": "2",
+    "gstin": "",
+    "hsn": "9954",
+    "id": "10",
+    "mailing_name": "",
+    "name": "Installation 18%",
+    "pincode": "",
+    "rate": "18",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Sales Accounts"
+   },
+   {
+    "address": "",
+    "company": "2",
+    "gstin": "",
+    "hsn": "",
+    "id": "11",
+    "mailing_name": "",
+    "name": "CGST@9%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "2",
+    "gstin": "",
+    "hsn": "",
+    "id": "12",
+    "mailing_name": "",
+    "name": "SGST@9%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "2",
+    "gstin": "",
+    "hsn": "",
+    "id": "13",
+    "mailing_name": "",
+    "name": "IGST@18%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "2",
+    "gstin": "",
+    "hsn": "",
+    "id": "14",
+    "mailing_name": "",
+    "name": "CGST@6%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "2",
+    "gstin": "",
+    "hsn": "",
+    "id": "15",
+    "mailing_name": "",
+    "name": "SGST@6%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "2",
+    "gstin": "",
+    "hsn": "",
+    "id": "16",
+    "mailing_name": "",
+    "name": "IGST@12%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "3",
+    "gstin": "",
+    "hsn": "9987",
+    "id": "17",
+    "mailing_name": "",
+    "name": "Sales@18%",
+    "pincode": "",
+    "rate": "18",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Sales Accounts"
+   },
+   {
+    "address": "",
+    "company": "3",
+    "gstin": "",
+    "hsn": "",
+    "id": "18",
+    "mailing_name": "",
+    "name": "CGST@9%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "3",
+    "gstin": "",
+    "hsn": "",
+    "id": "19",
+    "mailing_name": "",
+    "name": "SGST@9%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "3",
+    "gstin": "",
+    "hsn": "",
+    "id": "20",
+    "mailing_name": "",
+    "name": "IGST@18%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "3",
+    "gstin": "",
+    "hsn": "",
+    "id": "21",
+    "mailing_name": "",
+    "name": "CGST@6%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "3",
+    "gstin": "",
+    "hsn": "",
+    "id": "22",
+    "mailing_name": "",
+    "name": "SGST@6%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "",
+    "company": "3",
+    "gstin": "",
+    "hsn": "",
+    "id": "23",
+    "mailing_name": "",
+    "name": "IGST@12%",
+    "pincode": "",
+    "rate": "",
+    "registration": "Unknown",
+    "state": "",
+    "under": "Duties & Taxes"
+   },
+   {
+    "address": "Vidyanagar, Hubballi 580021",
+    "company": "2",
+    "gstin": "",
+    "hsn": "",
+    "id": "24",
+    "mailing_name": "Anand Kulkarni",
+    "name": "Anand Kulkarni",
+    "pincode": "580021",
+    "rate": "",
+    "registration": "Unregistered/Consumer",
+    "state": "29-Karnataka",
+    "under": "Sundry Debtors"
+   },
+   {
+    "address": "Temple Street, Belur 573115",
+    "company": "2",
+    "gstin": "29ACQPB2207N1ZE",
+    "hsn": "",
+    "id": "25",
+    "mailing_name": "Belur Textiles",
+    "name": "Belur Textiles",
+    "pincode": "573115",
+    "rate": "",
+    "registration": "Regular",
+    "state": "29-Karnataka",
+    "under": "Sundry Debtors"
+   },
+   {
+    "address": "Station Road, Hosapete 583201",
+    "company": "2",
+    "gstin": "29AAGCT9183K1ZI",
+    "hsn": "",
+    "id": "26",
+    "mailing_name": "Tungabhadra Builders",
+    "name": "Tungabhadra Builders",
+    "pincode": "583201",
+    "rate": "",
+    "registration": "Regular",
+    "state": "29-Karnataka",
+    "under": "Sundry Debtors"
+   },
+   {
+    "address": "Vidyanagar, Hubballi 580021",
+    "company": "1",
+    "gstin": "",
+    "hsn": "",
+    "id": "27",
+    "mailing_name": "Anand Kulkarni",
+    "name": "Anand Kulkarni",
+    "pincode": "580021",
+    "rate": "",
+    "registration": "Unregistered/Consumer",
+    "state": "29-Karnataka",
+    "under": "Sundry Debtors"
+   }
+  ],
+  "share_files": [],
+  "share_folders": [
+   {
+    "id": "1",
+    "path": "GST Returns/Sahyadri Lift Services/2026-27/7. OCTOBER"
+   },
+   {
+    "id": "2",
+    "path": "GST Returns/Sahyadri Lift Services/2026-27/8. NOVEMBER"
+   },
+   {
+    "id": "3",
+    "path": "GST Returns/Sahyadri Lift Services/2026-27/9. DECEMBER"
+   },
+   {
+    "id": "4",
+    "path": "GST Returns/Sahyadri Lift Services/2026-27/10. JANUARY"
+   },
+   {
+    "id": "5",
+    "path": "GST Returns/Konkan Coast Interiors/2026-27/7. OCTOBER"
+   },
+   {
+    "id": "6",
+    "path": "GST Returns/Konkan Coast Interiors/2026-27/8. NOVEMBER"
+   },
+   {
+    "id": "7",
+    "path": "GST Returns/Konkan Coast Interiors/2026-27/9. DECEMBER"
+   },
+   {
+    "id": "8",
+    "path": "GST Returns/Konkan Coast Interiors/2026-27/10. JANUARY"
+   },
+   {
+    "id": "9",
+    "path": "GST Returns/Kalinga Hardware/2026-27/7. OCTOBER"
+   },
+   {
+    "id": "10",
+    "path": "GST Returns/Kalinga Hardware/2026-27/8. NOVEMBER"
+   },
+   {
+    "id": "11",
+    "path": "GST Returns/Kalinga Hardware/2026-27/9. DECEMBER"
+   },
+   {
+    "id": "12",
+    "path": "GST Returns/Kalinga Hardware/2026-27/10. JANUARY"
+   },
+   {
+    "id": "13",
+    "path": "GST Returns/Sahyadri Lifts & Escalators/2026-27/7. OCTOBER"
+   },
+   {
+    "id": "14",
+    "path": "GST Returns/Sahyadri Lifts & Escalators/2026-27/8. NOVEMBER"
+   },
+   {
+    "id": "15",
+    "path": "GST Returns/Sahyadri Lifts & Escalators/2026-27/9. DECEMBER"
+   },
+   {
+    "id": "16",
+    "path": "GST Returns/Sahyadri Lifts & Escalators/2026-27/10. JANUARY"
+   }
+  ],
+  "tn_ledger": [
+   {
+    "cess": "0.00",
+    "cgst": "18420.00",
+    "gstin": "29AALFS8842N1Z6",
+    "id": "1",
+    "igst": "0.00",
+    "sgst": "18420.00"
+   },
+   {
+    "cess": "0.00",
+    "cgst": "9310.00",
+    "gstin": "29AAGFK7314L1ZY",
+    "id": "2",
+    "igst": "41250.00",
+    "sgst": "9310.00"
+   }
+  ],
+  "tn_returns": [
+   {
+    "arn": "AA291026323921H",
+    "filed_on": "2026-10-28",
+    "gstin": "29AALFS8842N1Z6",
+    "id": "1",
+    "method": "EVC",
+    "nil": "no",
+    "period": "2026-10",
+    "signatory": "Prakash Hegde",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA291126980975M",
+    "filed_on": "2026-11-28",
+    "gstin": "29AALFS8842N1Z6",
+    "id": "2",
+    "method": "EVC",
+    "nil": "no",
+    "period": "2026-11",
+    "signatory": "Prakash Hegde",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA291226485591B",
+    "filed_on": "2026-12-28",
+    "gstin": "29AALFS8842N1Z6",
+    "id": "3",
+    "method": "EVC",
+    "nil": "no",
+    "period": "2026-12",
+    "signatory": "Prakash Hegde",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA291026460017V",
+    "filed_on": "2026-10-28",
+    "gstin": "29AAGFK7314L1ZY",
+    "id": "4",
+    "method": "EVC",
+    "nil": "no",
+    "period": "2026-10",
+    "signatory": "Nandini Kamath",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA291126025869E",
+    "filed_on": "2026-11-28",
+    "gstin": "29AAGFK7314L1ZY",
+    "id": "5",
+    "method": "EVC",
+    "nil": "no",
+    "period": "2026-11",
+    "signatory": "Nandini Kamath",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA291226036310M",
+    "filed_on": "2026-12-28",
+    "gstin": "29AAGFK7314L1ZY",
+    "id": "6",
+    "method": "EVC",
+    "nil": "no",
+    "period": "2026-12",
+    "signatory": "Nandini Kamath",
+    "status": "Filed"
+   }
+  ],
+  "tn_taxpayers": [
+   {
+    "gstin": "29AALFS8842N1Z6",
+    "id": "1",
+    "legal_name": "SAHYADRI LIFT SERVICES",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "SAHYADRI LIFT SERVICES"
+   },
+   {
+    "gstin": "29AAGFK7314L1ZY",
+    "id": "2",
+    "legal_name": "KONKAN COAST INTERIORS",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "KONKAN COAST INTERIORS"
+   },
+   {
+    "gstin": "29AACCS5121D1ZO",
+    "id": "3",
+    "legal_name": "SAGAR HOSPITALITY GROUP",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "SAGAR HOSPITALITY GROUP"
+   },
+   {
+    "gstin": "29AAJFK6610D1ZF",
+    "id": "4",
+    "legal_name": "KADRI HEIGHTS BUILDERS LLP",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "KADRI HEIGHTS BUILDERS LLP"
+   },
+   {
+    "gstin": "29ABEPP4410Q1Z7",
+    "id": "5",
+    "legal_name": "PAI TEXTILES",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "PAI TEXTILES"
+   },
+   {
+    "gstin": "29AAATB3312E1Z9",
+    "id": "6",
+    "legal_name": "BHUVANA HOSPITAL TRUST",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "BHUVANA HOSPITAL TRUST"
+   },
+   {
+    "gstin": "29AAFFL2280M1ZX",
+    "id": "7",
+    "legal_name": "LOTUS MALL MANAGEMENT LLP",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "LOTUS MALL MANAGEMENT LLP"
+   },
+   {
+    "gstin": "29AADCM7735K1ZY",
+    "id": "8",
+    "legal_name": "MALPE FISH PROCESSORS PVT LTD",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "MALPE FISH PROCESSORS PVT LTD"
+   },
+   {
+    "gstin": "30AAHFV3391G1Z9",
+    "id": "9",
+    "legal_name": "VASCO BAY HOTELS",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "VASCO BAY HOTELS"
+   },
+   {
+    "gstin": "29AAGCT9183K1ZI",
+    "id": "10",
+    "legal_name": "TUNGABHADRA BUILDERS PRIVATE LIMITED",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "TUNGABHADRA BUILDERS PRIVATE LIMITED"
+   },
+   {
+    "gstin": "29ACQPB2207N1ZE",
+    "id": "11",
+    "legal_name": "BELUR TEXTILES",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "BELUR TEXTILES"
+   },
+   {
+    "gstin": "29AAQFC6610D1ZG",
+    "id": "12",
+    "legal_name": "COASTAL MALL MANAGEMENT LLP",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "COASTAL MALL MANAGEMENT LLP"
+   },
+   {
+    "gstin": "29AAKFA9902J1Z2",
+    "id": "13",
+    "legal_name": "AGUMBE HOTELS",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "AGUMBE HOTELS"
+   },
+   {
+    "gstin": "29AAMFC4471R1ZK",
+    "id": "14",
+    "legal_name": "COASTAL AGRO FOODS LLP",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "COASTAL AGRO FOODS LLP"
+   },
+   {
+    "gstin": "29AAKFB4408C1ZP",
+    "id": "15",
+    "legal_name": "BRAHMAGIRI DIAGNOSTICS LLP",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "BRAHMAGIRI DIAGNOSTICS LLP"
+   },
+   {
+    "gstin": "32AABTC5506H1Z6",
+    "id": "16",
+    "legal_name": "CHANDRAGIRI HOSPITAL TRUST",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "CHANDRAGIRI HOSPITAL TRUST"
+   },
+   {
+    "gstin": "29AABTB6627L1ZD",
+    "id": "17",
+    "legal_name": "BHADRA VALLEY HOSPITAL TRUST",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "BHADRA VALLEY HOSPITAL TRUST"
+   },
+   {
+    "gstin": "27AAMFS5862K1ZH",
+    "id": "18",
+    "legal_name": "SINDHUDURG COAST HOTELS LLP",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "SINDHUDURG COAST HOTELS LLP"
+   },
+   {
+    "gstin": "29AAJCM8841E1Z4",
+    "id": "19",
+    "legal_name": "MAJALI BAY RESORTS PVT LTD",
+    "registered_on": "2018-07-01",
+    "status": "Active",
+    "trade_name": "MAJALI BAY RESORTS PVT LTD"
+   }
+  ],
+  "vouchers": [
+   {
+    "cancelled": "no",
+    "cgst": "6480.00",
+    "company": "2",
+    "date": "2027-01-06",
+    "id": "1",
+    "igst": "0.00",
+    "narration": "",
+    "number": "KCI-050",
+    "party": "Belur Textiles",
+    "party_gstin": "29ACQPB2207N1ZE",
+    "sales_ledger": "Sales - Furniture 18%",
+    "sgst": "6480.00",
+    "taxable": "72000.00",
+    "total": "84960.00",
+    "type": "Sales"
+   },
+   {
+    "cancelled": "no",
+    "cgst": "1782.00",
+    "company": "2",
+    "date": "2027-01-13",
+    "id": "2",
+    "igst": "0.00",
+    "narration": "",
+    "number": "KCI-051",
+    "party": "Anand Kulkarni",
+    "party_gstin": "",
+    "sales_ledger": "Sales - Wood Panels 18%",
+    "sgst": "1782.00",
+    "taxable": "19800.00",
+    "total": "23364.00",
+    "type": "Sales"
+   },
+   {
+    "cancelled": "no",
+    "cgst": "5220.00",
+    "company": "2",
+    "date": "2027-01-22",
+    "id": "3",
+    "igst": "0.00",
+    "narration": "",
+    "number": "KCI-052",
+    "party": "Tungabhadra Builders",
+    "party_gstin": "29AAGCT9183K1ZI",
+    "sales_ledger": "Installation 18%",
+    "sgst": "5220.00",
+    "taxable": "58000.00",
+    "total": "68440.00",
+    "type": "Sales"
+   },
+   {
+    "cancelled": "no",
+    "cgst": "450.00",
+    "company": "1",
+    "date": "2027-01-10",
+    "id": "4",
+    "igst": "0.00",
+    "narration": "",
+    "number": "9001",
+    "party": "Anand Kulkarni",
+    "party_gstin": "",
+    "sales_ledger": "Sales@18%",
+    "sgst": "450.00",
+    "taxable": "5000.00",
+    "total": "5900.00",
+    "type": "Sales"
+   }
+  ]
+ }
+}

@@ -1,7 +1,7 @@
 {
   "schema": "decurix.eval-suite/v1",
   "name": "office-books-v1",
-  "description": "A CA office keeps a lift-maintenance client's books: each month the client emails its sales bills (Word files), and each becomes a Sales voucher in the client's company in the books app, with a customer ledger made for a new customer, then the month's sales ledger is checked against the bills. Case 1 is the one a person demonstrates; the rest are new months with the traps a real month has: the books opening on another company left open, a company of the client's for an old year, a customer whose bill writes its name otherwise than its ledger, a new customer with and without a GSTIN, an inter-state customer, a bill at another rate, a bill sent twice, a bill already entered from an earlier mail, a bill whose amount in words differs from its figures, and a bill missing from the mail (a gap in the numbers) that only the person can supply. Graded on the books' records: exactly the expected vouchers, in the right company, and the new ledgers. Fictional data; the ca-office mock.",
+  "description": "A CA office keeps a lift-maintenance client's books: each month the client emails its sales bills (Word files), and each becomes a Sales voucher in the client's company in the books app, with a customer ledger made for a new customer, then the month's sales ledger is checked against the bills. Case 1 is the one a person demonstrates; the rest are new months with the traps a real month has: the books opening on another company left open, a company of the client's for an old year, a customer whose bill writes its name otherwise than its ledger, a new customer with and without a GSTIN, an inter-state customer, a bill at another rate, a bill sent twice, a bill already entered from an earlier mail, a bill whose amount in words differs from its figures, and a bill missing from the mail (a gap in the numbers) that only the person can supply. Cases 5 to 12 are the client's next eight months (February to September 2027, its company carried into the new financial year), the same customers and some new ones, about half of them plain and the rest with one or two of those traps again, so a worker taught once can show its curve over fresh months. Graded on the books' records: exactly the expected vouchers, in the right company, and the new ledgers. Fictional data; the ca-office mock.",
   "mocks": {
     "ca-office": {
       "hosts": [
@@ -21,7 +21,15 @@
     "ob-1-october",
     "ob-2-november",
     "ob-3-december",
-    "ob-4-january"
+    "ob-4-january",
+    "ob-5-february",
+    "ob-6-march",
+    "ob-7-april",
+    "ob-8-may",
+    "ob-9-june",
+    "ob-10-july",
+    "ob-11-august",
+    "ob-12-september"
   ],
   "carry_state": false,
   "confirms_plans": true,
