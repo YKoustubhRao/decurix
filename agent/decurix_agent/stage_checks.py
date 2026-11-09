@@ -155,6 +155,14 @@ def run_inputs(request):
         found += [i["path"] for i in sources.inputs(request or "")]
     except Exception as exc:  # noqa: BLE001 - what cannot be found is not listed
         log(f"long_task: could not find the request's inputs: {exc}")
+    # Any file the request names by its path, of any kind - the documents a taught run's values were read from
+    # (binding.referenced_files). Found live (2026-11-08): a bill's PDF named in the request was no source, since only
+    # tables are found by name, and a code replay's save was refused for "invented" figures the PDF prints.
+    try:
+        from decurix_agent import binding
+        found += binding.referenced_files(request or "")
+    except Exception as exc:  # noqa: BLE001 - what cannot be found is not listed
+        log(f"long_task: could not find the files the request names: {exc}")
     out = []
     try:
         from decurix_agent import shared

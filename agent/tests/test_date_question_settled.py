@@ -50,3 +50,21 @@ class TheRunsOwnQuestion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheSameDateText(unittest.TestCase):
+    """The form holding exactly the record's text is the record's value, unless the two sides are known to write dates
+    in different orders (records.compare_shown). Found live (2026-11-08): "12-10-2026" against "12-10-2026" was refused
+    as "which day cannot be told"."""
+
+    def test_identical_text_matches_when_an_order_is_unknown(self):
+        from decurix_agent.computer import records
+        with mock.patch.object(task_context, "app_date_order", return_value="day"), \
+                mock.patch.object(task_context, "source_date_order", return_value=None):
+            self.assertIs(records.compare_shown("12-10-2026", "12-10-2026").same, True)
+
+    def test_identical_text_does_not_match_when_the_orders_are_known_to_differ(self):
+        from decurix_agent.computer import records
+        with mock.patch.object(task_context, "app_date_order", return_value="month"), \
+                mock.patch.object(task_context, "source_date_order", return_value="day"):
+            self.assertIsNot(records.compare_shown("12-10-2026", "12-10-2026").same, True)

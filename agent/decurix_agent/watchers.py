@@ -182,6 +182,38 @@ def is_reply_file(name):
     return REPLY_MARK in (name or "")
 
 
+def _saved_before_restart(task_id):
+    """
+    What the task's own record ledger says it saved before the restart, as the note to the person ("" when nothing):
+    each saved record, and whether its page was read back with every declared value. Never "start it over": sent again,
+    a request that had saved its record enters it twice. Found live (2026-11-08): two bills saved correctly before a
+    restart were reported "not done - send the request again to start it over".
+    """
+
+    try:
+        from decurix_agent.computer import records
+        saved = [r for r in records.load(task_id) if r.get("saved_at")]
+    except Exception:  # noqa: BLE001 - nothing known saved: the plain note
+        return ""
+    if not saved:
+        return ""
+    lines = []
+    for rec in saved:
+        rb = rec.get("readback") or {}
+        wanted = [l for l, f in (rec.get("fields") or {}).items() if isinstance(f, dict) and f.get("intent")]
+        where = rec.get("saved") or "the application"
+        if rb.get("absent"):
+            state_now = "its page was not read back"
+        elif wanted and not set(wanted) - set(rb.get("seen") or []):
+            state_now = "read back with every declared value shown"
+        else:
+            state_now = "not yet read back"
+        lines.append(f"- {rec.get('key')} saved in {where} ({state_now})")
+    return ("This desktop restarted while it was working on this, after it had saved:\n" + "\n".join(lines)
+            + "\nThe task was not finished or checked after that point. Look at what was saved before anything else; "
+            "do not send the same request again just to start it over - that would enter it a second time.")
+
+
 def _report_interrupted():
     """
     Tell the control plane about a task an earlier life of this agent started
@@ -205,6 +237,9 @@ def _report_interrupted():
     task_context.start(record["task_id"], request=record.get("request"))
     state.current_task = record.get("request") or None
     note = workflow_task.interrupted_note(record["task_id"]) or INTERRUPTED
+    saved = _saved_before_restart(record["task_id"])
+    if saved:
+        note = saved
     if skill_task.parse_learn(record.get("request") or "") is not None:
         note += " A lesson keeps every answer you gave, so the same `/learn` carries on from there."
     try:
