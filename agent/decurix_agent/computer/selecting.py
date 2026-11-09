@@ -79,6 +79,13 @@ def list_answer_wait(look_took):
 
     return max(MIN_LIST_ANSWER, SLOW_LOOKS * max(0.0, look_took))
 
+
+def slow_extra(look_took):
+    """What a slow host adds to a list's deadlines on top of their own: twice what list_answer_wait adds over
+    MIN_LIST_ANSWER - nothing while a look is quick, so a fast host waits exactly as it always did."""
+
+    return 2 * (list_answer_wait(look_took) - MIN_LIST_ANSWER)
+
 # What a dropdown's list shows: its options, and in many kits (the web app) plain links.
 _SUGGESTION_ROLES = ("option", "menuitem", "listitem", "link")
 
@@ -860,7 +867,7 @@ def _select_in_list(element, option, ids, track):
                     by_name = [s for s in searches if not s[1]]
                     searches = ([s for s in searches if s[1]]
                                 + list(dict.fromkeys(by_name[:MAX_SENT_NAME_SEARCHES - 1] + by_name[-1:])))
-                    deadline, last_names, typed_at = (time.monotonic() + max(CUSTOM_OPTIONS_SECONDS, 2 * list_answer_wait(look_took)),
+                    deadline, last_names, typed_at = (time.monotonic() + CUSTOM_OPTIONS_SECONDS + slow_extra(look_took),
                                                        None, time.monotonic())
                     continue
             if not searches:
@@ -872,7 +879,7 @@ def _select_in_list(element, option, ids, track):
             if submitted:
                 send(now)
             typed_at = time.monotonic()
-            deadline, last_names = typed_at + max(CUSTOM_OPTIONS_SECONDS, 2 * list_answer_wait(look_took)), None
+            deadline, last_names = typed_at + CUSTOM_OPTIONS_SECONDS + slow_extra(look_took), None
         time.sleep(0.3)
 
     # No entry is spelt as the value is - but exactly one entry of all the
@@ -895,8 +902,8 @@ def _select_in_list(element, option, ids, track):
                 cdp.type_text(element, search)
                 if submitted:
                     send(now)
-            deadline = time.monotonic() + max(CUSTOM_OPTIONS_SECONDS, 2 * list_answer_wait(look_took)) + (
-                list_answer_wait(look_took) if search else 0)
+            deadline = time.monotonic() + CUSTOM_OPTIONS_SECONDS + slow_extra(look_took) + (
+                MIN_LIST_ANSWER + slow_extra(look_took) if search else 0)
             while True:
                 now = observe()["elements"]
                 refresh(now)

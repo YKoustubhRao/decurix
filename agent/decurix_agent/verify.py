@@ -507,11 +507,16 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
                 message, spent = llm_client.chat(messages, max_tokens=JUDGE_TOKENS, purpose=purpose)
             decided = message.get("decision")
             found = _parse(message.get("content") or "") if decided is None else _decided(decided)
-        except (llm_client.LLMError, ValueError) as exc:
+        except llm_client.LLMError as exc:
             log(f"verify: could not judge: {exc}")
-            # "error": the check was not made (a provider's 504, a timeout) - no finding about the work (skill_task._finish).
+            # "error": the model service did not answer (a provider's 504, a timeout) - the check was not made, and that
+            # is no finding about the work (skill_task._finish). An answer that came back unreadable is below.
             return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": f"the check could not be made ({exc})",
                     "look": [], "error": str(exc)[:300]}
+        except ValueError as exc:
+            log(f"verify: could not judge: {exc}")
+            return {"verdict": UNSURE, "confidence": 0.0, "seen": "", "why": f"the check could not be made ({exc})",
+                    "look": []}
         if decided is None and found["verdict"] == DONE and found["confidence"] < DONE_CONFIDENCE:
             # Soul's decision comes with this applied (internal/judge Decide).
             found["why"] = f"not sure enough ({found['confidence']:.2f}): {found['why']}"
