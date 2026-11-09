@@ -1393,6 +1393,19 @@ def _replaces_selection(previous, step):
     return (mine.get("role"), mine.get("name")) == (theirs.get("role"), theirs.get("name"))
 
 
+def _held_values(step, result, values):
+    """
+    The values a step's checks are held to. A pick that took a list entry for this run's words leaves the field
+    holding that entry - the application's own name, which may extend or respell the document's - so its check expects
+    the entry taken. Found live (2026-11-09): a replay picked the party's ledger for a bill that spells the party a
+    little differently, the field showed the ledger's name, and the check, expecting the bill's words, halted the run.
+    """
+    param, taken = step.get("param"), (result or {}).get("taken")
+    if step.get("kind") != "select" or not param or not taken or isinstance(values.get(param), list):
+        return values
+    return dict(values, **{param: taken})
+
+
 def _await_checks(checks, observation, values, seconds=None):
     """Wait, up to EXPECT_SECONDS (or `seconds`), for a step's checks: (unmet checks, last observation)."""
 
@@ -1914,7 +1927,8 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
                       if check.get("type") in {"value", "element"}
                       and (check.get("role"), check.get("name")) == (alias["was"].get("role"), alias["was"].get("name"))
                       else check for check in checks]
-        missing, observation = _await_checks(checks, result.get("observation"), values, seconds=opening)
+        missing, observation = _await_checks(checks, result.get("observation"), _held_values(step, result, values),
+                                             seconds=opening)
 
         if missing:
             described = [describe_check(c) for c in missing]

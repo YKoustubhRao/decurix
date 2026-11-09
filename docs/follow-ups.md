@@ -209,18 +209,21 @@ taught run no longer declares an ambiguous digit date when the application's ord
 
 ## Taught record keeping: what is left (2026-11-09)
 
-- **Line-level read-back (designed, not built).** A declared record holds header fields only, so a replayed bill's
-  lines are judged by the model's screen check (15k tokens a bill). Design: declare the table's rows with the record
-  (`rows`: [{label: value}] from the run's row values, `skills.repeated_rows` names), and after the save read the page's
-  row groups (controls whose path holds `row N`, the first row with none) and match each declared row to one page row
-  whose every value stands in it (`stands_in`), each page row used once. Not built: a saved ERPNext invoice shows its
-  lines as static grid text, not fields, so the page's rows must be proven readable live first; a matcher that cannot
-  read them would pass a wrong line. Next: one live save, dump `observe()` of the saved invoice, build against it.
+- **Line-level read-back: built 2026-11-09.** A taught run declares its record's lines with it (`skill_task._taught_rows`:
+  the repeated rows or a loop's items, only a part with no save inside it; `records._kept_rows`: only values the
+  document writes, two or more a line). After the save `records.rows_shown` reads the page's lines (`page_lines`:
+  pieces side by side, offscreen included) and needs each declared line on a page line of its own, each value under
+  the column its label names (`_under`), a pick's value shown as the entry it took. A line not shown keeps the record
+  from counting as read back (`all_read_back`). Built against a kept observation of a saved ERPNext invoice
+  (PINV-26-00008): its three lines read back; a wrong quantity, rate or swapped item does not. **Owed live:** one
+  replayed bill whose read-back line says "all N stand on a line of the page"; a page that shows more lines than
+  declared is not flagged yet.
 - **A per-document field one document leaves blank.** An inter-state bill has IGST and no CGST/SGST: the fill drops the
   empty items, the lists stop counting one per document, and the whole month goes to the model (office books ob-2:
   correct, 2.96M tokens). The fill's own instructions say such a document is `by_hand` (another kind of tax); it did not
-  follow them. Either hold the fill to that (a list one short of the documents names which document is short) or carry
-  an explicit empty item through `split_items`/`expand` (it drops empties today). **Open.**
+  follow them. **Fixed 2026-11-09:** the fill may give `(empty)` (`binding.EMPTY_ITEM`) for a field whose place the
+  document shows with no amount; code keeps it only when `binding.left_blank` finds that place in the document with no
+  figure on its line, and `skills.expand` skips typing or picking that item, so the field stays empty.
 - Supplier and item picks from a long description under load take 2-15 minutes per search set (each search waits for
   the list as long as a look takes); 10 minutes to conclude a supplier is missing. **Open.**
 

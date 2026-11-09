@@ -30,6 +30,12 @@ MAX_FIELDS = 60
 MAX_VALUE = 4000
 # How much of a look's text the read-back searches (fields in view or not, and the page's words).
 MAX_PAGE_TEXT = 60000
+# A record's lines (the rows of its table): at most this many are declared, each with at least MIN_ROW_CELLS values
+# that stand in its document - one value alone could stand on any line of the page.
+MAX_ROWS = 60
+MIN_ROW_CELLS = 2
+# A piece of a page taller than this (pixels) is not one line of text but a box around several: never a line's cell.
+LINE_MAX_HEIGHT = 60
 # A label's words that say nothing about which field it is.
 # ("to" is not one: "To Date" is another field than "Date" - _LABEL_QUALIFIERS.)
 _LABEL_FILLER = {"of", "the", "a", "an", "in", "rs", "inr", "usd", "per", "dd", "mm", "yyyy", "yy", "and"}
@@ -1202,11 +1208,12 @@ def _source_units(key, kept, text, task_id):
     return united, forms
 
 
-def declare(key, source, fields, scope="", task_id=None):
+def declare(key, source, fields, scope="", task_id=None, rows=None):
     """
     Keep a record's intent: {key, source, scope, fields{label: {intent, from}}}. Every value must stand in the source
     ("source"), else in what the task read or the request ("seen"); otherwise the whole declaration is refused with
-    the fields named. Returns the record and the lines to show.
+    the fields named. `rows`: the record's lines, [{label: value}] in order (_kept_rows: only values its source writes).
+    Returns the record and the lines to show.
     """
 
     task_id = task_id or task_context.current()
@@ -1343,10 +1350,13 @@ def declare(key, source, fields, scope="", task_id=None):
     records = [r for r in records if not (r.get("key") == key and not r.get("saved_at"))]  # declared again: replaced
     rec = {"key": key, "source": source, "scope": " ".join(str(scope or "").split()), "fields": kept,
            "source_order": source_order, "declared_at": time.time(), "saved_at": None, "saved": "", "window": "", "readback": {}, "checks": 0}
+    lines_kept = [] if picture else _kept_rows(rows, text, source_order)
+    if lines_kept:
+        rec["rows"] = lines_kept
     records.append(rec)
     _save(task_id, records)
     lines = [f"Record {key} declared from {source}" + (f" in {rec['scope']}" if rec["scope"] else "")
-             + f": {len(kept)} field(s)"]
+             + f": {len(kept)} field(s)" + (f" and {len(lines_kept)} line(s)" if lines_kept else "")]
     seen = [l + (f" ({f['backed_by']})" if f.get("backed_by") else "") for l, f in kept.items()
             if f["from"] in ("seen", "chosen")]
     if seen:
@@ -1628,8 +1638,169 @@ def note_presave(rec, blocking, task_id=None, undeclared=None, unset=None):
 
 # ------------------------------------------------------------------ after a save
 
-def readback(rec, title, page_text, change, task_id=None):
-    """Mark the record saved and each intended value seen or absent on the page the save left. Returns the lines."""
+def _kept_rows(rows, text, order):
+    """
+    The record's lines as declared: of each given row {label: value}, the values its source writes (stands_in, or a
+    digit date the source writes another way: kept as the source writes it); a row with fewer than MIN_ROW_CELLS such
+    values is left out - what it would check could stand on any line. [] when none is left.
+    """
+
+    from decurix_agent import binding
+    kept = []
+    for row in list(rows or [])[:MAX_ROWS]:
+        cells = {}
+        for label, value in (row or {}).items():
+            label, value = " ".join(str(label).split()), " ".join(str(value if value is not None else "").split())
+            if not label or not value or len(value) > MAX_VALUE or label in cells:
+                continue
+            if stands_in(value, text, order, order):
+                cells[label] = value
+            else:
+                written = binding.date_in(value, [text])
+                if written:
+                    cells[label] = written
+        if len(cells) >= MIN_ROW_CELLS:
+            kept.append(cells)
+    return kept
+
+
+def page_lines(observation):
+    """
+    The page's lines of text, top to bottom: the pieces that sit side by side on one line (their middles within half a
+    piece's height), each [text, left, right] left to right. A field's text is its value, a field with none has none
+    (its name is its label); anything else's is its name. Offscreen pieces count: a saved record's table runs below the
+    window. A saved record shows its lines as text, not fields (found live 2026-11-09, a saved invoice's items: a grid
+    of plain text and links, its column names on a line above).
+    """
+
+    pieces = []
+    for element in (observation or {}).get("elements") or []:
+        box = element.get("box") or []
+        if len(box) < 4 or not (0 < box[3] <= LINE_MAX_HEIGHT):
+            continue
+        field = element.get("role") in ("textbox", "combobox", "searchbox", "spinbutton")
+        text = " ".join(str((element.get("value") if field else element.get("name")) or "").split())
+        if text:
+            pieces.append((box[1] + box[3] / 2, box[3], [text, box[0], box[0] + box[2]]))
+    pieces.sort(key=lambda p: (p[0], p[2][1]))
+    lines, current, middle, height = [], [], None, None
+    for mid, tall, piece in pieces:
+        if current and mid - middle > min(tall, height) / 2:
+            lines.append(sorted(current, key=lambda p: p[1]))
+            current = []
+        if not current:
+            middle, height = mid, tall
+        current.append(piece)
+    if current:
+        lines.append(sorted(current, key=lambda p: p[1]))
+    return lines
+
+
+def _column(label, lines, below):
+    """The span (left, right) of the column name a label is: a piece above line `below` whose words are the label's
+    (the nearest such line); None when no line above names it."""
+
+    from decurix_agent.computer import core
+    want = core._words_of(label)
+    if not want:
+        return None
+    for line in reversed(lines[:below]):
+        for text, left, right in line:
+            if core._words_of(text) == want:
+                return left, right
+    return None
+
+
+def _under(line, column):
+    """The piece of a line under a column name: the one whose span overlaps the name's most (a column of text starts
+    under its name), else the one whose middle is nearest the name's (a figure stands to the right of it)."""
+
+    left, right = column
+
+    def overlap(k):
+        return min(right, line[k][2]) - max(left, line[k][1])
+
+    best = max(range(len(line)), key=overlap)
+    if overlap(best) > 0:
+        return best
+    return min(range(len(line)), key=lambda k: abs((line[k][1] + line[k][2]) / 2 - (left + right) / 2))
+
+
+def _row_on_line(row, lines, n, taken, order):
+    """
+    Whether declared row `row` {label: value} stands on page line `n`: each value on a piece of its own - under its
+    label's column when a line above names it (_under), else on any piece left,
+    never a bare number that opens the line (a numbered table's row number). A value a pick asked for is shown as the
+    entry it took (`taken`: {(label, asked): {entries}}).
+    """
+
+    line = lines[n]
+    used = set()
+
+    def shows(value, label, text):
+        # A list's entry is named with more than the record keeps of it ("Desk Lamp Desk Lamp, Products" for an item
+        # the saved page shows as "Desk Lamp", found live 2026-11-09): the page's words standing in the entry show it.
+        return (stands_in(value, text, order) or
+                any(stands_in(entry, text) or (re.search(r"[^\W\d_]{2}", text) and stands_in(text, entry))
+                    for entry in taken.get((label, value.lower()), ())))
+
+    for label, value in row.items():
+        column = _column(label, lines, n)
+        if column is not None:
+            i = _under(line, column)
+            if i in used or not shows(value, label, line[i][0]):
+                return False
+            used.add(i)
+            continue
+        found = next((i for i, (text, _l, _r) in enumerate(line)
+                      if i not in used and not (i == 0 and text.isdigit()) and shows(value, label, text)), None)
+        if found is None:
+            return False
+        used.add(found)
+    return True
+
+
+def rows_shown(rows, observation, order=None, picks_made=()):
+    """
+    Which declared rows the page shows: (shown, absent) as row numbers from 1, each row on a line of its own (a line
+    holds one row at most). `picks_made`: this task's picks (_pick_of), so a value asked of a list is found as the entry
+    the list gave for it.
+    """
+
+    lines = page_lines(observation)
+    taken = {}
+    for p in picks_made or ():
+        if p.get("option") and p.get("taken"):
+            key = (" ".join(str(p.get("label") or "").split()), " ".join(str(p["option"]).split()).lower())
+            taken.setdefault(key, set()).add(p["taken"])
+    fits = [[n for n in range(len(lines)) if _row_on_line(row, lines, n, taken, order)] for row in rows]
+    owner = {}
+
+    def place(r, tried):
+        # One line per row (a matching by augmenting paths): two rows alike never stand on one line.
+        for n in fits[r]:
+            if n in tried:
+                continue
+            tried.add(n)
+            if n not in owner or place(owner[n], tried):
+                owner[n] = r
+                return True
+        return False
+
+    for r in range(len(rows)):
+        place(r, set())
+    placed = set(owner.values())
+    return [r + 1 for r in range(len(rows)) if r in placed], [r + 1 for r in range(len(rows)) if r not in placed]
+
+
+def _row_text(row):
+    return ", ".join(f"{label}={value}" for label, value in list(row.items())[:4])
+
+
+def readback(rec, title, page_text, change, task_id=None, observation=None):
+    """Mark the record saved and each intended value seen or absent on the page the save left - and each declared
+    line on a line of the page (`observation`, rows_shown; a record with lines and no look of the page has them all
+    absent). Returns the lines."""
 
     task_id = task_id or task_context.current()
     records = load(task_id)
@@ -1642,12 +1813,18 @@ def readback(rec, title, page_text, change, task_id=None):
                  or (f.get("entered") and stands_in(f["entered"], page_text, task_context.app_date_order())))
         (seen if shown else absent).append(label)
     key_shown = stands_in(rec.get("key", ""), page_text)
+    rows = rec.get("rows") or []
+    rows_seen, rows_absent = [], list(range(1, len(rows) + 1))
+    if rows and observation is not None:
+        rows_seen, rows_absent = rows_shown(rows, observation, _source_order(rec), _selects(task_id))
     for r in records:
         if r.get("key") == rec.get("key") and r.get("declared_at") == rec.get("declared_at"):
             r["saved_at"] = time.time()
             r["saved"] = " ".join(str(change or "").split())[:300]
             r["window"] = str(title or "")[:120]
             r["readback"] = {"seen": seen, "absent": absent, "key_shown": key_shown}
+            if rows:
+                r["readback"].update(rows_seen=rows_seen, rows_absent=rows_absent)
     _save(task_id, records)
     total = len(seen) + len(absent)
     line = f"Record {rec.get('key')}: saved; the page now shows {len(seen)} of {total} declared value(s)"
@@ -1657,6 +1834,12 @@ def readback(rec, title, page_text, change, task_id=None):
     elif total:
         line += " - all of them."
     lines = [line]
+    if rows_absent:
+        lines.append(f"Its lines: {len(rows_seen)} of {len(rows)} stand on a line of the page; NOT shown: "
+                     + "; ".join(f"line {n} ({_row_text(rows[n - 1])})" for n in rows_absent[:6])
+                     + ". Open the saved record and check those lines against the document before going on.")
+    elif rows:
+        lines.append(f"Its lines: all {len(rows)} stand on a line of the page, each on its own.")
     if rec.get("unset"):
         # The pre-save point (ADVISORY: UNSET_CHOICE_BLOCKS), shown with the save it did not stop.
         lines.append("Left unset at this save: " + unset_choice_line(rec, list(rec["unset"])) + ". If a source or the "
@@ -1670,9 +1853,23 @@ def status_of(rec):
     if not rec.get("saved_at"):
         return "declared, not saved" + (" (last save blocked: " + "; ".join(rec["last_blocked"]) + ")" if rec.get("last_blocked") else "")
     rb = rec.get("readback") or {}
-    if rb.get("absent"):
-        return "saved; not read back: " + ", ".join(rb["absent"])
+    lines_absent = [f"line {n}" for n in _rows_unread(rec)]
+    if rb.get("absent") or lines_absent:
+        return "saved; not read back: " + ", ".join(list(rb.get("absent") or []) + lines_absent)
     return "saved and read back" if rb.get("seen") else "saved"
+
+
+def _rows_unread(rec):
+    """The declared lines of a record (numbers from 1) its read-back did not find on the page: all of them when it
+    was never read back."""
+
+    rows = rec.get("rows") or []
+    rb = rec.get("readback") or {}
+    if not rows:
+        return []
+    if "rows_absent" not in rb:
+        return list(range(1, len(rows) + 1))
+    return list(rb.get("rows_absent") or [])
 
 
 def listing(task_id=None):
@@ -1694,6 +1891,13 @@ def listing(task_id=None):
             # only its document. (Never a "]" in it: soul reads the bracket as one part, record_ledger.go.)
             backing = f"; backed by {f['backed_by']}" if f.get("backed_by") else ""
             out.append(f"    {label}: {f['intent']} [{f.get('from')}{backing}; read back: {mark}]")
+        if rec.get("rows"):
+            # (No ": " here either, for the same reason as below.)
+            unread = _rows_unread(rec)
+            state = ("not saved yet" if not rec.get("saved_at") else
+                     "read back, each on a line of the page" if not unread else
+                     "NOT read back - line " + ", ".join(str(n) for n in unread[:12]))
+            out.append(f"    ({len(rec['rows'])} line(s) declared from its source, {state})")
         if rec.get("unset"):
             # (No ": " in this line: the soul reads "    Label: value" lines as declared fields - record_ledger.go.)
             out.append("    (left unset at the last save check and not declared - " + ", ".join(rec["unset"][:8])
@@ -1715,6 +1919,8 @@ def all_read_back(task_id=None):
         rb = rec.get("readback") or {}
         wanted = [l for l, f in (rec.get("fields") or {}).items() if isinstance(f, dict) and f.get("intent")]
         if not rec.get("saved_at") or rb.get("absent") or not wanted or set(wanted) - set(rb.get("seen") or []):
+            return False
+        if _rows_unread(rec):
             return False
     return True
 

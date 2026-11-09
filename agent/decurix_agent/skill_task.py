@@ -939,6 +939,48 @@ def _taught_fields(run):
     return {label: value for label, value in fields.items() if label not in clash}
 
 
+def _taught_rows(run):
+    """
+    The record's lines a taught run types, as [{label: value}] in order: the fill's values for one repeated part of
+    the form - the rows the demonstration entered one after another (skills.repeated_rows), or a loop's items - by the
+    labels of the fields they go into. Only a part with no save inside it is one record's lines: a loop that saves each
+    item makes records of its own. The values are held to the document when declared (records._kept_rows). [] when
+    the skill has no such part.
+    """
+
+    skill = run["skill"]
+    steps = skill.get("steps") or []
+    by_n = {s.get("n"): s for s in steps}
+    params = {p["name"]: p for p in skill.get("params") or []}
+
+    def label_of(name):
+        target = (by_n.get((params.get(name) or {}).get("step")) or {}).get("target") or {}
+        return " ".join(str(target.get("name") or "").split()) if target.get("role") in FIELD_ROLES else ""
+
+    def commits(chosen):
+        return any(s.get("consequential") or replay._step_commits(s) for s in chosen)
+
+    group = skills.repeated_rows(skill)
+    if group:
+        span = [(params.get(name) or {}).get("step") or 0 for row in group["rows"] for name in row]
+        if not commits([s for s in steps if min(span) <= (s.get("n") or 0) <= max(span)]):
+            rows = [{label_of(name): " ".join(str(run["values"].get(name) or "").split()) for name in row}
+                    for row in group["rows"]]
+            return [{label: v for label, v in row.items() if label and v and v != binding.EMPTY_ITEM} for row in rows]
+    for loop in skill.get("loops") or []:
+        block = set(loop.get("blocks", [[]])[0]) if loop.get("enabled") else set()
+        inside = [s for s in steps if s.get("id") in block]
+        names = [s["param"] for s in inside if (params.get(s.get("param")) or {}).get("list")]
+        if not names or commits(inside):
+            continue
+        items = {name: skills.split_items(run["values"].get(name)) for name in names}
+        count = max(len(v) for v in items.values())
+        return [{label_of(name): items[name][k] for name in names
+                 if k < len(items[name]) and label_of(name) and items[name][k] != binding.EMPTY_ITEM}
+                for k in range(count)]
+    return []
+
+
 def _declare_taught_record(run):
     """
     Declare the record this run makes from its document, in code, before anything is typed (records.declare): its
@@ -983,14 +1025,19 @@ def _declare_taught_record(run):
             log(f"Skill {run['skill']['name']}: no record declared - " + ("no field names a number" if not key else
                 f"only {len(fields)} field(s) stand in the document"))
             return ""
-        _rec, lines = records.declare(key, files[0], fields)
+        # Its lines too, each read back off the saved page on a line of its own (records.rows_shown): found live
+        # (2026-11-09), a saved bill's lines were judged only by the model's look at the screen.
+        rec, lines = records.declare(key, files[0], fields, rows=_taught_rows(run))
     except Exception as exc:  # noqa: BLE001 - not declared: the run goes on as it would have, and says why in the log
         log(f"Skill {run['skill']['name']}: the record was not declared from its document: {exc}")
         return ""
     run["declared"] = key
+    rows = (rec or {}).get("rows") or []
     progress.emit("Declared the record from its document before typing it - its form is compared with the document "
                   "before the save and read back after:\n" + "\n".join(f"- {label} = {el._quote(v, 60)}"
-                                                                     for label, v in fields.items()))
+                                                                     for label, v in fields.items())
+                  + "".join(f"\n- line {n}: " + "; ".join(f"{label} = {el._quote(v, 40)}" for label, v in row.items())
+                            for n, row in enumerate(rows, 1)))
     log(f"Skill {run['skill']['name']}: declared record {key} from {files[0]}: {' | '.join(lines)}")
     return key
 

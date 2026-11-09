@@ -2330,7 +2330,7 @@ def _ledger_readback(after, change_text):
         rec = records.open_record(records.load(), page + "\n" + str(change_text or ""))
         if rec is None:
             return ""
-        return "\n" + "\n".join(records.readback(rec, after.get("active_title"), page, change_text))
+        return "\n" + "\n".join(records.readback(rec, after.get("active_title"), page, change_text, observation=after))
     except Exception as exc:  # noqa: BLE001 - a read-back that fails is said, never raised
         return f"\n(the record could not be read back: {exc})"
 
@@ -3676,6 +3676,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "before": before,
         # Cells of a typed block that do not hold what was typed: the gui command fails verification (exit 4).
         "unverified": unverified,
+        # The list entry a pick took for the words asked (the application's own name for a party a document spells a
+        # little differently): what the field now holds, so a replay's check expects that, not the words asked.
+        "taken": entry.get("taken"),
     }
 
 

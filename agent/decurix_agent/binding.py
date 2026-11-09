@@ -125,6 +125,11 @@ def fill(skill, params, context, strict=False):
 # How many documents one run's lists are read from at once (the gathered documents of a month; a page each).
 MAX_GATHERED = 12
 
+# The item of a list for a document that shows that field's place empty (an inter-state bill's CGST row): the step that
+# types it is left out for that item (skills.expand). Given only where the document's own text shows the empty place
+# (left_blank).
+EMPTY_ITEM = "(empty)"
+
 LISTS_NOTE = (
     "This run has SEVERAL documents, listed below in order, and the procedure is done once per document: every value "
     "marked \"list\" takes one item per document, in the documents' order, so that item N of every list belongs to "
@@ -132,12 +137,15 @@ LISTS_NOTE = (
     "list and named under \"left_out\", so the lists stay aligned over the documents that are entered by the procedure: "
     "(1) \"skip\": the person's rules (below) say it is not to be entered at all - cancelled, already in the books, not "
     "of the kind the task enters, a duplicate of another; (2) \"by_hand\": it IS to be entered, but it does not fit the "
-    "procedure's shape as taught - a different number of lines or tax rows, another kind of tax, a field the taught "
-    "fields do not cover, a value you cannot read - so it will be entered separately by hand. A party, ledger or other "
+    "procedure's shape as taught - a different number of lines, a tax or a field the taught fields do not cover, a "
+    "value you cannot read - so it will be entered separately by hand. A field the document shows with its place EMPTY "
+    "for its item (a tax row or column there with no amount, as a bill charging another tax leaves it) takes "
+    "the item \"(empty)\" in that list: the procedure then leaves that field empty for that document. A party, ledger or other "
     "thing the procedure chooses from the application's own lists is read as the document names it: whether it is "
     "already in the application, under which exact name, or has to be made first is for the procedure to find on the "
-    "screen, and is never a reason for \"by_hand\" or \"skip\". Never force such a "
-    "document into the lists with empty or made-up items. Give no \"rows\": the procedure's shape (its number of lines "
+    "screen, and is never a reason for \"by_hand\" or \"skip\". Never force a "
+    "document into the lists with made-up items, and never write \"(empty)\" for a value the document gives or does "
+    "not show a place for. Give no \"rows\": the procedure's shape (its number of lines "
     "and rows) is fixed as taught, and a document with another shape is \"by_hand\". Add to the JSON: "
     '"left_out": [{"document": "<path>", "kind": "skip" or "by_hand", "why": "<in a few words>"}].\n'
 )
@@ -167,12 +175,57 @@ def fill_lists(skill, params, context, files, rules=""):
     left_out = _left_out_paths(left_out, files)
     entered = len(files) - len({x["document"] for x in left_out})
     values, evidence = _clean(params, answer, texts)
+    gone = {x["document"] for x in left_out}
+    entered_files = [f for f in files if f not in gone]
+    for param in params:
+        if not (param.get("list") and param["name"] in values):
+            continue
+        items = split_items(values[param["name"]])
+        if EMPTY_ITEM in items and len(items) == len(entered_files) and not all(
+                left_blank(param.get("label") or param["name"], _document_text(entered_files[i]))
+                for i, item in enumerate(items) if item == EMPTY_ITEM):
+            # "(empty)" only where the document itself shows the field's place with nothing in it.
+            log(f"binding: {param['name']} has an empty item its document does not show empty - left for the work to read")
+            values.pop(param["name"])
+            evidence.pop(param["name"], None)
     for param in params:
         if param.get("list") and param["name"] in values and len(split_items(values[param["name"]])) != entered:
             log(f"binding: {param['name']} has {len(split_items(values[param['name']]))} items for {entered} documents - left for the work to read")
             values.pop(param["name"])
             evidence.pop(param["name"], None)
     return (values, evidence, None, left_out)
+
+
+def left_blank(label, text):
+    """
+    Whether a document shows a field's place with nothing in it: the label's most telling word (the one on the fewest of
+    the document's lines - "CGST" of "CGST amount", not "amount") stands on at least one line, and no line holding it
+    holds a figure besides a rate written as a percentage ("CGST @ 9% |" with an empty amount cell). Decided by
+    structure, never by which words a field may have. Found live (2026-11-09): an inter-state bill's empty CGST and SGST
+    rows sent a whole month of vouchers to the model by hand.
+    """
+
+    lines = (text or "").splitlines()
+    words = {w for w in re.findall(r"[A-Za-z]{3,}", label or "")}
+
+    def holding(word):
+        pattern = re.compile(r"(?<![A-Za-z])" + re.escape(word) + r"(?![A-Za-z])", re.I)
+        return pattern, [line for line in lines if pattern.search(line)]
+
+    found = [(w,) + holding(w) for w in words]
+    if not found or any(not ls for _w, _p, ls in found):
+        return False  # a word of the field the document never writes: it shows no place for that field
+    # The rarest word, and every word as rare (a tie is not settled by which comes first: "CGST" and "amount" on one
+    # line each, the "amount" line a sentence of words, must not stand for the CGST row's figure).
+    fewest = min(len(ls) for _w, _p, ls in found)
+    for _word, pattern, held in found:
+        if len(held) != fewest:
+            continue
+        for line in held:
+            rest = re.sub(r"\d+(?:\.\d+)?\s*%", " ", pattern.sub(" ", line))
+            if re.search(r"\d", rest):
+                return False
+    return True
 
 
 def _one_path(document, files):
@@ -349,11 +402,12 @@ def _clean(params, answer, texts=(), strict=False):
             items = [str(v).strip() for v in items if str(v).strip()]
             if not items or any(";" in v or "\n" in v for v in items):
                 continue  # an item holding the separator cannot be written as a list value
-            written = [as_written(v, param.get("example"), texts) for v in items]
-            if any(drops_number(v, param.get("example")) for v in written):
+            # (EMPTY_ITEM is what the document leaves empty: kept as it is, and held by its own document in fill_lists.)
+            written = [v if v == EMPTY_ITEM else as_written(v, param.get("example"), texts) for v in items]
+            if any(v != EMPTY_ITEM and drops_number(v, param.get("example")) for v in written):
                 log(f"binding: {name} - an item has no number where the taught one had; left for the work to read")
                 continue
-            if strict and not all(held_by(v, texts) for v in written):
+            if strict and not all(v == EMPTY_ITEM or held_by(v, texts) for v in written):
                 log(f"binding: {name} - not every item is in what this run was given; left for the work to read")
                 continue
             values[name] = "; ".join(written)

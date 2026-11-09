@@ -384,3 +384,24 @@ vouchers match exactly, and two big blocks covered more steps than five single-v
 the third voucher's values and the model entered the month by hand (60-minute timeout, every grader passing). A block
 holding two whole repetitions of a shorter candidate is now several items (`learning._holds_two_items`), and a click on
 a list right before choosing from it is part of the choosing (`learning._drop_clicks_before_select`).
+
+### A replay halted at a party it had picked
+
+A replayed select asked the list for a bill's words for a party and took the application's entry, whose name the bill
+spells a little differently; the step's check expected the bill's words in the field and halted the run at item 2 of 4
+(the model then entered the rest). A select's check now expects the entry the pick took (`core.act` returns `taken`;
+`replay._held_values`).
+
+### An inter-state bill sent a month's books to the model
+
+A bill that charges IGST shows the CGST and SGST places with no amount. The fill dropped those items, so the lists no
+longer had one item per document and the whole month went to the model by hand (correct, 2.96M tokens). The fill may now
+give `(empty)` for such a field; code keeps it only where the document shows that place with no figure on its line
+(`binding.left_blank`), and the replay leaves the field untouched (`skills.expand`).
+
+### "The record is read back" was not true for ERPNext
+
+The read-back ran only after a save the page answered with "saved"; ERPNext answers a save only by moving to the saved
+record's own page, so no ERPNext bill was ever read back until 5d773eba (2026-11-09). The lines of a saved record were
+never read back anywhere: they are now declared and each must stand on a page line of its own, under its columns
+(`records.rows_shown`).

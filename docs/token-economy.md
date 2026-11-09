@@ -153,6 +153,13 @@ What this makes cheaper, and when:
      (`skill_task._declare_taught_record`: the fields the demonstration typed into, by their own labels; the key is
      the field whose label names a number; only values that stand in the document or request). The save is compared
      with it and the page read back whoever types it.
+     **Correction (2026-11-09): for ERPNext that last sentence was not true until commit 5d773eba (2026-11-09).** The
+     read-back ran only after a save the screen confirmed with "saved", and ERPNext answers every save only by moving
+     from the new record's page to the saved record's own page. So no ERPNext bill was read back against its declared
+     record before then, and "code reads the record back", said to the owner earlier, was wrong for ERPNext. Since
+     5d773eba a move to the saved record's own page counts as the save (`core._became_a_record`) and the read-back runs.
+     Since the same day the record's lines are declared too (`skill_task._taught_rows`) and each is read back on a
+     line of the saved page of its own, every value under its column (`records.rows_shown`).
   2. **A run with its document in hand never replayed while being learned.** Only a gathered run did. Now a run whose
      every value was read from its document and whose record is declared replays too (`_learning_by_model`), its
      plan put to the person first while it is still learned (`_record_plan_text`), the model taking over where a step

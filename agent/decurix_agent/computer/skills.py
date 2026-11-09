@@ -75,6 +75,9 @@ DRAFT = "draft"
 # item of a list given at run time. Items are separated by ";" or a new line.
 ITEM_SPLIT = re.compile(r"\s*(?:;|\n)\s*")
 MAX_LOOP_ITEMS = 200
+# The item of a list for a document that shows that field's place empty (binding.EMPTY_ITEM, the same text): the step that
+# types it is left out for that item (expand), the rest replays.
+EMPTY_ITEM = "(empty)"
 
 
 def slug(text):
@@ -484,6 +487,9 @@ def expand(skill, values):
                         if check.get("param") == name:
                             check["param"] = renamed
 
+                    if items[name][n] == EMPTY_ITEM and each.get("kind") in ("type", "select"):
+                        # This document gives the field nothing: nothing is typed or chosen into it for this item.
+                        continue
                     each["param"] = renamed
                     flat[renamed] = items[name][n]
                     params.append(dict(lists[name], name=renamed, list=False, default=None))
