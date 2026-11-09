@@ -67,7 +67,7 @@ suites" and "Teaching once"): `office-books-v1`, `office-gstr1-books-v1` and `of
 `budget` is per case; a case may lower it, never raise it. `cases` is the run order. `carry_state` (optional, false
 when left out) says the cases are a sequence on one desktop, each building on what the ones before it left (a learning
 curve): such a suite runs only in the carry-state mode below, and a suite without it never does. `hosts` are what the practice
-browser maps to the mock (`practice-mock:8000`).
+browser maps to the run's own mock (`practice-mock-<run>:8000`, `desktop.PracticeMockHost`).
 
 ### case.json
 

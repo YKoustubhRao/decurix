@@ -344,7 +344,7 @@ func TestCreatePracticeIsIsolated(t *testing.T) {
 		t.Fatal("inherited secret or host address leaked into a practice desktop")
 	}
 	flags := d.copiedTo["desk:/opt"]
-	if len(flags) != 2 || !strings.Contains(flags[0]["decurix-chromium.init"], "set -- '--host-resolver-rules=MAP app.example.test practice-mock:8000' \"$@\"") {
+	if len(flags) != 2 || !strings.Contains(flags[0]["decurix-chromium.init"], "set -- '--host-resolver-rules=MAP app.example.test practice-mock-x1:8000' \"$@\"") {
 		t.Fatalf("browser mapping not installed: %v", flags)
 	}
 	if flags[1]["decurix_agent/app.py"] != "x" {
@@ -421,8 +421,8 @@ func TestPracticeMockAndCollection(t *testing.T) {
 		t.Fatalf("mock boundary lost: %v", host)
 	}
 	aliases, _ := json.Marshal(cfg["NetworkingConfig"])
-	if !strings.Contains(string(aliases), PracticeMockAlias) {
-		t.Fatal("mock alias missing")
+	if !strings.Contains(string(aliases), `"`+PracticeMockHost("x1")+`"`) || strings.Contains(string(aliases), `"`+PracticeMockAlias+`"`) {
+		t.Fatalf("the mock is not under its run's own name: %s", aliases)
 	}
 	files := d.copiedTo["mock:/work"][0]
 	if files["mock_app.py"] != "print(1)" || files["fixture.json"] != `{"rows":[]}` {
@@ -601,5 +601,24 @@ func TestUnderFolderLeadsWithTheOwnedFolder(t *testing.T) {
 		if !strings.HasPrefix(n, ".decurix/") || strings.Contains(n, "..") {
 			t.Fatalf("entry escapes the folder: %v", names)
 		}
+	}
+}
+
+
+// TestEachRunsMockHasItsOwnName: two runs on the one practice network never share the name a desktop's browser asks
+// for (found live 2026-11-09: two control planes' evals at once, one fixed name, Docker's DNS spread requests over both
+// mocks), and a long run id still makes one DNS label.
+func TestEachRunsMockHasItsOwnName(t *testing.T) {
+	a, b := PracticeMockHost("e080746b94af1ba1c"), PracticeMockHost("eb4806653f0ee23e4")
+	if a == b || !strings.HasPrefix(a, PracticeMockAlias+"-") {
+		t.Fatalf("names %q and %q", a, b)
+	}
+	long := strings.Repeat("a", 64)
+	if got := PracticeMockHost(long); len(got) > 63 || got == PracticeMockHost(strings.Repeat("b", 64)) {
+		t.Fatalf("long run id gave %q", got)
+	}
+	flags, err := practiceBrowserFlags([]string{"books.example.test"}, "r2")
+	if err != nil || !strings.Contains(flags, "MAP books.example.test "+PracticeMockHost("r2")+":"+PracticeMockPort) {
+		t.Fatalf("flags %q, %v", flags, err)
 	}
 }

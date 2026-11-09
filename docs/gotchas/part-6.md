@@ -405,3 +405,10 @@ The read-back ran only after a save the page answered with "saved"; ERPNext answ
 record's own page, so no ERPNext bill was ever read back until 5d773eba (2026-11-09). The lines of a saved record were
 never read back anywhere: they are now declared and each must stand on a page line of its own, under its columns
 (`records.rows_shown`).
+
+### Two eval runs answered for each other's app
+
+Every run's mock app joined the one practice network under the fixed name `practice-mock`. With two control planes
+running evals at once, both mocks answered to it and Docker's DNS spread a desktop's requests between them: a books case
+saved a voucher and then found its company gone ("no records", then "Not found" for every page), and both runs' rows were
+worthless. Each run's mock now has its own name (`desktop.PracticeMockHost`), and its desktop's browser maps to that.

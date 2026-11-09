@@ -35,7 +35,8 @@ const (
 	PracticeNetworkName = "decurix-practice"
 	// PracticeLabel marks every container and network a practice run made.
 	PracticeLabel = "decurix-practice"
-	// PracticeMockAlias is the mock app's name on the practice network; the browser maps recorded hosts to it.
+	// PracticeMockAlias begins each run's mock app name on the practice network (PracticeMockHost); the browser maps
+	// recorded hosts to it.
 	PracticeMockAlias = "practice-mock"
 	// PracticeMockPort is where the mock app listens inside its container.
 	PracticeMockPort = "8000"
@@ -438,7 +439,7 @@ func (m *Manager) PracticeSnapshot(ctx context.Context, workerID string) ([]byte
 // practiceBrowserFlags is the shell line appended to the image's browser launch
 // flags. The launcher sources the file with its own arguments, so `set --` adds
 // one argument with spaces intact (CHROMIUM_FLAGS is word-split).
-func practiceBrowserFlags(hosts []string) (string, error) {
+func practiceBrowserFlags(hosts []string, runID string) (string, error) {
 	if len(hosts) == 0 {
 		return "", nil
 	}
@@ -447,7 +448,7 @@ func practiceBrowserFlags(hosts []string) (string, error) {
 		if !practiceHostPattern.MatchString(h) {
 			return "", fmt.Errorf("not a host name: %q", h)
 		}
-		rules = append(rules, "MAP "+h+" "+PracticeMockAlias+":"+PracticeMockPort)
+		rules = append(rules, "MAP "+h+" "+PracticeMockHost(runID)+":"+PracticeMockPort)
 	}
 	return "\n# Practice desktop: recorded hosts reach the mock app.\nset -- '--host-resolver-rules=" + strings.Join(rules, ",") + "' \"$@\"\n", nil
 }
@@ -562,7 +563,7 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 	if len(m.HostGUISecret) == 0 {
 		return d, ErrNoSecret
 	}
-	flags, err := practiceBrowserFlags(spec.Hosts)
+	flags, err := practiceBrowserFlags(spec.Hosts, spec.RunID)
 	if err != nil {
 		return d, err
 	}
@@ -940,7 +941,7 @@ func (m *Manager) CollectPractice(ctx context.Context, id, caseID string, inputs
 
 // practiceMockConfigs is the mock app's boundary: qualification's (read-only
 // root, tmpfs /work, no capabilities, small limits) on the practice network, under
-// PracticeMockAlias. It waits for its files, then serves the generated app.
+// PracticeMockHost(runID). It waits for its files, then serves the generated app.
 func practiceMockConfigs(image, runID string, inherited []string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	config, host := qualificationConfigs(qualification.Definition{Image: image})
 	config.Env = qualificationEnvironment(inherited)
@@ -951,7 +952,19 @@ func practiceMockConfigs(image, runID string, inherited []string) (*container.Co
 	host.Resources.Memory, host.Resources.MemorySwap = 128<<20, 128<<20
 	pids := int64(32)
 	host.Resources.PidsLimit = &pids
-	return config, host, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{PracticeNetworkName: {Aliases: []string{PracticeMockAlias}}}}
+	return config, host, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{PracticeNetworkName: {Aliases: []string{PracticeMockHost(runID)}}}}
+}
+
+// PracticeMockHost is one run's mock app name on the shared practice network. Each run has its own: found live
+// (2026-11-09), two control planes ran evals at once, both mocks answered to one fixed name, Docker's DNS spread a
+// desktop's requests between them, and a books case saw its company vanish into the other run's app mid-run.
+func PracticeMockHost(runID string) string {
+	name := PracticeMockAlias + "-" + runID
+	if len(name) > 63 { // (one DNS label)
+		sum := sha256.Sum256([]byte(runID))
+		name = PracticeMockAlias + "-" + hex.EncodeToString(sum[:8])
+	}
+	return name
 }
 
 // StartPracticeMock starts a fresh mock app for one case and copies its source
