@@ -37,6 +37,10 @@
       "role": "button"
     },
     {
+      "control": "Import",
+      "role": "button"
+    },
+    {
       "control": "Save to portal",
       "role": "button"
     },

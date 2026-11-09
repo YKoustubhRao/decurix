@@ -923,8 +923,9 @@ def gstr_books_suite():
             oracle.append({"answer": f"Not filed: the GSTIN {bad['gstin']} of {bad['name']} (invoice {bad_inv}) is cancelled on "
                                      f"the register, so the return was neither saved to TaxNet nor filed."})
             # (Export writes the return's JSON into the client's month folder on the office share, overwriting an
-            # earlier one: the plan holds it for the person's OK, and the person gives it - found 2026-11-09.)
-            approves = ["Export", "Save to portal", "File with EVC", "Verify"]
+            # earlier one: the plan holds it for the person's OK, and the person gives it - found 2026-11-09. So does
+            # the return's Import into FilePrep, a write an untaught worker's plan holds for the person.)
+            approves = ["Export", "Import", "Save to portal", "File with EVC", "Verify"]
         else:
             facts = [otp_fact(case["otp"])]
             graders += [{"id": "receivers", "kind": "mock_records", "collection": "fp_receivers",
@@ -947,8 +948,9 @@ def gstr_books_suite():
                        curl(f"http://taxnet.example.test/gstr1/{period}/verify", otp=case["otp"]),
                        {"answer": f"Filed {client['name']}'s GSTR-1 for {period_words(period)} with EVC. ARN {arn_of(g, period)}."}]
             # (Export writes the return's JSON into the client's month folder on the office share, overwriting an
-            # earlier one: the plan holds it for the person's OK, and the person gives it - found 2026-11-09.)
-            approves = ["Export", "Save to portal", "File with EVC", "Verify"]
+            # earlier one: the plan holds it for the person's OK, and the person gives it - found 2026-11-09. So does
+            # the return's Import into FilePrep, a write an untaught worker's plan holds for the person.)
+            approves = ["Export", "Import", "Save to portal", "File with EVC", "Verify"]
         # The portal's demo passwords (every client's login is in the fixture); the oracle types its client's.
         secrets = tuple(TN_PASSWORDS[x] for x in TN_PASSWORDS)
         doc = case_doc(case["id"], case["category"], "gstr1_from_books", request, files, facts, approves, graders, oracle,
