@@ -200,10 +200,15 @@ def read_skill(cmd):
 
     if not cmd:
         return None
-    try:
-        out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120).stdout
-        data = json.loads(out)
-    except Exception:  # noqa: BLE001 - trust unknown is shown as unknown
+    data = None
+    for attempt in range(2):  # (a read while the practice desktop resets between carried cases fails once)
+        try:
+            data = json.loads(subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120).stdout)
+            break
+        except Exception:  # noqa: BLE001 - trust unknown is shown as unknown
+            if attempt == 0:
+                time.sleep(15)
+    if data is None:
         return None
     if isinstance(data, list):
         data = data[0] if data else None
@@ -227,10 +232,15 @@ def live_row(cp, r, a, order, skill):
     began = finished - 60 * (r.get("minutes") or 0) - 60  # (a minute's slack for the row being written after the task)
     stage, counted, why = trust_of(skill, began) if skill else (None, None, "")
     case = r.get("case_id")
+    graders = (r.get("checks") or {}).get("graders") or []
     row = {
         "workflow": a.workflow, "n": order.index(case) + 1 if case in order else None, "case": case,
         "build": a.build, "arm": a.arm, "run": a.run, "repeat": r.get("repeat"), "task": r.get("task_id"),
         "correct": bool(r.get("passed")), "false_done": bool(r.get("false_done")), "observed": r.get("observed"),
+        # The work in the application, apart from how the run ended: no grader of the case failed and one passed (a
+        # grader that did not apply - "not_made", a question the run never needed - is neither). A run can do the work
+        # right and still end not done, when its final check holds something it cannot back.
+        "graders_pass": any(g.get("result") == "pass" for g in graders) and not any(g.get("result") == "fail" for g in graders),
         "minutes": round(r.get("minutes") or 0, 1),
         "tokens_in": r.get("tokens_in"), "tokens_cached": r.get("tokens_cached"), "tokens_out": r.get("tokens_out"),
         "model_turns": (by.get("operator.turn") or [0])[0], "calls": tot[0] if tot else r.get("calls"),
@@ -238,7 +248,7 @@ def live_row(cp, r, a, order, skill):
         "questions": [(q.get("question") or "")[:160] for q in r.get("questions") or []],
         "sendbacks": sendbacks, "replayed_steps": replayed, "model_steps": model,
         "trust_stage": stage, "verdict_counted": counted, "verdict_why": why,
-        "failed_graders": [g["id"] for g in ((r.get("checks") or {}).get("graders") or []) if g.get("result") == "fail"],
+        "failed_graders": [g["id"] for g in graders if g.get("result") == "fail"],
         "invalid": bool(r.get("invalid") or r.get("infra")), "finished_at": r.get("at"),
     }
     if a.pilot:

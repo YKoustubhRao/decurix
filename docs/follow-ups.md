@@ -260,6 +260,32 @@ The curves run on one frozen build; these were seen on it or on the pilot build 
   terse retry "3 and 4 change" left the signatory fixed, so og-2 (another client) stopped to ask about it. The answer
   said 5 varies per client in plain words; a reader that needs the bare form loses what the person meant. Learning and
   QnA area.
+- **A ticket action the agent finished after the control plane gave up reads as failed.** Two demonstrations at once
+  (two desktops booting and recording): the control plane answered the demonstration's first ticket note with 504
+  (its bounded agent-call timeout), while the agent did the note, logged "POST /ticket/note 200" and then hit
+  BrokenPipeError writing the reply. Both demonstrations stopped there. Fix: a longer bound for /ticket/* or an
+  idempotent action the caller can retry (a request id the agent answers again from what it already did).
+
+- **The word "ask" became a secret and garbled a taught lesson.** Teaching office-gstr1-books case 1 on 83f4a53d
+  (desktop fgstr, lesson file-gstr-1-from-the-books): every "ask" in the lesson read "[withheld]" ("stop and
+  [withheld] for approval", "Reply `[withheld] first` or `go ahead`"), and 5 of the 14 rules kept in the skill carry it.
+  privacy.withhold_known replaces every word whose hash is a remembered secret, so a remembered "ask" withholds the
+  word everywhere. Confirmed from dev2's records (entry 1794273874386982105-283, a lesson reply not marked secret):
+  the person wrote "Only the client has the OTP: ask me for it, never guess", and REQUEST_SECRET took "ask" as the
+  OTP's value (after "OTP:" any word but a label counts, `_request_value`). The same reply also lost "(the", "(an",
+  "(each", "receiver's", "client's" and "month's": possessive apostrophes read as quote marks (SPOKEN_SECRET or the
+  quoted form of REQUEST_SECRET), so a span between two of them was kept as a quoted secret. Same family as "has"
+  (2026-10-22) and "number:" (2026-11-03). Fix after the curves, from structure: a value after "OTP:" that is a plain
+  word followed by more words of a sentence ("ask me for it") is an instruction, not a code; an apostrophe between two
+  letters is never a quote mark.
+  Seen again on the gstr1-chat lesson (fchat, dev3): the person's first lesson reply, which named "the one-time code",
+  lost every value-shaped word - "Table 4A [withheld] with one row" (B2B), "above [withheld]" (1,00,000), "amount times
+  [withheld]" (100/118), "[withheld] round amounts" (tax-inclusive), "never with [withheld] rows" (made-up). That is
+  privacy.marked_values (value-shaped words of a message taken as secret, whole tokens) applied to a teaching reply.
+  The lesson's words are what the worker is taught; a reply is withheld as a secret only where it answers a question
+  that asks for a secret (secret: true by structure), never because it names the OTP while explaining the work.
+  The lane re-taught gstr1-chat with plain-word replies as a workaround; books and gstr1-books curves run on lessons
+  stored with the holes.
 
 ## Live checks after the next build
 

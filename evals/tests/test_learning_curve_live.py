@@ -72,6 +72,7 @@ class TestLiveRows(unittest.TestCase):
         self.assertEqual((r["n"], r["case"], r["correct"], r["model_turns"]), (2, "oc-6-february", True, 2))
         self.assertEqual((r["sendbacks"], r["replayed_steps"], r["model_steps"]), (1, 7, 2))
         self.assertEqual(r["failed_graders"], ["reports-arn"])
+        self.assertFalse(r["graders_pass"])
         self.assertNotIn("pilot", r)
 
     def test_a_row_is_written_once_however_often_the_run_is_read(self):
