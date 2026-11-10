@@ -2720,6 +2720,144 @@ def _ledger_readback(after, change_text):
         return f"\n(the record could not be read back: {exc})"
 
 
+# A press that commits what a form holds, on any page: _saves (Ctrl+S, Save, Replace, Yes), or a control whose name
+# begins with Save or Submit ("Save Invoice", "Submit").
+_SAVE_PRESS = re.compile(r"(?i)^\s*(?:save|submit)\b")
+# How often a save's answer is looked for while it is still on its way (_await_save_answer).
+SAVE_ANSWER_POLL = 0.5
+# A save pressed on a new record's page that no look has answered yet (_note_pending_save).
+PENDING_SAVE_FILE = STATE_DIR / "pending_save.json"
+_ANSWER_ROLES = ("alert", "alertdialog", "status", "dialog")
+
+
+def _save_press(kind, element, keys):
+    """Whether a press commits what is on the screen: _saves, or a click on a control named Save... or Submit..."""
+
+    if kind not in ("click", "key"):
+        return False
+    return _saves(kind, element, keys) or (
+        kind == "click" and element is not None and bool(_SAVE_PRESS.match(str(element.get("name") or ""))))
+
+
+def _save_answered(change, change_text):
+    """Whether a look after a save shows its outcome: a saved or a refused answer, a message or dialog that came or
+    went, another window in front, or the page at another address. A pressed control that only turned disabled is no
+    answer - the application is still working on it."""
+
+    if _saved(change_text) or _SAVE_REFUSED.search(change_text or ""):
+        return True
+    if change.get("url_after") and change.get("url_before") != change.get("url_after"):
+        return True
+    if change.get("active_before") != change.get("active_after") or change.get("windows_opened") \
+            or change.get("windows_closed"):
+        return True
+    if any(e.get("role") in ("dialog", "alertdialog") for e in change.get("disappeared") or []):
+        return True
+    return any(e.get("role") in _ANSWER_ROLES and (e.get("role") in ("dialog", "alertdialog")
+                                                    or str(e.get("name") or "").strip())
+               for e in change.get("appeared") or [])
+
+
+def _await_save_answer(kind, element, keys, before, after, change, change_text):
+    """
+    (after, change, change_text) of a save: the first look after it when that look shows its outcome, else the look
+    that does, watched for up to SAVE_SETTLE_SECONDS (an answer, or the page moved: then let settle and looked at
+    again), or the screen as it is once that time is over. The after-look is taken as soon as the screen is quiet, and
+    an application that disables its Save while its server works is quiet with the save still on its way. Found live
+    (2026-11-11, ERPNext): the look caught only `button "Save" [-] -> [disabled]`, the bill's page moved to its record
+    a moment later, and the bill was reported "declared but never saved" - its read-back never ran.
+    """
+
+    if not _save_press(kind, element, keys) or _save_answered(change, change_text):
+        return after, change, change_text
+    deadline = time.monotonic() + SAVE_SETTLE_SECONDS
+    answered = None
+    while time.monotonic() < deadline:
+        time.sleep(SAVE_ANSWER_POLL)
+        look = observe(remember=False)
+        seen = compare(before, look)
+        if _save_answered(seen, summarize(seen)):
+            answered = look
+            break
+    # The look the engine is shown and its refs are remembered from: the page once it has drawn its answer, or as it
+    # is when no answer came.
+    after = observe(frame=_wait_for_settle(answered["frame"])) if answered is not None else observe()
+    change = compare(before, after)
+    return after, change, summarize(change)
+
+
+def _on_new_record_page(url):
+    """Whether an address is a new record's page (".../new", ".../new-purchase-invoice-x1y2")."""
+
+    url = str(url or "")
+    return bool(url) and (bool(_NEW_RECORD_PAGE.search("page is now " + url))
+                          or bool(re.search(r"(?i)/new[-_][^/]*$", url.split("?")[0].rstrip("/"))))
+
+
+def _page_tab(observation):
+    """The browser tab a look read its page from (its group's id), or ""."""
+
+    return next((str(g.get("id") or "") for g in (observation or {}).get("groups") or []
+                 if g.get("source") == "cdp"), "")
+
+
+def _note_pending_save(before):
+    """Keep a save pressed on a new record's page that no look has answered: its task, address, title and tab, for the
+    next look of that tab (pending_save_readback)."""
+
+    from decurix_agent import task_context
+
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        privacy.write_scrubbed(PENDING_SAVE_FILE, {
+            "task": task_context.current() or "", "url": before.get("page_url") or "",
+            "title": before.get("active_title") or "", "tab": _page_tab(before), "at": time.time()}, atomic=True,
+            exempt=("url", "title", "tab"))
+    except Exception as exc:  # noqa: BLE001 - only a later read-back is lost; the save stands as it was answered
+        from decurix_agent.logging_utils import log
+        log(f"Could not keep an unanswered save: {exc}")
+
+
+def _clear_pending_save():
+    try:
+        PENDING_SAVE_FILE.unlink()
+    except OSError:
+        pass
+
+
+def pending_save_readback(observation):
+    """
+    After a save pressed on a new record's page that no look had answered (_note_pending_save): when this look of the
+    same tab shows it moved from that page to a page naming one record, with no press since (act and open_target let
+    it go), the save's answer has come - the declared record is read back off this page, as act does after a save
+    answered at once. "" otherwise. A look of the tab still on the form keeps it waiting; one elsewhere lets it go.
+    """
+
+    from decurix_agent import task_context
+
+    try:
+        pending = json.loads(PENDING_SAVE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(pending, dict) or str(pending.get("task") or "") != str(task_context.current() or ""):
+        _clear_pending_save()
+        return ""
+    tab = _page_tab(observation)
+    if not tab or tab != pending.get("tab"):
+        return ""  # another tab, or no page: kept for a look of its own tab
+    url = str(observation.get("page_url") or "")
+    if url == pending.get("url"):
+        return ""  # still on the form: its answer may still come
+    _clear_pending_save()
+    then = {"elements": observation.get("elements") or [], "windows": observation.get("windows") or [],
+            "active_title": pending.get("title") or "", "page_url": pending.get("url") or ""}
+    change_text = summarize(compare(then, observation))
+    if not _became_a_record(then, change_text):
+        return ""
+    return (f"\nThe save pressed on {privacy.reduce_url(pending.get('url') or '')} was answered after its look: this "
+            f"tab is now {privacy.reduce_url(url)}." + _ledger_readback(observation, change_text))
+
+
 def _type_with_keys(element, text, append):
     """The page threw typed text away (cdp.type_text): type it the way a person does - click into the field, then real
     keys. Returns the backend."""
@@ -3524,6 +3662,12 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                             "Ask the person for this value (HELP:), and type what they give.")
 
     before = observe()
+    # A save no look had answered is answered by this one, or let go: from here on another press may move the page.
+    # (A scroll moves nothing, and keeps it for the next look.)
+    answered_before = ""
+    if kind != "scroll":
+        answered_before = pending_save_readback(before)
+        _clear_pending_save()
 
     element = None
     grounded = None
@@ -4033,6 +4177,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     change = compare(before, after)
     change_text = summarize(change)
+    # A save the first look caught on its way (its Save only disabled) is watched until it is answered (_await_save_answer).
+    after, change, change_text = _await_save_answer(kind, element, keys, before, after, change, change_text)
     if _nothing_typed(kind, element, text, change_text, after) and not before.get("behind"):
         # Found live (2026-10-17): after PowerPoint's Insert Table the table is selected, not being edited, and four
         # typings in a row (with Tab between) went nowhere; each said only "nothing visible changed - check ...", and
@@ -4179,6 +4325,13 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         note += _shared_save_note(acted_at)
     if kind in ("click", "key") and (_saved(change_text) or _became_a_record(before, change_text)):
         note += _ledger_readback(after, change_text)
+    elif _save_press(kind, element, keys) and _on_new_record_page(before.get("page_url")) \
+            and (after.get("page_url") or "") == (before.get("page_url") or "") \
+            and not _SAVE_REFUSED.search(change_text):
+        # Still on the new record's form, unanswered: the next look of this tab that shows the record's own page reads
+        # it back (pending_save_readback).
+        _note_pending_save(before)
+    note = answered_before + note
     if downloads_before is not None:
         # The second in which a download must show starts at the action and runs while the screen settles and is looked
         # at - except when the action showed no result at all: that is the click whose answer may still be on its way
@@ -4348,7 +4501,7 @@ def verify(expect_text=None, role=None, name=None):
         what = " ".join(p for p in (role, el._quote(name) if name else "") if p)
         detail += ("; " if detail else "") + (f"found {found}" if hit else f"no {what} on the screen")
 
-    text = f"Since the last look: {change_text}."
+    text = f"Since the last look: {change_text}." + pending_save_readback(after)
     if detail:
         text = f"{'PASS' if ok else 'FAIL'}: {detail}.\n" + text
 
@@ -4453,6 +4606,7 @@ def open_target(target, new_tab=False):
     Returns a one-line summary. Recorded in the audit trail like any action.
     """
 
+    _clear_pending_save()  # a page opened by its address is no answer to a save pressed before it
     session.ensure()
     before = screen.grab()
     wanted = (target or "").strip()

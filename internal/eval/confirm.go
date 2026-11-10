@@ -37,15 +37,34 @@ func approvalReply(c Case, question string) string {
 		approved[normValue(a.Control)] = true
 	}
 	asked := pressObjectRe.FindAllStringSubmatch(question, -1)
-	if len(asked) == 0 {
-		return ""
-	}
 	for _, m := range asked {
 		if !approved[normValue(m[1])] {
-			return ""
+			return "" // (it asks to press something the case does not approve)
 		}
 	}
-	return ApprovalYes
+	if len(asked) > 0 || asksToPressUnquoted(c, question) {
+		return ApprovalYes
+	}
+	return ""
+}
+
+// asksToPressUnquoted reports whether the question asks to press one of the case's approved controls by its name written
+// without quotes right after a press verb ("I am about to enter the OTP and click Verify"). Found live (2026-11-10,
+// freeze 2.3, og-5): that question went unanswered as an approval, the expert said "I don't know", and the run ran out
+// of questions at Verify.
+func asksToPressUnquoted(c Case, question string) bool {
+	for _, a := range c.Approves {
+		name := strings.TrimSpace(a.Control)
+		if name == "" {
+			continue
+		}
+		re, err := regexp.Compile(`(?i)\b(?:click(?:ing)?|press(?:ing)?|tap(?:ping)?|submit(?:ting)?)\s+(?:on\s+)?(?:the\s+)?` +
+			regexp.QuoteMeta(name) + `\b`)
+		if err == nil && re.MatchString(question) {
+			return true
+		}
+	}
+	return false
 }
 
 // pickLineRe is one entry the picks question lists: "- <field>: <entry>" with an optional "(for ...)" or "(on a record

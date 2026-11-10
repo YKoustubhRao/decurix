@@ -870,6 +870,11 @@ def run(argv):
         if loading:
             print("The page shows almost nothing: it is still loading, or drawing itself. Wait and observe again - do not "
                   "reload it, close it or open it a second time; what was saved before stays saved.")
+        else:
+            # A save an action's look caught on its way, answered by now: its record read back off this page.
+            answered = core.pending_save_readback(observation).strip()
+            if answered:
+                print(answered)
         # What this look read is evidence of the task: the page may be closed before the task is checked.
         door.note_look(shown, observation)
         from decurix_agent.computer import grounder

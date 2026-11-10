@@ -19,6 +19,10 @@ Three reads, each of what the control plane keeps as a human judgement (H-PY-18 
 - field_units(): what a person answered about whether a field takes its figures in a unit (kind "field_unit", derived
   from their reply to the save's numbered unit question), each with that judgement's text and question - the answer
   is used only when that question holds the question's sentence and the reply is the row's option (unit_answers).
+- left_to_app(): what a person decided about a field a taught task's documents do not give - leave it as the
+  application fills it in - kept as a field answer marked LEFT_TO_APP (its option is their reply itself, which the
+  control plane holds to their judgement's text), for that skill's field (skill_task._kept_left). Never a pick:
+  field_answers() leaves such rows out.
 
 Who counts as the person: a judgement whose actor kind is "person", or "scripted" - the eval's scripted expert, whose
 replies a practice desktop's control plane (the practice broker) keeps and serves in a person's place. Never a worker's
@@ -43,6 +47,10 @@ JUDGEMENTS_PATH = "/api/desktops/judgements"
 LEARNED_PATH = "/api/desktops/learned"
 FIELD_ANSWER = "field_answer"
 FIELD_UNIT = "field_unit"
+# The mark of a field answer that keeps a field left as the application fills it in (left_to_app), not an entry picked.
+LEFT_TO_APP = "left_to_app"
+# The longest reply kept as such a row's option (the control plane's own bound on a field answer's option).
+MAX_LEFT_OPTION = 500
 TIMEOUT_SECONDS = 5
 # How long one read is reused: one task's checks read it many times; a failed read is kept as long, so a control plane
 # that does not answer costs one wait, not one per pick.
@@ -229,8 +237,8 @@ def field_answers():
             said = json.loads(row.get("text") or "")
         except ValueError:
             continue
-        if not isinstance(said, dict) or not said.get("label") or not said.get("option"):
-            continue
+        if not isinstance(said, dict) or not said.get("label") or not said.get("option") or said.get(LEFT_TO_APP):
+            continue  # (a field left to the application is no entry picked: left_to_app reads it)
         out.append({"label": str(said["label"]), "host": str(said.get("host") or ""), "option": str(said["option"]),
                     "party": str(said.get("party") or ""), "confirmed": said.get("confirmed") is True,
                     "source_text": source["text"], "source_asked": str(source.get("asked") or ""),
@@ -252,6 +260,42 @@ def keep_field_answer(task_id, judgement_id, label, host, option, asked="", part
         said["confirmed"] = True
     text = json.dumps(said, ensure_ascii=False, sort_keys=True)
     return messaging.post_learned(FIELD_ANSWER, "", 0, asked, text, task_id=task_id, derived_from=judgement_id)
+
+
+def left_to_app():
+    """[{"skill", "param", "label", "source_text", "source_asked", "judgement"}]: the fields a person decided to leave
+    as the application fills them in when a taught task's documents do not give them, kept by the control plane as
+    field answers derived from their reply (keep_left_to_app), each with that reply's text and the question it answered
+    ([] when none or unread). skill_task._kept_left holds each to its question again."""
+
+    out = []
+    for row, said, source in _learned(FIELD_ANSWER):
+        if said.get(LEFT_TO_APP) is not True or not said.get("skill") or not said.get("param") or not said.get("label"):
+            continue
+        out.append({"skill": str(said["skill"]), "param": str(said["param"]), "label": str(said["label"]),
+                    "source_text": source["text"], "source_asked": str(source.get("asked") or ""),
+                    "judgement": str(row["derived_from"])})
+    return out
+
+
+def keep_left_to_app(task_id, judgement_id, skill, param, label, reply, asked=""):
+    """Keep on the control plane that the person's judgement `judgement_id` (their reply, `reply`) left the field
+    `label` (the skill's value `param`) as the application fills it in, for later runs of `skill` whose documents do
+    not give it: a field answer marked LEFT_TO_APP, its option the reply itself - which the control plane keeps only when
+    it stands in that judgement's text, and only when the question it answered names the field. The thread, or None."""
+
+    from decurix_agent import messaging
+    option = " ".join(str(reply or "").split())[:MAX_LEFT_OPTION].strip()
+    if not option:
+        return None
+    text = json.dumps({"label": label, "host": "", "option": option, LEFT_TO_APP: True, "skill": skill, "param": param},
+                      ensure_ascii=False, sort_keys=True)
+    thread = messaging.post_learned(FIELD_ANSWER, skill, 0, asked, text, task_id=task_id, derived_from=judgement_id)
+    with _lock:
+        # (Read again next time: this decision is the newest.)
+        for url in [u for u in _cache if LEARNED_PATH in u]:
+            _cache.pop(url, None)
+    return thread
 
 
 def _learned(kind):

@@ -830,3 +830,63 @@ Freeze 2.2, gstr curve og-5: the worker asked in words "I need approval before c
 A person who approves Save to portal on the card says yes when asked in words too: confirm.go approvalReply answers
 "Yes, go ahead." when the question asks to press only controls the case approves (the quoted label after a press verb),
 and nothing otherwise. Test: TestTheExpertApprovesAWordedAskToPressAnApprovedControl.
+
+### A save answered after its look was reported "declared but never saved"
+
+Found live (2026-11-11, ERPNext curve, bill 09). The look after Save is taken as soon as the screen is quiet
+(SETTLE_QUIET), and ERPNext disables Save while its server works: the screen was quiet with the save on its way, and
+the action said only `button "Save" [-] -> [disabled]`. The page moved to .../PINV-26-00002 four seconds later, but the
+read-back runs only on a save's own answer, so the ledger kept saved_at null and the review said the bill was never
+saved. A save press (Ctrl+S, Save/Replace/Yes, a control named Save... or Submit...), on any page, whose first look
+shows no answer (no saved/refused words, no message or dialog, same address and window) is now watched for up to
+SAVE_SETTLE_SECONDS, and the look that answers it is the result (`core._await_save_answer`). A save on a new record's
+page still unanswered is kept (`pending_save.json`): the next look of the same tab that shows a record's own page, with
+no press and no `gui open` between, reads the record back (`core.pending_save_readback`, from `gui observe`, `gui
+verify` and the next action's before-look). `records.readback` stays the only setter of saved_at. The declaration made
+before the form existed (window "") did not matter: `open_record` falls back to the latest unsaved record. Tests:
+`agent/tests/test_async_save_seen.py`.
+
+### A bill with no due date sent the whole run to the model, and "leave it as the app fills it" counted as help
+
+Found live (2026-11-11, ERPNext curve, bill 09, task t7455c3b2178a35ee). The bill gives no due date, so `due_date`
+stayed in `skill_task._still_missing`, and a declared apprentice run replays only when nothing is missing
+(`_learning_by_model`): "The documents do not give due_date - working from the documents themselves" handed the WHOLE
+run to the model. The model asked what due date to enter, the person answered "leave the Due Date as ERPNext fills it
+in", and the run was marked helped - while the application had filled the field itself (step 36: "" -> "10-11-2026")
+the moment the supplier was picked. `binding.EMPTY_ITEM` covered only a list's item, and `left_blank` needs the field's
+place on the document. Owner's ruling: a value the documents lack that the person leaves to the application is a
+standing decision, not data. Now, where that one field is all that keeps the run from replaying, the run asks about it
+alone (`_ask_lacking`: "Reply 1 to leave the field "Due Date" as the application fills it in ... or reply with the Due
+Date to enter"), read once (`approval.read_choice`). A leave is no help: the field is left out of the replay
+(`skills.expand` with the value EMPTY_ITEM: `skills.left_alone` drops the step that types or picks it and every check
+that names it) and of the declaration, and the decision is kept on the control plane as a field answer marked
+`left_to_app`, derived from the person's reply (`person_record.keep_left_to_app`; the control plane holds its option -
+the reply itself - to the judgement's text and its label to the question). A later run of the same skill whose
+documents again lack that field applies it and asks nothing (`_apply_kept_left`, only where the question the person
+answered holds that field's leave sentence). A value given is help and is typed. A save the application refuses for
+want of the field halts the replay and the model takes over, told never to make a value up (`_left_note`). Lists, rows
+of a repeated part, secrets, files and addresses are never offered the leave. Tests: `agent/tests/
+test_taught_record.py` (`ALeftField`, `AFieldLeftOutOfTheReplay`).
+
+### Every approval was asked twice: once in the worker's words, once on the gate's card
+
+Found live (2026-11-11, freeze 2.3, gstr curve og-5, run eb373c1e0c0cc55bd). The lesson's rule "ask the person before
+clicking Save to portal / File with EVC / Verify" made the taught worker ask in words ('I am about to click "Save to
+portal" ... May I proceed?'), and the gate then held the press and asked again with its own card. Each approval cost
+two questions, the worded ones counted toward the case's question cap, and the run ran out of questions at Verify.
+Owner's ruling: a worded ask to press a control the gate itself will hold is answered by the question path
+(`engine_questions._answers_a_held_press`, in `_question_gate`): "The approval gate itself asks the person when you
+press "X" - press it, and the person approves it there". It is not sent to the person, not counted, not help, and no
+reply is noted, so nothing can stand as a yes; the press still goes through the gate, which asks with its card. "Held"
+is the gate's own code, not a copy: the question asks to press a control on the screen the engine last looked at
+(`approval.asks_to_press`, the longest label), and every control there with that label is held by `core._person_hold`
+(the skill's confirmed approvals, steps approved while teaching, a no in this task) or by `approval.assess` in the
+context that lifts the most (submits nothing, a link that only navigates). A hold only the press itself can find (a
+form carrying the person's OTP, a replayed step, the plan's ask-first list), a control not on the screen, or a question
+that only names the control goes to the person as before. A planned run's stage keeps its own way. At most 12 a task.
+Tests: `agent/tests/test_keyed_press_and_holds.py` (`AWordedAskTheGateHolds`).
+The same expert missed the next ask (freeze 2.3, og-5): "I am about to enter the OTP and click Verify" names Verify
+without quotes, so it got "I don't know"; and every worded ask counted toward the case's question cap, which ran out
+at Verify. Now an approved control named right after a press verb, quoted or not, is an approval ask
+(asksToPressUnquoted), and a worded ask the expert approves is counted with the gate's cards (maxListedApprovals),
+never toward MaxQuestions.

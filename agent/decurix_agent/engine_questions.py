@@ -5,9 +5,10 @@ answer it (docs/skills.md, docs/learning-and-verification.md).
 Split out of skill_task.py (follow-up O-10): skill_task runs taught tasks and checks their reports; this module is
 messaging's query gate (_question_gate) - a question already settled by the skill's lesson or the worker's kept
 lessons is answered from them (at most MAX_SELF_ANSWERS a task, on a confident reading, never a check of this run's
-own work), an engine that ran out of room carries on by itself (_carries_on) - and keeps what a person answers on the
-skill (learn_answer); a run a person answered was helped, unless the answer is one the rules require on every run
-(_required_every_run: the plan's yes as put, an OTP or other secret given and nothing more; note_approval: the gate's
+own work), an engine that ran out of room carries on by itself (_carries_on), a worded ask to press a control the
+approval gate itself holds is answered that the gate asks the person at the press (_answers_a_held_press) - and keeps
+what a person answers on the skill (learn_answer); a run a person answered was helped, unless the answer is one the
+rules require on every run (_required_every_run: the plan's yes as put, an OTP or other secret given and nothing more; note_approval: the gate's
 yes).
 
 This module never imports skill_task: what the lesson says for this run (_criteria, _for_this_run) and the question
@@ -159,6 +160,11 @@ def _question_gate(problem, kind, engine):
     if _carries_on(problem):
         return True
 
+    # A worded ask to press a control the gate itself puts to the person: the gate's card is the one approval
+    # (_answers_a_held_press). Before guided["asked"] is set: no person answers this, so nothing here is help.
+    if _answers_a_held_press(problem):
+        return True
+
     guided = guidance.get()
     run = (guided or {}).get("run")
 
@@ -262,6 +268,111 @@ def _answer_engine(answer):
         log(traceback.format_exc())
         ask_for_query(f"I could not carry on after answering my own question from what you told me earlier ({exc}). "
                       "Tell me what to do next.", engine=SKILL_ENGINE)
+
+
+# ------------------------------------------------------------
+# A worded ask to press a control the approval gate itself holds
+#
+# Found live (2026-11-11, freeze 2.3, a return-filing curve): the taught worker's lesson said to ask before its saving
+# and filing presses, so it asked in words ('I am about to click "Save to portal" ... May I proceed?'), and the gate
+# then asked again with its own card at the press. Every approval cost two questions, the worded ones counted toward
+# the case's question cap, and the run ran out of questions before its last press. Owner's ruling (2026-11-11): where
+# the gate itself will hold the press the question asks for, the question is answered here and nobody is asked; the
+# person sees one approval, the gate's card. Nothing here touches the gate - the press still goes through it, and only
+# a yes the gate makes from the person's signed reply lets it go - and nothing here is a yes: no reply is noted
+# (approval.note_reply, guidance.note_exchange), so none can stand as one. Whether the gate holds the press is the
+# gate's own code (_gate_holds), never a copy of its rules. A hold that only the press itself can find - a form
+# carrying the person's code, a replayed step, the plan's ask-first list - is not known here: that question goes to
+# the person, as before.
+# ------------------------------------------------------------
+
+MAX_GATE_HELD_ANSWERS = 12
+GATE_HELD_ANSWER = ("The approval gate itself asks the person when you press {named} - press it, and the person "
+                    "approves it there, on the gate's own question. Your question was not put to them. If it also asked "
+                    "anything besides approval to press {named}, ask that again on its own.")
+_gate_held = {"task": None, "count": 0}
+
+
+def _gate_holds(element, observation):
+    """
+    Why the approval gate holds a press of this on-screen control, decided without pressing by the code the press goes
+    through, or None: what the person said about it (core._person_hold: their confirmed approvals of a taught task, a
+    step they approved while teaching it, a no to it in this task), or the gate's own judgement of it (approval.assess)
+    in the context that lifts the most - a press that submits no form and a link the page says only goes somewhere -
+    so a hold found here stands at the press whatever the page then says.
+    """
+
+    from decurix_agent.computer import approval, core
+    held = core._person_hold(element, observation)
+    if held:
+        return held
+    return approval.assess("click", element, context={"submits": False, "navigates": True})
+
+
+def _gate_held_press(problem, observation=None):
+    """
+    The labels of the controls the engine's question asks to press (approval.asks_to_press: the object of a press
+    verb, the longest label where one holds another), when the gate holds a press of every control on the screen that
+    bears each of them (_gate_holds); [] otherwise. The screen is the one the engine last looked at (core's saved
+    observation): a control not on it is not known to be held, and the question goes to the person.
+    """
+
+    from decurix_agent.computer import approval, core
+    observation = core._load_state() if observation is None else observation
+    if not isinstance(observation, dict):
+        return []
+
+    def label(element):
+        return " ".join(str(element.get("name") or "").split())
+
+    elements = [e for e in observation.get("elements") or [] if isinstance(e, dict) and label(e)]
+    asked = [e for e in elements if approval.asks_to_press(problem, e)]
+    # 'click "Save to portal"' also reads as a press of "Save": the longer label is the one asked for.
+    asked = [e for e in asked if not any(label(o) != label(e) and approval.names_control(label(o), e) for o in asked)]
+    labels = list(dict.fromkeys(label(e) for e in asked))
+    for name in labels:
+        same = [e for e in elements if approval.names_control(name, e)
+                and approval.names_control(label(e), {"name": name})]
+        if not all(_gate_holds(e, observation) for e in same):
+            return []
+    return labels
+
+
+def _answers_a_held_press(problem):
+    """True when the engine's question asks to press controls the gate itself holds (_gate_held_press) and it was
+    answered here, that the gate asks the person at the press; at most MAX_GATE_HELD_ANSWERS a task."""
+
+    task = task_context.current() or state.current_task
+    if _gate_held["task"] != task:
+        _gate_held.update(task=task, count=0)
+    if _gate_held["count"] >= MAX_GATE_HELD_ANSWERS:
+        return False
+    try:
+        labels = _gate_held_press(problem)
+    except Exception as exc:  # noqa: BLE001 - not known to be held: the person is asked, as before
+        log(f"Could not tell whether the approval gate holds the press asked about ({exc}); asking the person.")
+        return False
+    if not labels:
+        return False
+    _gate_held["count"] += 1
+    named = " and ".join(f'"{name}"' for name in labels)
+    progress.emit(f"Not asking you twice: the approval gate asks you itself when {named} is pressed.")
+    log(f"The engine asked to press {named}, which the approval gate holds: answered that the gate asks the person "
+        f"({problem[:200]!r}).")
+    # On a thread of its own: the engine is still inside the call that asked.
+    threading.Thread(target=_answer_held_press, args=(GATE_HELD_ANSWER.format(named=named),), daemon=True).start()
+    return True
+
+
+def _answer_held_press(answer):
+    from decurix_agent.harness import continue_after_query
+
+    try:
+        continue_after_query(answer)
+    except Exception as exc:
+        log(traceback.format_exc())
+        ask_for_query(f"I could not carry on after the approval gate's answer to my question ({exc}). Tell me what to "
+                      "do next.", engine=SKILL_ENGINE)
 
 
 def _plan_approved_as_is(asked, reply):

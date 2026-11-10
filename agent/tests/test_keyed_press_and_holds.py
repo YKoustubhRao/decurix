@@ -11,6 +11,8 @@ Two gate-area holes found in the learning curves (2026-11-10), each closed by st
    - an approval they gave it while teaching.
    Each only ever adds a question; nothing makes a yes. Live: "Save to portal" was refused (or answered "I don't
    know") and pressed anyway a moment later.
+3. A worker's worded ask to press a control the gate itself holds is answered by the question path, not put to the
+   person: they see one approval, the gate's card at the press (engine_questions._answers_a_held_press).
 
     PYTHONPATH=agent python3 -m unittest discover -s agent/tests -p test_keyed_press_and_holds.py
 """
@@ -206,6 +208,106 @@ class WhatThePersonSaidHoldsAPress(unittest.TestCase):
 
     def test_a_field_is_never_held(self):
         self.assertIsNone(self.hold(declined=[{"name": "Save to portal"}], control_=control("textbox", "Save to portal")))
+
+
+class AWordedAskTheGateHolds(_Store):
+    """
+    Found live (2026-11-11, freeze 2.3, gstr curve og-5): the taught worker asked in words before each press its lesson
+    said needs the person ('I am about to click "Save to portal" ... May I proceed?'), then the gate asked again with
+    its card at the press: two questions an approval, and the run ran out of questions. A worded ask to press a control
+    the gate itself holds is answered by the question path (engine_questions._answers_a_held_press); the person sees
+    the gate's card only, and the gate is not lowered.
+    """
+
+    SAVE = control("button", "Save to portal", ref="e9")
+    CLIENT = control("link", "Sahyadri Lift Services", ref="e10")
+    IMPORT = control("button", "Import from books", ref="e11")
+    SKILL = {"name": "file-gstr1", "title": "File GSTR-1", "steps": [],
+             "approvals": {"confirmed": True, "ask": [{"role": "button", "name": "Save to portal"}]}}
+
+    def setUp(self):
+        super().setUp()
+        from decurix_agent import engine_questions, messaging, skill_task, state  # noqa: F401 - skill_task: the gates
+        self.eq, self.messaging, self.state = engine_questions, messaging, state
+        notes = self.tmp / "notes"
+        notes.mkdir()
+        self.screen = page(self.SAVE, self.CLIENT, self.IMPORT, url="http://fileprep.test/gstr1")
+        self.run = {"skill": self.SKILL, "values": {}}
+        self.guided = {"run": self.run}
+        self.told = []
+        self.send = mock.Mock(return_value=True)
+        for p in (mock.patch("decurix_agent.task_context.current", return_value="t-1"),
+                  mock.patch("decurix_agent.task_context.current_stage", return_value=(None, None)),
+                  mock.patch("decurix_agent.computer.evidence.NOTES_DIR", notes),
+                  mock.patch("decurix_agent.computer.skills.all_skills", return_value=[self.SKILL]),
+                  mock.patch.object(core, "_load_state", lambda: self.screen),
+                  mock.patch.object(engine_questions.guidance, "get", lambda: self.guided),
+                  mock.patch.object(engine_questions.progress, "emit", lambda text: None),
+                  mock.patch.object(engine_questions.llm_client, "available", lambda: False),
+                  mock.patch.object(engine_questions.study, "_call",
+                                    mock.Mock(side_effect=AssertionError("no model judges this"))),
+                  mock.patch.object(engine_questions.threading, "Thread",
+                                    lambda target, args, daemon: mock.Mock(start=lambda: self.told.append(args[0]))),
+                  mock.patch.dict(engine_questions._gate_held, task=None, count=0),
+                  mock.patch.object(messaging, "_query_gate", engine_questions._question_gate),
+                  mock.patch.object(messaging, "send_query", self.send),
+                  mock.patch.object(state, "paused_skill", None), mock.patch.object(state, "paused_replay", None),
+                  mock.patch.object(state, "waiting_for_query", False), mock.patch.object(state, "query_asked_at", 0),
+                  mock.patch.object(state, "last_query_text", ""), mock.patch.object(state, "last_query_kind", ""),
+                  mock.patch.object(state, "last_query_secret", False),
+                  mock.patch.object(state, "asked_query_id", None)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def press(self, element):
+        """The press as an engine makes it (core.act), with the gate's own hold (core._person_hold) left real."""
+
+        with mock.patch.object(core, "observe", lambda *a, **k: self.screen), \
+                mock.patch.object(core.audit, "record", lambda *a, **k: None), \
+                mock.patch.object(core, "_downloads_snapshot", lambda: None), \
+                mock.patch.object(core, "_refuse_unsafe_save", lambda *a: None), \
+                mock.patch.object(core, "_refuse_number_arrows", lambda *a: None), \
+                mock.patch.object(core, "_commit_check", lambda *a, **k: ""), \
+                mock.patch.object(core, "_keyboard_field", return_value=None), \
+                mock.patch.object(core, "_location_bar", return_value=None, create=True), \
+                mock.patch.object(core.cdp, "available", return_value=False), \
+                mock.patch.object(core, "_perform", mock.Mock(side_effect=AssertionError("pressed"))):
+            return core.act("click", ref=element["ref"], check_form=True)
+
+    def test_an_ask_to_press_a_control_the_skills_approvals_hold_is_answered_and_the_gate_still_asks(self):
+        asked = ('I am about to click "Save to portal" for Sahyadri Lift Services\' January 2027 GSTR-1. '
+                 "May I proceed?")
+        self.assertEqual(self.eq._gate_held_press(asked), ["Save to portal"])
+        self.assertIsNone(self.messaging.ask_for_query(asked, kind="query"))
+        self.send.assert_not_called()                                      # not put to the person, not counted
+        self.assertEqual(len(self.told), 1)
+        self.assertIn('approval gate itself asks the person when you press "Save to portal"', self.told[0])
+        self.assertNotIn("asked", self.guided)                             # no reply will be read as help
+        self.assertNotIn("asked_person", self.run)
+        self.assertFalse(self.state.waiting_for_query)
+        with approval._locked() as kept:
+            self.assertFalse(kept.get("last_reply"))                       # nothing that could stand as a yes
+        # The press still goes to the gate, which puts it to the person with its own card.
+        done = self.press(self.SAVE)
+        self.assertEqual(done["status"], "needs_approval")
+        pending = approval._local_pending()
+        self.assertIn('"Save to portal"', pending["action"])
+        self.assertIn("when you taught", pending["reason"])
+
+    def test_an_ask_to_press_a_control_the_gate_does_not_hold_goes_to_the_person(self):
+        asked = 'May I click "Import from books" to bring in the January invoices?'
+        self.assertEqual(self.eq._gate_held_press(asked), [])
+        self.assertIsNotNone(self.messaging.ask_for_query(asked, kind="query"))
+        self.send.assert_called_once()
+        self.assertEqual(self.told, [])
+
+    def test_a_question_that_only_names_a_held_control_goes_to_the_person(self):
+        asked = ('The page shows "Save to portal", but two invoices of Sahyadri Lift Services are not in the books. '
+                 "Should I enter them first?")
+        self.assertEqual(self.eq._gate_held_press(asked), [])
+        self.assertIsNotNone(self.messaging.ask_for_query(asked, kind="query"))
+        self.send.assert_called_once()
+        self.assertEqual(self.told, [])
 
 
 if __name__ == "__main__":

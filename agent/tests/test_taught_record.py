@@ -9,6 +9,7 @@ declared its record, and so no run could ever count towards trust.
     PYTHONPATH=agent python3 -m unittest discover -s agent/tests -p test_taught_record.py
 """
 
+import json
 import tempfile
 import time
 import unittest
@@ -208,11 +209,16 @@ class ARunWithItsDocumentInHand(unittest.TestCase):
         self.assertEqual(self.by_model, [])
         self.assertEqual(state.paused_skill["kind"], "plan")
 
-    def test_a_value_the_documents_do_not_give_leaves_it_to_the_model(self):
+    def test_a_value_the_documents_do_not_give_is_asked_about_alone_not_given_to_the_model(self):
+        """Owner's ruling 2026-11-11 (was: the whole run went to the model): the one field is asked about, then the
+        run replays. See ALeftField below."""
+
         run = self.run_for(dict(filled_values(), item=""))
-        skill_task._prepare(run)
-        self.assertEqual(len(self.by_model), 1)
-        self.assertEqual(self.executed, [])
+        with mock.patch("decurix_agent.person_record.left_to_app", return_value=[]):
+            skill_task._prepare(run)
+        self.assertEqual((self.by_model, self.executed), ([], []))
+        self.assertEqual(state.paused_skill["kind"], "lacking")
+        self.assertIn('"Item"', self.asked[0])
 
     def test_a_change_to_the_plan_hands_it_to_the_model_with_the_declared_record(self):
         run = self.run_for(filled_values())
@@ -294,3 +300,260 @@ class AnUnreadableReading(unittest.TestCase):
                 mock.patch.object(request_reading.study, "_call", side_effect=unreadable):
             self.assertIsNone(request_reading.read("Enter this bill: ~/work/bill.pdf"))
         self.assertEqual(calls, [800, request_reading.READ_RETRY_TOKENS])
+
+
+def due_date_skill():
+    """bill_skill with a field the application fills itself once the supplier is picked (a due date), its step checked,
+    and a later step whose check names it."""
+
+    skill = bill_skill()
+    due = field_step(0, "textbox", "Due Date", "due_date")
+    due["expect"] = [{"type": "element", "param": "due_date", "name": "Due Date"}]
+    skill["steps"].insert(2, due)
+    skill["steps"][-1]["expect"] = [{"type": "window", "value": "Bill due {due_date}"},
+                                    {"type": "window", "value": "Bill {invoice_no}"}]
+    skill["params"].append({"name": "due_date", "label": "Due Date", "default": None, "example": "15-10-2026",
+                            "varies": True, "step": 0})
+    return skills.renumber(skill)
+
+
+REPLY = "leave the Due Date as ERPNext fills it in"
+
+
+class ALeftField(unittest.TestCase):
+    """
+    Owner's ruling 2026-11-11 (live: ERPNext bill 09, a bill with no due date). A value the documents lack that the
+    person leaves as the application fills it in is a standing decision, not data: the replay leaves that field
+    untouched, the run is not helped, and the decision is kept on the control plane for this skill's later runs. With
+    no decision kept, the person is asked about that one field - never the whole run handed to the model.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = skills.ROOT
+        skills.ROOT = Path(self.tmp.name)
+        state.paused_skill = None
+        state.reply_judgement, state.reply_secret = "j_reply0001", False
+        guidance.end()
+        self.asked, self.by_model, self.replayed, self.finished, self.posted = [], [], [], [], []
+        self.kept_rows = []
+        from decurix_agent import person_record
+        person_record.clear_cache()
+
+        def replay_run(program, params=None, start=1, ladder=None):
+            self.replayed.append((program, dict(params or {})))
+            return self.outcome
+
+        self.outcome = {"outcome": skill_task.replay.COMPLETED_UNVERIFIED, "text": "ran", "step": 9, "resume_from": None}
+        patches = [
+            mock.patch.object(skill_task, "ask_for_query", lambda text, kind="query", engine=None, **kw: self.asked.append(text)),
+            mock.patch.object(skill_task, "write_final_reply", lambda *a, **kw: None),
+            mock.patch.object(skill_task, "_by_model", lambda run, **kw: self.by_model.append(kw)),
+            mock.patch.object(skill_task, "_finish", lambda run, result: self.finished.append(result)),
+            mock.patch.object(skill_task.replay, "run", replay_run),
+            mock.patch.object(skill_task.phase_note, "write"),
+            mock.patch.object(skill_task, "_engine_can_drive", return_value=True),
+            mock.patch.object(skill_task, "_reads_replies", return_value=True),
+            mock.patch.object(skill_task.learning, "start_checks", return_value=[]),
+            mock.patch.object(skill_task.task_context, "current_files", return_value=["/home/headless/work/bill.pdf"]),
+            mock.patch.object(skill_task.task_context, "current", return_value="t7455c3b2178a35ee"),
+            mock.patch.object(skill_task.binding, "referenced_files", return_value=[]),
+            mock.patch.object(skill_task.records, "_source_text", return_value=BILL),
+            mock.patch.object(skill_task.records, "declare", lambda key, source, fields, **kw: ({"key": key}, [])),
+            mock.patch.object(skill_task.progress, "emit"),
+            mock.patch("decurix_agent.messaging.post_learned", lambda *a, **kw: self.posted.append((a, kw))),
+            # The control plane's learned rows, as it serves them (desktopLearnedList): what the test kept.
+            mock.patch("decurix_agent.person_record._get",
+                       lambda path, query, fresh=False: {"learned": list(self.kept_rows)}),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def tearDown(self):
+        skills.ROOT = self.saved
+        state.paused_skill = None
+        state.reply_judgement, state.reply_secret = "", False
+        guidance.end()
+        self.tmp.cleanup()
+
+    def run_for(self, skill=None):
+        skill = skill or due_date_skill()
+        return {"skill": skill, "values": filled_values(), "start": 1, "checked": False, "patches": [], "asked": 0,
+                "stuck": 0, "ladder": skill_task._ladder(skill), "asked_ids": [], "began": time.time(), "filled": True,
+                "context": "Enter this bill: ~/work/bill.pdf"}
+
+    def reply(self, text, reading=None):
+        paused, state.paused_skill = state.paused_skill, None
+        if reading is None:
+            skill_task._run_reply(paused, text, None)
+        else:
+            with mock.patch.object(skill_task.approval, "read_choice", return_value=reading):
+                skill_task._run_reply(paused, text, None)
+
+    def keep_as_the_control_plane_does(self):
+        """The row the control plane keeps from what was posted, served back with its source judgement."""
+
+        (kind, _skill, _version, _question, text), kw = self.posted[-1]
+        self.kept_rows.append({"id": "j_kept0001", "kind": kind, "task_id": "t7455c3b2178a35ee",
+                               "derived_from": kw["derived_from"], "text": text,
+                               "source": {"actor": {"kind": "person"}, "text": REPLY, "asked": self.asked[0]}})
+        from decurix_agent import person_record
+        person_record.clear_cache()
+
+    def test_a_kept_decision_replays_leaving_the_field_untouched_and_is_no_help(self):
+        """(a) A declared apprentice run with one value missing and a kept decision reaches the replay."""
+
+        self.kept_rows.append({"id": "j_kept0001", "kind": "field_answer", "derived_from": "j_earlier01",
+                               "text": json.dumps({"host": "", "label": "Due Date", "left_to_app": True, "option": REPLY,
+                                                   "param": "due_date", "skill": "enter-bill"}),
+                               "source": {"actor": {"kind": "person"}, "text": REPLY,
+                                          "asked": "The documents for this run do not give Due Date. "
+                                                   + skill_task._leave_sentence("Due Date") + " - or reply with it."}})
+        run = self.run_for()
+        skill_task._prepare(run)
+        self.assertEqual(self.by_model, [])
+        self.assertEqual(state.paused_skill["kind"], "plan")  # (an apprentice's plan first, as always)
+        self.assertIn("Due Date: not in the documents - left as the application fills it in", self.asked[0])
+        self.reply("yes")
+        program, params = self.replayed[0]
+        self.assertFalse([s for s in program["steps"] if s.get("param") == "due_date"])
+        self.assertNotIn("due_date", params)
+        self.assertNotIn("Bill due {due_date}", str(program["steps"]))  # nor looked for by a later step's check
+        self.assertIn("Bill {invoice_no}", str(program["steps"]))
+        self.assertEqual(self.by_model, [])
+        self.assertFalse(skill_task.final_gate._helped(run, {"mode": "replay"}))
+
+    def test_a_kept_row_of_another_question_or_a_pick_is_no_decision(self):
+        """Only a row whose question offered leaving that very field counts; a pick's field answer never does."""
+
+        self.kept_rows.append({"id": "j_kept0001", "kind": "field_answer", "derived_from": "j_earlier01",
+                               "text": json.dumps({"host": "", "label": "Due Date", "left_to_app": True, "option": REPLY,
+                                                   "param": "due_date", "skill": "enter-bill"}),
+                               "source": {"actor": {"kind": "person"}, "text": REPLY, "asked": "What due date?"}})
+        self.kept_rows.append({"id": "j_kept0002", "kind": "field_answer", "derived_from": "j_earlier02",
+                               "text": json.dumps({"host": "erp.example", "label": "Due Date", "option": "leave"}),
+                               "source": {"actor": {"kind": "person"}, "text": "leave", "asked": "Due Date?"}})
+        skill_task._prepare(self.run_for())
+        self.assertEqual(state.paused_skill["kind"], "lacking")
+        from decurix_agent import person_record
+        self.assertEqual([r["option"] for r in person_record.field_answers()], ["leave"])  # (the pick's only)
+
+    def test_no_decision_kept_asks_about_that_field_alone_and_a_leave_is_kept_and_no_help(self):
+        """(b) Asked once, naming only that field; "leave it as the app fills it" replays, is kept, is no help."""
+
+        run = self.run_for()
+        skill_task._prepare(run)
+        self.assertEqual((self.by_model, self.replayed), ([], []))
+        self.assertEqual(state.paused_skill["kind"], "lacking")
+        self.assertEqual(len(self.asked), 1)
+        question = self.asked[0]
+        self.assertIn(skill_task._leave_sentence("Due Date"), question)
+        for other in ("Supplier", "Item", "Qty", "Invoice"):
+            self.assertNotIn(other, question)
+
+        self.reply(REPLY, reading={"choice": "leave", "instruction": ""})
+        self.assertEqual(len(self.posted), 1)
+        (kind, skill, _v, _q, text), kw = self.posted[0]
+        self.assertEqual((kind, skill, kw["derived_from"]), ("field_answer", "enter-bill", "j_reply0001"))
+        said = json.loads(text)
+        self.assertEqual((said["label"], said["param"], said["left_to_app"]), ("Due Date", "due_date", True))
+        self.assertIn(said["option"], REPLY)  # (the control plane keeps it only when it stands in the reply)
+
+        self.assertEqual(state.paused_skill["kind"], "plan")
+        self.reply("yes")
+        self.assertEqual(len(self.replayed), 1)
+        self.assertFalse([s for s in self.replayed[0][0]["steps"] if s.get("param") == "due_date"])
+        self.assertEqual(self.by_model, [])
+        self.assertFalse(skill_task.final_gate._helped(run, {"mode": "replay"}))
+
+    def test_a_plain_one_leaves_it_without_a_model_reading(self):
+        run = self.run_for()
+        skill_task._prepare(run)
+        with mock.patch.object(skill_task.llm_client, "available", return_value=False):
+            self.reply("1")
+        self.assertIn("due_date", run["left_to_app"])
+        self.assertEqual(state.paused_skill["kind"], "plan")
+        self.assertFalse(run.get("asked_person"))
+
+    def test_the_next_run_of_the_skill_asks_nothing(self):
+        """(c) The same field missing again on the next run: no question, the replay."""
+
+        skill_task._prepare(self.run_for())
+        self.reply(REPLY, reading={"choice": "leave", "instruction": ""})
+        self.keep_as_the_control_plane_does()
+        self.asked.clear()
+        state.paused_skill = None
+
+        run = self.run_for()
+        skill_task._prepare(run)
+        self.assertEqual(state.paused_skill["kind"], "plan")  # no "lacking" question
+        self.assertTrue(run["left_to_app"]["due_date"]["kept"])
+        self.reply("yes")
+        self.assertEqual(len(self.replayed), 1)
+        self.assertFalse(skill_task.final_gate._helped(run, {"mode": "replay"}))
+
+        # ...for that skill only: another skill with the same field is asked.
+        other = due_date_skill()
+        other["name"] = "enter-other-bill"
+        state.paused_skill = None
+        skill_task._prepare(self.run_for(other))
+        self.assertEqual(state.paused_skill["kind"], "lacking")
+
+    def test_an_answer_with_a_value_is_help_and_the_value_is_typed(self):
+        """(d) The existing ruling: data the documents should have held is help."""
+
+        run = self.run_for()
+        skill_task._prepare(run)
+        self.reply("15-11-2026", reading={"choice": "value", "instruction": "15-11-2026"})
+        self.assertEqual(self.posted, [])  # (nothing kept: a value is this run's data)
+        self.assertTrue(skill_task.final_gate._helped(run, {"mode": "replay"}))
+        self.assertEqual(state.paused_skill["kind"], "plan")
+        self.reply("yes")
+        program, params = self.replayed[0]
+        self.assertEqual(params["due_date"], "15-11-2026")
+        self.assertTrue([s for s in program["steps"] if s.get("param") == "due_date"])
+
+    def test_a_save_the_application_refuses_for_want_of_it_goes_to_the_model(self):
+        """(e) The save check still stands: a required field refused at the save halts the replay, and the model takes
+        over from that step, as from any halt."""
+
+        skill_task._prepare(self.run_for())
+        self.reply(REPLY, reading={"choice": "leave", "instruction": ""})
+        self.outcome = {"outcome": skill_task.replay.HALTED, "step": 7, "resume_from": 7,
+                        "text": "Step 7: the application refused the save: Due Date is mandatory."}
+        run = state.paused_skill["run"]
+        self.reply("yes")
+        self.assertEqual(len(self.replayed), 1)
+        self.assertEqual(len(self.by_model), 1)
+        self.assertEqual(self.by_model[0]["from_step"], 7)
+        self.assertTrue(run["taken_over"])
+        self.assertTrue(skill_task.final_gate._helped(run, {"mode": "replay"}))
+        self.assertIn("never make a value up", skill_task._left_note(run))
+
+
+class AFieldLeftOutOfTheReplay(unittest.TestCase):
+    """skills.expand: a value given as EMPTY_ITEM that is no list is a field no step enters."""
+
+    def test_its_steps_and_the_checks_that_name_it_are_left_out(self):
+        skill = due_date_skill()
+        program, flat = skills.expand(skill, dict(filled_values(), due_date=skills.EMPTY_ITEM))
+        self.assertNotIn("due_date", flat)
+        self.assertFalse([s for s in program["steps"] if s.get("param") == "due_date"])
+        self.assertEqual([s["n"] for s in program["steps"]], list(range(1, len(skill["steps"]))))
+        self.assertEqual({p["name"]: p["step"] for p in program["params"]}["qty"],
+                         next(s["n"] for s in program["steps"] if s.get("param") == "qty"))
+        self.assertEqual(len(skill["steps"]), 8)  # (the skill itself is unchanged)
+
+    def test_a_pick_left_out_takes_its_list_entry_with_it(self):
+        skill = bill_skill()
+        skill["steps"].insert(2, field_step(0, "combobox", "Cost Center", "cost_center"))
+        skill["steps"].insert(3, field_step(0, "option", "Main - NW", kind="click"))
+        skill["params"].append({"name": "cost_center", "label": "Cost Center", "default": None, "example": "Main",
+                                "varies": True, "step": 0})
+        skills.renumber(skill)
+        program, _flat = skills.expand(skill, dict(filled_values(), cost_center=skills.EMPTY_ITEM))
+        names = [(s.get("target") or {}).get("name") for s in program["steps"]]
+        self.assertNotIn("Cost Center", names)
+        self.assertNotIn("Main - NW", names)
+        self.assertIn("Supplier", names)

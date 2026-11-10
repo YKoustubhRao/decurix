@@ -180,6 +180,7 @@ or a save after the run was sent back (`_reworked`). An answer the rules require
 | A hole in the documents' own numbered series | "as it should be" (`done`) | `final_gate._confirm_reply` |
 | Entries picked from the application's lists | a yes to all of them | `final_gate._picks_reply` |
 | The date order, a field's unit | an option picked | `watchers` (never reaches `learn_answer`) |
+| A field the documents do not give (owner's ruling 2026-11-11) | "leave it as the application fills it in", and nothing more (a value given is help, and is typed) | `skill_task._lacking_reply` |
 
 Each is decided from structure: which question was asked (its kind and origin) and whether the reply was a plain
 confirmation or carried an instruction or another value (`approval.read_choice`, `_done_reading`) - never a word list
@@ -189,3 +190,12 @@ runner now tells it the same for the scripted expert's reply, `eval.replyBody`),
 every known secret withheld (`privacy.scrub`): nothing else, or one word, is the value; anything else is read once by
 the model, and with no model, or a reply withheld whole, it is help. An approval declined, granted on a condition or
 answered "use X instead" is help; a plain yes to start a run is not, a yes with a condition (`start` "if") is.
+
+A field the documents lack that the person leaves to the application is a standing decision, not data (found live,
+ERPNext bill 09: a bill with no due date sent the whole run to the model, and "leave the Due Date as ERPNext fills it
+in" marked it helped). Where that one field is all that keeps a run from replaying, the run asks about it alone
+(`skill_task._ask_lacking`), never hands the whole run to the model; a leave leaves the field out of the replay
+(`skills.left_alone`) and the declaration, and is kept on the control plane as a field answer derived from the reply
+(`person_record.keep_left_to_app`), so a later run of the same skill whose documents lack that field asks nothing
+(`_apply_kept_left`). A leave that says more is help, and the model does the run with the person's words. A save the
+application then refuses for want of the field is a halt the model takes over, as any is.

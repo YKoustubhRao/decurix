@@ -551,6 +551,16 @@ def _prepare(run):
     if run["start"] == 1 and run.get("filled") and not run.get("gathered") and not run.get("one_off"):
         _declare_taught_record(run)
 
+    # A field the documents do not give (owner's ruling 2026-11-11, "Left to the application" below): a decision the
+    # person made on an earlier run of this skill leaves it as the application fills it in; else, where that one field
+    # is all that keeps the run from replaying, the person is asked about it alone - never the whole run given to the
+    # model for one field.
+    if missing and not problem and run.get("filled") and not run.get("one_off"):
+        missing = _apply_kept_left(run, missing)
+        if missing and all(_may_leave(run, p) for p in missing) and not _learning_by_model(run, ignore_missing=True):
+            _ask_lacking(run, missing[0])
+            return
+
     if missing and not problem and run.get("filled") and run["start"] == 1 and _learning_by_model(run):
         if _start_pause(run):
             return
@@ -626,9 +636,11 @@ REST_PHASE = "rest"
 
 def _still_missing(run):
     """The values this run needs that it has not got - leaving out a row the demonstration had and this run's document
-    does not, which is no value to find or to ask for (run["rows"]: the document's own number of rows)."""
+    does not, which is no value to find or to ask for (run["rows"]: the document's own number of rows) - and a field
+    the person left as the application fills it in (run["left_to_app"]), which is no value either."""
 
-    missing = [p for p in _needed(run) if not run["values"].get(p["name"])]
+    left = run.get("left_to_app") or {}
+    missing = [p for p in _needed(run) if not run["values"].get(p["name"]) and p["name"] not in left]
     if run.get("rows"):
         used = {name for row in run["rows"]["names"] for name in row}
         absent = {name for row in (skills.repeated_rows(run["skill"]) or {"rows": []})["rows"] for name in row} - used
@@ -649,6 +661,211 @@ def _needed(run):
         return [p for p in skills.required(skill)
                 if (p.get("step") or 0) >= run["start"] and not learning._is_address(p.get("example"))]
     return skills.required(skill)
+
+
+# ============================================================
+# Left to the application (owner's ruling 2026-11-11)
+#
+# Found live (ERPNext bills, 2026-11-11): a bill with no due date sent the WHOLE run to the model ("The documents do
+# not give due_date - working from the documents themselves"); the model asked what due date to enter, the person
+# answered "leave the Due Date as ERPNext fills it in", the run counted as helped - and the application had filled the
+# field itself the moment the supplier was picked. A value the documents lack that the person leaves to the
+# application is a standing decision, not data:
+#   ask      where that one field is all that keeps the run from replaying, the person is asked about it alone: leave it
+#            as the application fills it in, or give the value. Then the run replays. A value is help (data the
+#            documents should have held) and is typed; a leave is no help.
+#   keep     a leave is kept on the control plane, a field answer derived from the person's reply
+#            (person_record.keep_left_to_app) - never only in a file the worker's user can write, as picks and the
+#            application's date order are kept. A later run of the same skill whose documents again do not give that
+#            field applies it and asks nothing (_apply_kept_left).
+#   replay   the field is left untouched (skills.expand: no step types or chooses into it) and is not declared; the
+#            save's comparison and read-back cover the rest. A save the application refuses for want of the field halts
+#            the replay, and the model takes over from there, as from any halt.
+# Decided by structure: which value the documents did not give, which question was put, and the reply's one reading
+# (approval.read_choice) - never by the field's name or the application's.
+# ============================================================
+
+LEAVE_CHOICES = {
+    "leave": "leave the field as the application fills it in itself: nothing is typed or chosen into it",
+    "value": "gives the value to enter into the field - the instruction is that value, exactly as the reply writes it",
+    "stop": "stop: the task is not to be done",
+}
+LEAVE_PLAIN = {
+    "leave": ("1", "leave", "leave it", "leave it as it is", "leave as is", "leave it blank", "leave it empty",
+              "leave it as the app fills it", "leave it as the application fills it in"),
+    "stop": ("stop", "cancel", "abort"),
+}
+
+
+def _leave_sentence(label):
+    """The sentence of the question that offers leaving the field `label` as the application fills it in: a kept
+    decision is used only where the question the person answered holds it (_kept_left)."""
+
+    return f'Reply 1 to leave the field "{" ".join(str(label or "").split())}" as the application fills it in'
+
+
+def _field_label(run, param):
+    """The label of the field a value goes into: its step's field as the demonstration found it, else the value's own
+    label."""
+
+    steps = {s.get("n"): s for s in run["skill"].get("steps") or []}
+    target = (steps.get(param.get("step")) or {}).get("target") or {}
+    label = target.get("name") if target.get("role") in FIELD_ROLES else ""
+    return " ".join(str(label or param.get("label") or param["name"]).split())
+
+
+def _may_leave(run, param):
+    """Whether a value the documents do not give may be left as the application fills it in: one field's value, typed
+    or chosen into it - not a list, a row of a repeated part, a secret, a file or an address."""
+
+    if param.get("list") or param.get("secret") or param.get("file") or learning._is_address(param.get("example")):
+        return False
+    group = skills.repeated_rows(run["skill"])
+    if param["name"] in {name for row in (group or {"rows": []})["rows"] for name in row}:
+        return False
+    return any(s.get("param") == param["name"] and s.get("kind") in ("type", "select")
+               for s in run["skill"].get("steps") or [])
+
+
+def _kept_left(run, param):
+    """
+    The judgement of the person's kept decision to leave this skill's field as the application fills it in, or "": a
+    field answer the control plane keeps (person_record.left_to_app) for this skill and this value, of this field, whose
+    question - the one the person answered, as the control plane recorded it - offered exactly that (_leave_sentence).
+    A control plane that cannot be read keeps nothing: the person is asked (fail closed).
+    """
+
+    from decurix_agent import person_record
+    label = _field_label(run, param)
+    try:
+        rows = person_record.left_to_app()
+    except Exception:  # noqa: BLE001 - what cannot be read is no decision
+        return ""
+    for row in reversed(rows):
+        if (row["skill"] == run["skill"].get("name") and row["param"] == param["name"]
+                and " ".join(row["label"].split()) == label
+                and _leave_sentence(label) in " ".join(row["source_asked"].split())):
+            return row["judgement"]
+    return ""
+
+
+def _apply_kept_left(run, missing):
+    """`missing` without the fields a kept decision of the person leaves as the application fills them in, each noted in
+    run["left_to_app"] ({name: {"label", "judgement", "kept"}})."""
+
+    still, left = [], []
+    for param in missing:
+        judgement = _kept_left(run, param) if _may_leave(run, param) else ""
+        if not judgement:
+            still.append(param)
+            continue
+        label = _field_label(run, param)
+        run.setdefault("left_to_app", {})[param["name"]] = {"label": label, "judgement": judgement, "kept": True}
+        left.append(label)
+    if left:
+        progress.emit("The documents do not give " + ", ".join(left) + " - left as the application fills "
+                      + ("it" if len(left) == 1 else "them") + " in, as you decided on an earlier run.")
+    return still
+
+
+def _ask_lacking(run, param):
+    """Ask the person about the one field the documents do not give: leave it as the application fills it in, or the
+    value to enter (_lacking_reply)."""
+
+    label = _field_label(run, param)
+    title = run["skill"].get("title") or run["skill"]["name"]
+    text = (f"The documents for this run do not give {label}. {_leave_sentence(label)} - I type nothing into it, and on "
+            f"later runs of \"{title}\" whose documents do not give it I leave it the same way without asking - or "
+            f"reply with the {label} to enter.")
+    _pause(run, "lacking", text, param=param["name"], label=label)
+
+
+def _lacking_reply(paused, reply):
+    """
+    The person's reply about a field the documents do not give (_ask_lacking). Leave: the field is left as the
+    application fills it in, the decision is kept for later runs of this skill (_keep_left), and it is no help. A value
+    ("name=value" or the reply's reading): typed, and help - data the documents should have held. A leave with more said
+    is help, and the model does the run with their words. Unclear: asked once more, then the run does not start.
+    """
+
+    run, name, label = paused["run"], paused["param"], paused["label"]
+    asked = paused.get("asked") or ""
+    written = {o.group(1): next(v for v in o.groups()[1:] if v is not None) for o in OPTION_RE.finditer(reply or "")}
+    if written.get(name):
+        said = {"choice": "value", "instruction": written[name]}
+    else:
+        said = approval.read_choice(reply, asked, LEAVE_CHOICES, plain=LEAVE_PLAIN)
+        if said["choice"] == "unclear" and not _reads_replies():
+            said = {"choice": "value", "instruction": ""}  # (no model to read it: the reply is the value, as _values_reply takes one)
+    choice, told = said["choice"], said.get("instruction") or ""
+
+    if choice == "stop":
+        return _stopped("before the first step. Nothing was done.")
+    if choice == "leave":
+        run.setdefault("left_to_app", {})[name] = {"label": label,
+                                                   "judgement": getattr(state, "reply_judgement", "") or ""}
+        if told:
+            run["asked_person"] = True
+            progress.emit(f"{label} is left as the application fills it in; your reply says more, so the model does the "
+                          "run with your words instead of replaying the taught steps.")
+            return _by_model(run, note=f"You asked the person: {asked}\nThey answered: {reply}\nDo the task with their "
+                                       "words.")
+        _keep_left(run, name, label, reply, asked)
+        progress.emit(f"{label} is left as the application fills it in, as you said; when the documents of a later run "
+                      "do not give it, I will leave it the same way without asking.")
+        return _prepare(run)
+    if choice == "value":
+        value = (told or str(reply or "")).strip().strip("\"'`")
+        if value:
+            run["values"][name] = value
+            run["asked_person"] = True  # (data the documents should have held: help - owner's ruling 2026-11-10)
+            return _prepare(run)
+    if paused.get("asked_again"):
+        raise _Refused(f"I still do not know what to do about {label}, so I did not start.")
+    return _pause(run, "lacking", "I did not catch that. " + asked, param=name, label=label, asked_again=True)
+
+
+def _keep_left(run, name, label, reply, asked):
+    """Keep on the control plane the person's decision to leave the field as the application fills it in, cited by their
+    reply's own judgement (person_record.keep_left_to_app). Not from a secret reply, nor one the control plane did not
+    record (no judgement): then it holds for this run only. Never raises."""
+
+    judgement = getattr(state, "reply_judgement", "") or ""
+    if not judgement or getattr(state, "reply_secret", False) or run.get("one_off"):
+        log(f"Skill {run['skill']['name']}: {label} left to the application for this run only (no judgement to keep it by)")
+        return
+    try:
+        from decurix_agent import person_record
+        person_record.keep_left_to_app(task_context.current(), judgement, run["skill"]["name"], name, label, reply,
+                                       asked=asked)
+    except Exception as exc:  # noqa: BLE001 - left for this run all the same
+        log(f"Could not keep the decision about {label} for later runs: {exc}")
+
+
+def _left_names(run):
+    """The labels of the fields this run leaves as the application fills them in, by their values' names."""
+
+    return {name: (left.get("label") or name) for name, left in (run.get("left_to_app") or {}).items()}
+
+
+def _left_note(run):
+    """What the model and the check are told of the fields this run leaves as the application fills them in ("" when
+    none)."""
+
+    left = _left_names(run)
+    if not left:
+        return ""
+    return ("The documents do not give these fields, and the person decided they are left as the application fills "
+            "them in - type or choose nothing into them, and do not hold the work to any value in them: "
+            + ", ".join(f"{label} ({name})" for name, label in left.items())
+            + ". If the application will not save without one, ask the person for it (HELP); never make a value up.")
+
+
+def _replay_values(run):
+    """The values the replay is given: the run's own, and EMPTY_ITEM for each field it leaves as the application fills
+    it in (skills.expand then leaves out the steps that would enter it)."""
+
+    return dict(run["values"], **{name: binding.EMPTY_ITEM for name in run.get("left_to_app") or {}})
 
 
 def _item_loop(skill):
@@ -1223,6 +1440,9 @@ def _record_plan_text(run):
         label = param.get("label") or param["name"]
         if value and label not in declared:
             lines.append(f"- {label}: {el._quote(str(value), 80)}")
+    for name, label in _left_names(run).items():
+        lines.append(f"- {label}: not in the documents - left as the application fills it in, as you decided; "
+                     "nothing is typed into it")
     lines.append(f"- Then your {len(skill.get('steps') or [])} taught steps, replayed with these values; where a step "
                  "does not fit what the screen shows, I take over from there.")
     lines.append("Reply `yes` to go ahead, or say what to change.")
@@ -1246,7 +1466,8 @@ def _need_text(skill, missing):
 def _execute(run):
     skill = run["skill"]
     phase_note.write(task_context.current(), None)  # (the replay enters the documents: no gather part now)
-    program, values = skills.expand(skill, run["values"])
+    # (A field left as the application fills it in is entered by no step: _replay_values.)
+    program, values = skills.expand(skill, _replay_values(run))
     run["expanded"] = program
 
     # A point click a person said to make anyway goes without its picture,
@@ -2006,6 +2227,9 @@ def _run_reply(paused, reply, approval_outcome):
     if kind == "values":
         return _values_reply(paused, reply)
 
+    if kind == "lacking":
+        return _lacking_reply(paused, reply)
+
     if kind == "confirm":
         return _confirm_reply(dict(paused, claim=paused["result"]["text"]), reply)
 
@@ -2316,7 +2540,8 @@ def _stage(run):
     return experience.APPRENTICE if run.get("one_off") else experience.stage(run["skill"])
 
 
-def _learning_by_model(run):
+def _learning_by_model(run, ignore_missing=False):
+    # (ignore_missing: whether the run would replay were every value it lacks settled - "Left to the application".)
     # A recording nobody has taught is mimicked: there is no lesson for a
     # model to follow, only what the person did - and that, with this run's
     # values put where theirs were, is exactly what a replay does. The model
@@ -2342,7 +2567,7 @@ def _learning_by_model(run):
     # graduate - nothing it did was read back, so no run counted.
     # (A bill of fewer lines than the demonstration's needs none of the rows it does not have: found live, a one-line
     # bill was handed to the model because the demonstration's second line had no values.)
-    if run.get("declared") and run.get("start") == 1 and not _still_missing(run):
+    if run.get("declared") and run.get("start") == 1 and (ignore_missing or not _still_missing(run)):
         return False
     if _stage(run) == experience.APPRENTICE:
         return True
@@ -2721,6 +2946,8 @@ def _procedure(run, from_step=None, note="", ran=False, phase=None):
                          f"{json.dumps(param.get('example') or '', ensure_ascii=False)}"
                          + (f"; {CHOSEN_NOTE}" if key in chosen else "") + ")")
         lines.append("This run's values - type these where the person typed theirs:\n" + "\n".join(shown))
+        if _left_note(run):
+            lines.append(_left_note(run))
         if _rows_note(run):
             lines.append(_rows_note(run) + " Add a row for each entry after the first the way the person added "
                          "theirs, and never add one after the last.")
@@ -3037,7 +3264,7 @@ def _judge(run, claim, note="", purpose="py.judge"):
     # the printed one.
     # A gathered run's files are a fact code decides (_documents_note), on every way the run ends - the replay's and
     # the model's alike (found live 2026-11-02: a month the model did itself after the gather was judged without them).
-    found = "\n".join(x for x in (note, _documents_note(run), _assumed_note(run)) if x)
+    found = "\n".join(x for x in (note, _documents_note(run), _assumed_note(run), _left_note(run)) if x)
     gone = _record_unread()
     if gone:
         return {"verdict": verify.UNSURE, "confidence": 0.0, "seen": "",

@@ -163,3 +163,18 @@ func TestTheExpertApprovesAWordedAskToPressAnApprovedControl(t *testing.T) {
 		t.Fatalf("a case that approves nothing answered: %q", reply)
 	}
 }
+
+// The live 2.3 question that names Verify without quotes is an approval ask; an unapproved quoted press still vetoes it.
+func TestTheExpertApprovesAnUnquotedAskToPressAnApprovedControl(t *testing.T) {
+	c := Case{Approves: []Approval{{Control: "Save to portal"}, {Control: "File with EVC"}, {Control: "Verify"}}}
+	live := "I am about to enter the OTP [withheld] and click Verify to complete the filing of the January 2027 GSTR-1. May I proceed?"
+	if reply, kind := confirmReply(c, live); reply != ApprovalYes || kind != "approval" {
+		t.Fatalf("the live question: %q %q", reply, kind)
+	}
+	if reply, _ := confirmReply(c, `I will click Verify and then press "Delete return".`); reply != "" {
+		t.Fatalf("an unapproved quoted press was let through: %q", reply)
+	}
+	if reply, _ := confirmReply(c, "Did the Verify step finish?"); reply != "" {
+		t.Fatalf("a question that only names Verify was answered: %q", reply)
+	}
+}

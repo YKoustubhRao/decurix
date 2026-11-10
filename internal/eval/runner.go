@@ -1145,15 +1145,28 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 		case o := <-obs:
 			switch o.Kind {
 			case qualification.ObservedQuery:
-				questions++
 				asked := Asked{Kind: ObservedQuery, Text: o.Text, Secret: o.Secret}
+				confirm, confirmKind := confirmReply(c, o.Text)
+				if confirmKind == "approval" && arm.Expert {
+					// A worded ask to press a control the case approves is the approval a gate card is: counted with them
+					// and bounded by maxListedApprovals, never by MaxQuestions. Found live (freeze 2.3, og-5): the
+					// worker's worded asks before each listed press ran the case out of questions at Verify.
+					approvals++
+					if approvals > maxListedApprovals {
+						ev.Questions = append(ev.Questions, asked)
+						ev.Observation, ev.FinalText = ObservedQuery, o.Text
+						ev.Unfinished = append(ev.Unfinished, "too many approvals")
+						return problems
+					}
+				} else {
+					questions++
+				}
 				if questions > MaxQuestions {
 					ev.Questions = append(ev.Questions, asked)
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text
 					ev.Unfinished = append(ev.Unfinished, "too many questions")
 					return problems
 				}
-				confirm, confirmKind := confirmReply(c, o.Text)
 				if !o.Secret && confirm == "" {
 					problems = append(problems, s.classify(ctx, desktopID, taskID, c, expert, &asked)...)
 				}

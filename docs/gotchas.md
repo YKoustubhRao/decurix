@@ -1040,3 +1040,6 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): "Skip steps 13-16" put back only 13 and 16, and leaving out two steps of a repetition crashed the lesson - ranges read whole, a loop keeps only repetitions that line up by kind
 - [part-6.md](gotchas/part-6.md): A worker's question held every control whose name stood in it - only the control it asks to press is held, never a navigation-only link
 - [part-6.md](gotchas/part-6.md): The scripted expert answered a worded request for approval with "I don't know"
+- [part-6.md](gotchas/part-6.md): A save answered after its look was reported "declared but never saved" - a save press is watched until answered, and a later look of the tab reads it back
+- [part-6.md](gotchas/part-6.md): A bill with no due date sent the whole run to the model, and "leave it as the app fills it" counted as help - the one field is asked about alone, a leave is no help, left out of the replay and kept on the control plane for the skill
+- [part-6.md](gotchas/part-6.md): Every approval was asked twice, once in the worker's words and once on the gate's card - a worded ask to press a control the gate itself holds is answered locally; the person sees only the card

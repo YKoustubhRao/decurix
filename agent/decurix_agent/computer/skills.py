@@ -355,6 +355,32 @@ def _picks_from_list(step, following):
             and ((following.get("target") or {}).get("role") or "") in LIST_ENTRY_ROLES)
 
 
+def left_alone(steps, names):
+    """
+    Copies of `steps` without what enters the values `names` - fields a run leaves as the application fills them in:
+    each step that types or chooses one, with the click on a list entry that its typing found (a pick), and every check
+    of another step that looks for one of them. Nothing else changes.
+    """
+
+    def about(check):
+        return check.get("param") in names or any(
+            "{" + name + "}" in str(v) for v in check.values() if isinstance(v, str) for name in names)
+
+    out, skip = [], False
+    for i, step in enumerate(steps):
+        if skip:
+            skip = False
+            continue
+        if step.get("param") in names and step.get("kind") in ("type", "select"):
+            skip = _picks_from_list(step, steps[i + 1] if i + 1 < len(steps) else {})
+            continue
+        each = copy.deepcopy(step)
+        if each.get("expect"):
+            each["expect"] = [check for check in each["expect"] if not about(check)]
+        out.append(each)
+    return out
+
+
 def repeated_rows(skill):
     """
     The part of a task that was entered once per entry of something - one row
@@ -532,6 +558,19 @@ def expand(skill, values):
 
     flat = dict(values)
     lists = {p["name"]: p for p in list_params(skill)}
+
+    # A value given as EMPTY_ITEM that is no list: a field the person left as the application fills it in (no document
+    # gives it - skill_task's "left to the application"). No step types or chooses into it, and no check looks for it.
+    blank = {p["name"] for p in skill.get("params") or [] if not p.get("list") and flat.get(p["name"]) == EMPTY_ITEM}
+    if blank:
+        steps = left_alone(skill.get("steps") or [], blank)
+        for n, step in enumerate(steps, 1):
+            step["n"] = n
+        at = {step["param"]: step["n"] for step in steps if step.get("param")}
+        skill = dict(skill, steps=steps, params=[dict(p, step=at.get(p["name"], p.get("step")))
+                                                 for p in skill.get("params") or [] if p["name"] not in blank])
+        for name in blank:
+            flat.pop(name, None)
 
     if not lists:
         return fit(skill, program(skill), flat), flat
