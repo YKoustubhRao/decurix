@@ -524,3 +524,12 @@ the answer to check ("`gui scroll down 5` printed: Scrolled the focused window .
 request") - five times in one goal of a filing case. The question is now the worker's own ("I kept running the same
 command ... is what it shows the answer, or how should I go on?") with the output quoted under it, and it is asked once
 per goal: a second loop ends the goal (`repeatedCommandQuestion`, `RepeatAsked`).
+
+### A pick the client's invoices state was held as backed by nothing
+
+A GSTR-1 filed right from the invoices a client sent ended "not done": the place of supply "29-Karnataka" picked from
+the portal's list was held as backed by nothing given, though every invoice wrote "Place of Supply: Karnataka". Pick
+backing read only the request's attached files, and these invoices sat in a folder the request named by its path. Now
+`records.given_sources` also reads the files already in such a folder (`_request_folder_files`): never one the task
+made (`source_guard.made_by_task`), never the whole home or work folder, nothing while the task's start is unknown, and
+still only where the field's own label states the value (`option_beside_label`).

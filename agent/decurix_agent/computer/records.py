@@ -14,6 +14,7 @@ book open - was decided nowhere in code. The ledger makes each a fact a check ca
 """
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -667,21 +668,65 @@ def _free_text(task_id=None):
     return "\n".join(p for p in parts if p)
 
 
+MAX_GIVEN_FILES = 24
+
+
+def _request_folder_files(task_id=None):
+    """
+    The files in the folders the request names that were there before the task began (stage_checks.
+    request_input_files, less what source_guard.made_by_task says the task made): the client's documents a request
+    points to by folder rather than attaching them. Found live (2026-11-09, eval case oc-2, a return filed right): every
+    invoice in the folder the request named wrote "Place of Supply: Karnataka", yet the "29-Karnataka" picked from the
+    portal's list was held as backed by nothing given, because only attached files were read; the person was asked to
+    confirm it and the run ended not done. A file the task wrote there never backs anything.
+    """
+
+    request = task_context.current_request() or ""
+    if not request or task_context.since() is None:
+        return []  # (the task's start unknown: what it made cannot be told from what was there)
+    found = []
+    try:
+        for m in _FOLDER_PATH.finditer(request):
+            folder = os.path.expanduser(m.group(1).rstrip(".),:;"))
+            if not os.path.isdir(folder) or os.path.realpath(folder) in _whole_folders():
+                continue  # (the whole home or work folder holds other requests' files: never this one's input)
+            for root, dirs, names in os.walk(folder):
+                dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+                found += [os.path.join(root, n) for n in sorted(names) if not n.startswith((".", "~$"))]
+                if len(found) >= MAX_GIVEN_FILES * 4:
+                    break
+        from decurix_agent import source_guard, stage_checks
+        found += stage_checks.request_input_files(request, limit=MAX_GIVEN_FILES * 4)
+        return [p for p in dict.fromkeys(found)
+                if not source_guard.made_by_task(p, task_id or None, request)][:MAX_GIVEN_FILES]
+    except Exception:  # noqa: BLE001 - a folder not listed backs nothing
+        return []
+
+
+def _whole_folders():
+    return {os.path.realpath(os.path.expanduser("~")), os.path.realpath(str(config.WORK_DIR))}
+
+
+# A folder the request names by its path ("~/work/practice/case-7/", "/home/headless/inbox"): only one that exists.
+_FOLDER_PATH = re.compile(r"(?<![\w/])((?:~|/home/[\w.-]+|/tmp)/[^\s'\"<>|;,]*)")
+
+
 def given_sources(task_id=None):
     """
     What a picked option may be backed by, as {"free": text, "files": [text]}. Free: the request, the person's replies
     in this task that the control plane confirms, the person's words on the skill being run and their answers on this
     worker's earlier tasks (from the control plane), and the organisation's knowledge (people write it; a desktop may
-    only read it). Files: the request's own files, which back a pick only where they state that field
-    (option_beside_label). Never the application's pages, whose option list is the menu; never the worker's own
-    memory, notes or files.
+    only read it). Files: the request's own files and the files already in a folder the request names
+    (_request_folder_files), which back a pick only where they state that field (option_beside_label). Never the
+    application's pages, whose option list is the menu; never the worker's own memory, notes or files.
     """
 
     free = [_free_text(task_id)]
     files = []
     try:
         from decurix_agent.tools import office
-        for path in (task_context.current_files() or [])[:12]:
+        paths = list(dict.fromkeys(list(task_context.current_files() or [])[:12] + _request_folder_files(task_id)))
+        for path in paths[:MAX_GIVEN_FILES]:
             try:
                 files.append(str(office.read_document(str(path)).get("text") or "")[:MAX_PAGE_TEXT])
             except Exception:  # noqa: BLE001 - a file not read backs nothing
