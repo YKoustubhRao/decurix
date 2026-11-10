@@ -176,6 +176,8 @@ def _learn_reply(paused, reply):
     # is not a name: names are short, sentences are not.
     if question["kind"] == "confirm" and skill.get("understanding") and len((reply or "").split()) > MAX_NAME_WORDS:
         progress.emit("Taking in your correction.")
+        # Which steps stop for their OK, if it says ("also ask before Save to portal"), is put back to them first.
+        learning.take_gates(skill, question.get("text") or "", reply)
         study.absorb(skill, "Is this how the task should be done? (the summary and rules above)", reply)
         _ask(skill, "Got it - here it is again.")
         return

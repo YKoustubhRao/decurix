@@ -126,7 +126,7 @@ check("impatient clicks were tidied into one double click", "quick presses on th
 check("typing kept as one value", text.count("type {") == 1, "joined: " + str("typing split in two" in text))
 check("Enter after the typing was recorded", "press Return" in text)
 
-replies = {"goal": "skip", "coordinates": "keep", "variable": "changes", "start": "no", "confirm": "yes"}
+replies = {"goal": "skip", "coordinates": "keep", "variable": "changes", "start": "no", "confirm": "yes", "gates": "yes"}
 asked = []
 for _ in range(12):
     if entry is None or entry["kind"] != "query":
@@ -134,6 +134,7 @@ for _ in range(12):
     q = entry["content"]
     kind = ("coordinates" if "recorded as a click" in q or "recorded as clicks" in q else "variable" if "Is that the same every time" in q
             else "start" if "Should I check that before I start" in q else "confirm" if "What should I call it" in q or "I will save it as" in q
+            else "gates" if "Which steps need your OK each time" in q
             else "goal")
     asked.append(kind)
     entry, took = send(replies[kind], 30)

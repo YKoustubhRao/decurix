@@ -1173,9 +1173,86 @@ def _task_exchanges(task_id):
     return out
 
 
+def skill_approvals(skill):
+    """
+    The person's confirmed answer on which presses of a taught task need their OK, or None while they have not given
+    one: {"ask": [{"role", "name", "step"?}], ...} as the lesson keeps it (skill["approvals"], "confirmed": true after
+    the person confirmed its reading). "ask": [] confirmed means nothing of the task needs their OK.
+    """
+
+    found = (skill or {}).get("approvals")
+    if not isinstance(found, dict) or found.get("confirmed") is not True:
+        return None
+    # An entry may name its step only (its "step" number or "id"): its control is that step's.
+    steps = {k: s for s in (skill or {}).get("steps") or [] for k in (s.get("n"), s.get("id")) if k is not None}
+    ask = []
+    for entry in found.get("ask") or []:
+        if not isinstance(entry, dict):
+            continue
+        if not str(entry.get("name") or "").strip():
+            target = (steps.get(entry.get("step")) or steps.get(entry.get("id")) or {}).get("target") or {}
+            entry = dict(entry, role=entry.get("role") or target.get("role") or "", name=target.get("name") or "")
+        if str(entry.get("name") or "").strip():
+            ask.append(entry)
+    return dict(found, ask=ask)
+
+
+def _task_skill():
+    """The taught skill driving the task in hand (task_context.skill), loaded; None when none or unreadable."""
+
+    from decurix_agent import task_context
+    from decurix_agent.computer import skills
+    found = task_context.skill()
+    if not found:
+        return None
+    try:
+        return skills.load(found["name"])
+    except Exception:  # noqa: BLE001 - a skill that cannot be read has no confirmed answer: the safe side
+        return None
+
+
+def _unconfirmed_replay_save(element):
+    """
+    A replay's save of a filled form put to the person while the taught task's lesson has no confirmed answer on which
+    presses need their OK (skill_approvals): "" once it has. Over-asking is the safe side, and it ends when the person
+    says which saves need them. Found (2026-11-10): a replayed "Save to portal" and an OTP "Verify" were pressed with
+    no yes - the gate's words class neither as a person's question, and a replay's sourced save asked nobody.
+    """
+
+    if skill_approvals(_task_skill()) is not None:
+        return ""
+    label = " ".join(str((element or {}).get("name") or "").split())[:60] or "this save"
+    return AskFirst(f'"{label}" saves what this taught task entered, and you have not yet said which of its presses '
+                    "need your OK - each save it replays is put to you until you do")
+
+
+def _authorises(form, element):
+    """
+    A press put to the person because the form it sends holds a value the person gave in this task as a secret - a
+    one-time code, a PIN (privacy.literals, marked secret by structure) - or a filled secret field: that code is their
+    authorisation of an act that cannot be taken back (an OTP that files a return), asked every time, replay or not.
+    A form shaped as a sign-in (_signs_in) only proves who is signing in. AskFirst or "".
+    """
+
+    if not isinstance(form, dict) or _signs_in(form):
+        return ""
+    from decurix_agent import task_context
+    given = set(privacy.literals(task_context.current())) if task_context.current() else set()
+    values = {" ".join(str(v).split()) for _, v in ((list(f) + ["", ""])[:2] for f in form.get("fields") or [])}
+    if not form.get("secret_filled") and not (given & values):
+        return ""
+    label = " ".join(str((element or {}).get("name") or form.get("submit") or "").split())[:60] or "this press"
+    return AskFirst(f'"{label}" sends a code you gave for this task (a one-time password or PIN): it authorises what '
+                    "the form does, which cannot be taken back")
+
+
 def _taught_approvals(before):
-    """The controls a person approved while teaching a task on this desktop (a taught step marked consequential: the
-    gate asked them during the demonstration and they said yes), on the site the page is on: [{"role", "name"}]."""
+    """
+    The controls the person said need their OK on a task taught on this desktop: those their confirmed lesson answer
+    names (skill_approvals: kept as the person's answer, so a later edit of a step's flags removes none), and a taught
+    step marked consequential (the gate asked them during the demonstration and they said yes) on the site the page is
+    on: [{"role", "name"}].
+    """
 
     from urllib.parse import urlparse
     from decurix_agent.computer import skills
@@ -1186,6 +1263,8 @@ def _taught_approvals(before):
     except Exception:  # noqa: BLE001 - skills that cannot be read hold nothing more
         return []
     for skill in taught:
+        for asked in (skill_approvals(skill) or {}).get("ask") or []:
+            out.append({"role": str(asked.get("role") or ""), "name": " ".join(str(asked["name"]).split())})
         for step in skill.get("steps") or []:
             target = step.get("target") or {}
             name = " ".join(str(target.get("name") or "").split())
@@ -2145,14 +2224,17 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         if held:
             return held
         if clean:
-            return ""  # the declared record is the check this listing stood in for: one click saves
+            # The declared record is the check this listing stood in for: one click saves - a replay's only once the
+            # person has said which saves need their OK (_unconfirmed_replay_save).
+            return _unconfirmed_replay_save(element) if listing == "ask" else ""
     if listing == "ask":
         # A replay of the person's own steps whose every value is today's request's or the person's demonstration:
-        # saving it is the taught task, not a new decision. Asking at every save (review 2026-11-02, second round) made
-        # every taught skill wait on a person at each record - and taught them to say yes without reading
-        # (review 2026-11-03). What commits the person to more than a record in their own system (pay, send, file,
-        # sign, an irrevocable submit) is still the approval gate's to ask, at the press itself.
-        return ""
+        # saving it is the taught task, not a new decision - once the person has said which presses need their OK
+        # (the lesson's approvals). Asking at every save (review 2026-11-02, second round) made every taught skill wait
+        # on a person at each record - and taught them to say yes without reading (review 2026-11-03). What commits the
+        # person to more than a record in their own system (pay, send, file, sign, an irrevocable submit) is still the
+        # approval gate's to ask, at the press itself.
+        return _unconfirmed_replay_save(element)
     if len(found["fields"]) < cdp.FORM_CHECK_MIN_FIELDS or not listing:
         return ""  # a small form (a search, a sign-in) is sent at once
     key = hashlib.sha256(json.dumps([element.get("path") or element.get("name"), found], sort_keys=True).encode()).hexdigest()
@@ -2283,7 +2365,8 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
                 and approval.press_effect(element) != "asks":
             return ""
         committing(element)
-        return _form_check(element, checked=checked, found=form or _page_fields(before, element), listing=listing)
+        said = _form_check(element, checked=checked, found=form or _page_fields(before, element), listing=listing)
+        return said or _authorises(form, element)
     typed_enter = kind == "type" and bool(text) and "\n" in text and element is not None
     if kind != "key" and not typed_enter:
         return ""
@@ -2320,9 +2403,10 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
                         cut=[c for c in form.get("cut") or [] if c != label] + ([label] if part else []))
         submit = {"name": form.get("submit") or "Submit", "ref": "", "path": field.get("path") or ""}
         committing(submit)
-        return _form_check(submit, found=form, listing=listing, confirm=(
+        said = _form_check(submit, found=form, listing=listing, confirm=(
             "Enter would send it, and an Enter is not how a full form is sent: press the form's own submit control "
             "(gui click REF), which lists the form once more and is confirmed with --checked."))
+        return said or _authorises(form, submit)
     if save and before.get("page_url") and not _relayed_page(before):
         # (Ctrl+S on a web page saves its record: the checks that stop a wrong record stand; the listing of a full
         # form is the Save control's, since a page saved only by its keys has no control to confirm it on.)

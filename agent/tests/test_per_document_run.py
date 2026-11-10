@@ -29,6 +29,10 @@ def folded():
     learning.answer(skill, learning.next_question(skill), "x")
     learning.answer(skill, learning.next_question(skill), "yes")
     learning.answer(skill, learning.next_question(skill), "each")
+    # The fresh form's address, typed alike before every bill, is asked "same for every line?" (learning._variable).
+    asked = learning.next_question(skill)
+    assert asked["kind"] == "variable" and "voucher/new" in asked["text"], asked
+    learning.answer(skill, asked, "same")
     skill["status"] = skills.READY
     return skill
 
@@ -227,6 +231,7 @@ class APerDocumentRun(unittest.TestCase):
         run["gathered"], run["start"] = "done", block
         self.assertEqual({p["name"] for p in skill_task._needed(run)}, {number, party})
         run["values"].update({number: "1188; 1189", party: "Coastal; Hebri"})
+        skill_task._same_addresses(run)  # (as the gathered run does: the fresh form's address, once per item)
         # The address repeat has no items, so it is written out zero times and the numbers move: the replay still
         # begins at the block's first step.
         with mock.patch.object(skill_task, "_execute", self.real_execute), \

@@ -1031,3 +1031,7 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): An element read (`gui read e700`) was a document to cover, and an unchanged review point went back round after round
 - [part-6.md](gotchas/part-6.md): The OTP every run asks for made every run "helped" (helped, asked_person), so the skill could never be trusted
 - [part-6.md](gotchas/part-6.md): A lesson that named the OTP was taught with holes ("OTP: ask me" took "ask"; a question naming a secret withheld every marked word of a reply; possessives, hyphenated words, ratios) - a reply is secret only by structure
+- [part-6.md](gotchas/part-6.md): A replayed "Save to portal" and the OTP "Verify" were pressed with no yes
+- [part-6.md](gotchas/part-6.md): Which steps need the person's OK, said in their own words, was kept as text and the recorder's guess was saved - the lesson asks it now, the model reads intent, code maps names to steps by label
+- [part-6.md](gotchas/part-6.md): A line's quantity, 1 on both lines of the one bill shown, became a constant nobody was asked about - a value alike on every line is asked "same for every line, or read from each line?" and stays per line until the person says same
+- [part-6.md](gotchas/part-6.md): "Step 20 and step 29 were glitches - skip them" became a rule, and the replay still clicked both - steps named to leave out are mapped by number or label, put back in one line, and taken out on a yes

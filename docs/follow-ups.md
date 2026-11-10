@@ -294,6 +294,39 @@ The curves run on one frozen build; these were seen on it or on the pilot build 
   teaching. They do not read the control plane's approvals log, which only humans can read (/api/access/approvals). A
   desktop-readable view of it would be a control-plane change. Coordinator's ruling 2026-11-10: not now.
 
+- **A desktop too busy to answer reads as a desktop that is gone.** Under load 35-79 on 6 CPUs (2026-11-10, freeze-2
+  teaching), the control plane's POST to the desktop's gate (:8083/secrets) hit "context deadline exceeded";
+  sendRequest then reported "find desktop s2gstr: desktop not found" and /learn answered 404 "that desktop no longer
+  exists", three times, while the desktop was running. A timeout reaching a desktop that exists should say so (503,
+  "busy, try again"), never that the desktop is gone.
+
+- **FIXED (2026-11-10, uncommitted; gotchas part-6 "Which steps need the person's OK, said in their own words ...",
+  docs/skills.md `gates`, `agent/tests/test_lesson_gates_own_words.py`).** The lesson now asks which steps need the
+  person's OK (`gates`), reads their words for intent (code for plain numbers, the model for the rest, names copied
+  only), maps names onto steps in code by recorded label, puts the mapping back in one line until a yes, and keeps the
+  confirmed answer as `skill["approvals"]` for the gate. Correction to the entry below: the task's chat shows the
+  person said it in their explanation at the first question and it was taken silently - no "I did not catch that" and
+  no approval question about steps existed. Live check owed: relearn s2gstr's demonstration on the next build with a
+  real model and see the line put back as 42, 59, 63 / not 55.
+- **The lesson's approval question cannot take a person's own words, so the taught gates were wrong.** Freeze-2
+  teaching of office-gstr1-books case 1 (s2gstr, 2026-11-10): the person's answer named Save to portal, File with EVC
+  and Verify as needing their OK and said not to stop before Proceed to file. The reader answered "I did not catch
+  that" to the free-text reply, and the stored skill gates Proceed to file and File with EVC, not Save to portal, with
+  Verify marked consequential:false. A taught run would press two committing controls with no yes unless the model
+  asked. Workaround used: relearn, answering with bare step numbers. Fix: the approval question reads the person's
+  words for which controls need their OK (and which do not), and maps them onto the steps by control name; anything it
+  cannot map is asked again, never dropped. Same family as the reader refusing an answer that gave its reason (above).
+- **Control names inside a secret form are withheld in a step's locator path.** The same lesson stored steps 60-63
+  (the OTP textbox and the Verify button) with `textbox "[withheld]"` / `button "[withheld]"` in target.path, while
+  their own name and summary are intact. A locator that matches on the path would miss Verify. A control's name is
+  structure, never the secret typed into it.
+
+- **A skill's approvals answer lives in a file the worker can write (freeze 2.1).** core.skill_approvals reads
+  skill["approvals"] from the skill file; a run could relax its own holds by editing it. Coordinator's ruling
+  2026-11-10: relaxations count only from a control-plane-confirmed person answer bound to that skill and ask list;
+  additions may come from the file. Honest runs behave the same, so the curves on 2.1 do not wait. With the gate
+  agent, as a follow-up commit.
+
 ## Live checks after the next build
 
 The writers could not run these. Run them on the next build, before calling this review done.

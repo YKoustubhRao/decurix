@@ -27,6 +27,7 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -104,7 +105,13 @@ def run(steps):
                 me.wait(0.5)
                 me.key("Return")
                 me.wait(3)
-                tab = re.search(r'== Chromium tab "[^"]*" (\S+) ==', look()[3])
+                # A slow host draws the tab late: look again for up to half a minute before typing the address again
+                # (found live: three retypes in nine seconds while the page was still loading, and the demo gave up).
+                for _ in range(10):
+                    tab = re.search(r'== Chromium tab "[^"]*" (\S+) ==', look()[3])
+                    if tab:
+                        break
+                    time.sleep(3)
                 if tab and tab.group(1).split("://", 1)[-1].startswith(host):
                     break
                 print(f"the address went to {tab.group(1) if tab else 'no tab'}; typing it again", flush=True)
@@ -393,10 +400,30 @@ def main(argv):
         if (ticket(args.cp, args.desktop).get("ticket") or {}).get("title"):
             break
         time.sleep(1)
-    call(args.cp, "/api/desktops/ticket/action", id=args.desktop, action="begin")
+    # The ticket shows before its task has been handed to the desktop; begin is refused (409, busy) until then
+    for attempt in range(30):
+        try:
+            call(args.cp, "/api/desktops/ticket/action", id=args.desktop, action="begin")
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 409 or attempt == 29:
+                raise
+            time.sleep(2)
     for note, steps in segments:
         # The Reason a person types pauses the recording while it is written; it carries on after (as the toolbar does).
-        call(args.cp, "/api/desktops/ticket/action", id=args.desktop, action="note", text=note)
+        try:
+            call(args.cp, "/api/desktops/ticket/action", id=args.desktop, action="note", text=note)
+        except (urllib.error.HTTPError, TimeoutError, OSError) as e:
+            # A loaded desktop can take longer than the control plane waits (504) while still writing the note:
+            # go on once the ticket shows it paused for it
+            if isinstance(e, urllib.error.HTTPError) and e.code != 504:
+                raise
+            for _ in range(60):
+                if (ticket(args.cp, args.desktop).get("ticket") or {}).get("paused"):
+                    break
+                time.sleep(3)
+            else:
+                raise
         call(args.cp, "/api/desktops/ticket/action", id=args.desktop, action="resume")
         in_desktop(args.desktop, steps)
     ended = call(args.cp, "/api/desktops/ticket/action", id=args.desktop, action="end")

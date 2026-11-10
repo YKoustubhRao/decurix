@@ -710,3 +710,67 @@ Kept on purpose: "password: tiger then sign in" (a plain lowercase password foll
 instruction - the protection for an unlabelled secret is the person's "secret" mark or the question's, not the text.
 A desktop that already remembered "ask" keeps the hash in `~/.decurix/withheld-secrets` (rolling, 200) until it is
 recreated; lessons taught with holes must be taught again.
+
+### A replayed "Save to portal" and the OTP "Verify" were pressed with no yes
+
+Asked whether the gate holds a replayed commit whatever the skill says (2026-11-10), a test on the real path
+(`core.act(check_form="replay")`, only the screen and the page mocked) found it did not, by click or by Return. The
+skill's `consequential: false` was not the cause; the gate's own judgement was. A "Save" is a commit by its words but
+never a person's question, "Verify" is not a commit word at all, and a replay's sourced save asked nobody. Now:
+- a code the person gave in the task (an OTP, a PIN) authorises the act its form does, and is asked every time;
+- the lesson's confirmed approvals hold their controls in every run, whatever the steps' flags say;
+- until a skill has a confirmed approvals answer, every replayed save of a filled form is asked.
+
+The first version of that test gave every element the same ref, so its "click" pressed a text field. A gate test
+must resolve to the control it means: check what `act` pressed, not only that it was stopped.
+
+### Which steps need the person's OK, said in their own words, was kept as text and the recorder's guess was saved
+
+Found live (2026-11-10, a lesson on a return filed from its books, desktop s2gstr, task tdf028b815bd16d50). There
+was no question about which presses need the person's OK: the lesson had only "check with you before I start?". The
+person said it anyway, in their explanation at the first question: "Don't stop at the summary page or before Proceed
+to file" and "Ask me for approval only before Save to portal, before File with EVC and before Verify. Everything else
+needs no approval." It went into `explanation` only. The skill was saved with the recorder's own gates - 55 (Proceed
+to file / summary) and 59 (File with EVC) - and not 42 (Save to portal) or 63 (Verify); the last question even said
+"I will always stop and ask you before: 55 ...; 59 ...", and the person said yes to the name, not to that list. (The
+follow-up first said the reader answered "I did not catch that"; the task's chat shows no such reply - the words were
+taken silently as the explanation.)
+
+Now the lesson asks it (`gates`, learning.py), and reads any earlier answer that names a step for it (`take_gates`).
+Two decisions, kept apart: what the person *means* (ask / do not ask) is read from their words - plain choices and
+numbers in code, anything else by the model, which only copies names the reply itself says; *which steps* those are
+is decided in code from each step's recorded label (whole, a part split at `/`, `:` or ` - `, its first two words or
+more, or the label said inside a longer phrase; a press before a field of the same name). The mapping goes back in one
+line and only a yes keeps it; a name no step has is asked about alone. Mapping by the model would have been a guess
+that no one sees; mapping by a list of words would fit one app.
+
+A confirmed answer is also kept whole as `skill["approvals"]`, the gate's own record of what the person asked for
+(`core.skill_approvals`): a later edit of a step's flag removes nothing. Nothing the lesson stores lowers the gate.
+Tests: `agent/tests/test_lesson_gates_own_words.py` (the live question, reply and steps word for word in
+`fixtures/lesson-gates-live.json`).
+
+### A line's quantity, 1 on both lines of the one bill shown, became a constant nobody was asked about
+
+Found live (2026-11-10, a supplier's bill taught as `enter-vendor-bill` on desktop erpcurve, task t0b29145db886cdfa).
+The bill had two lines, both of quantity 1. When the loop was answered `each`, `_apply_loop` saw the quantity typed
+the same in every repetition and kept it as "procedure, not data" (`varies: false`, default 1), silently. The
+"which of these change?" question had been asked before the loop, so it listed only the six values outside the
+lines, and the person could not say the quantity changes: every later bill would have been typed with 1 on each line.
+
+One demonstration cannot tell a value alike by chance from a value alike by rule. Now a value alike in every
+repetition stays a list with `varies` undecided; the values question waits for the loop answer and lists it as "same
+for every line, or read from each line?"; unanswered it is read from each line, and only the person's own `same` (its
+number, or `all same`) makes it a constant - not being one of "the others" of "1 and 2 change". Whatever is decided
+from one sample is a question, not a fact. Tests: `agent/tests/test_lesson_line_values_and_left_out.py`.
+
+### "Step 20 and step 29 were glitches - skip them" became a rule, and the replay still clicked both
+
+Same lesson. Asked whether a re-entry was a glitch, the person said "Step 20 (clicking 'Add multiple') and step 29
+(the drag) were glitches from the same lag - skip them". The study folded it into a rule ("do not click the 'Add
+multiple' button"); nothing touched the steps, so the saved program still clicked Add multiple and dragged at 491,365,
+and a rule the run reads cannot stop a replay that does not read it. Now the same reading that finds which steps need
+an OK (`take_gates`) lists the steps an answer says to leave out - plain "skip 20 and 29" in code, other words by the
+model, which copies names; code maps them to steps by number or recorded label (`_steps_named`). They are put back in
+one line ("I will leave out step 20 Add multiple and 29 drag 491,365 to 680,316 - right?") and a yes takes them out
+of the steps and of the loop's gaps; a name no step has ("the drag": a drag has no label) is asked about alone. The
+words stay as a note. A person's instruction about a step belongs on the step, not only in prose beside it.

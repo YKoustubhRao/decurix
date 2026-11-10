@@ -74,7 +74,7 @@ class GroupedValuesQuestion(unittest.TestCase):
 
         # Kept per step, so a lesson resumed later asks only about the rest.
         self.assertEqual(sum(1 for k in self.skill["answers"] if k.startswith("variable:")), 3)
-        self.assertEqual(learning.next_question(self.skill)["kind"], "approval")
+        self.assertEqual(learning.next_question(self.skill)["kind"], "gates")  # (which steps need an OK, then start)
 
     def test_named_ones_change_and_the_rest_stay(self):
         question = learning.next_question(self.skill)

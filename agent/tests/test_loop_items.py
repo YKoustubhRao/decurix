@@ -87,11 +87,17 @@ class ARepeatedBlockWithStepsBetween(unittest.TestCase):
         self.assertEqual([s["kind"] for s in skill["steps"]], ["click", "type", "key", "click", "type", "click", "type", "click"])
         self.assertEqual([s["n"] for s in skill["steps"] if s.get("repeat")], [2, 3, 4, 5, 6, 7, 8])
         params = {p["name"]: p for p in skill["params"]}
-        lists = {name: p["examples"] for name, p in params.items() if p.get("list")}
+        lists = {name: p["examples"] for name, p in params.items() if p.get("list") and p["varies"]}
         self.assertEqual(sorted(lists.values()), [["412", "413", "414"], ["Bhadra", "Tunga", "Malnad"]])
-        # The fresh form's address was the same every time: part of the procedure, not asked for.
+        # The fresh form's address was the same every time: asked whether it is the same for every item (a value alike
+        # on every line of one demonstration may be that document's data), and kept as typed on the person's `same`.
+        asked = learning.next_question(skill)
+        self.assertEqual(asked["kind"], "variable")
+        self.assertIn('on every line you typed "http://books.test/voucher/new"', asked["text"])
+        learning.answer(skill, asked, "same")
         fixed = [p for p in params.values() if not p["varies"]]
         self.assertEqual([p["default"] for p in fixed], ["http://books.test/voucher/new"])
+        self.assertFalse(fixed[0].get("list"))
         # What came between is gone from the steps and kept in words.
         self.assertEqual(loop["between"], [])
         self.assertEqual(len(loop["between_summaries"]), 2)
@@ -131,6 +137,7 @@ class ARepeatedBlockWithStepsBetween(unittest.TestCase):
         learning.answer(skill, learning.next_question(skill), "x")
         learning.answer(skill, learning.next_question(skill), "yes")
         learning.answer(skill, learning.next_question(skill), "each")
+        learning.answer(skill, learning.next_question(skill), "same")  # the fresh form's address, alike on every item
         number = next(p["name"] for p in skill["params"] if p.get("list") and p["examples"][0] == "412")
         party = next(p["name"] for p in skill["params"] if p.get("list") and p["examples"][0] == "Bhadra")
 

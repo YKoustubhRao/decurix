@@ -195,7 +195,8 @@ def learn(case, session):
             break
         answers = {"goal": "the generated native document is saved with the requested values", "start": "no",
                    "variable": "changes", "variables": "all change", "confirm": "yes", "optional": "always",
-                   "coordinates": "keep", "unsupported": "manual", "loop": "fixed", "approval": "go ahead"}
+                   "coordinates": "keep", "unsupported": "manual", "loop": "fixed", "approval": "go ahead",
+                   "gates": "yes"}
         learning.answer(skill, question, answers[question["kind"]])
     skill["name"] = "native-" + case["id"] + "-" + session.rsplit("-", 1)[-1]
     skills.save(skill)

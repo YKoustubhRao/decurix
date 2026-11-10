@@ -879,6 +879,32 @@ Risks, which keep the word rules as a floor until a live round proves the interc
 - **The interceptor itself,** which is new code on the boundary's path and needs its own attack rows in
   `bench/security/boundary.sh`.
 
+## A replayed commit waits for a yes (2026-11-10, owner decision via main)
+
+**Found:** a taught replay pressed "Save to portal" (a filled form's save to an outside site) and the OTP "Verify"
+(the filing) with no person's yes, by click and by Return on the focused button. The skill's flags were not the
+cause: the replay presses through `core.act(check_form="replay")`, which never reads them. The cause was the gate's
+own judgement:
+- "Save" is a commit by its words, so it gets the pre-save checks but is never put to the person. "Verify" is not a
+  commit word at all.
+- `_form_check` let a replay's save of sourced values through: "the taught task, not a new decision" (2026-11-03).
+- A replay has no plan of the work, so the plan's holds were absent too.
+
+**Now** (`core._form_check`, `core._commit_check`, `core._person_hold`; `agent/tests/test_replayed_commit_held.py`):
+- **A code the person gave authorises an act.** A submit whose form holds a value the person gave in this task as a
+  secret (`privacy.literals`), or a filled secret field, is asked every time, replay or not (`core._authorises`). A
+  form shaped as a sign-in is not.
+- **The person says which presses need them.** The lesson asks, and the confirmed answer is kept on the skill
+  (`skill["approvals"]`: `confirmed`, `ask: [{step, role, name}]`, the person's words). Every control in `ask` is held
+  in every run of any route, matched by its label. It does not depend on a step's `consequential` flag, so an edit
+  that sets that flag to false removes nothing (`core.skill_approvals`, `_taught_approvals`).
+- **The safe default until they have said.** A skill whose lesson has no confirmed approvals answer has every
+  replayed save of a filled form put to the person (`core._unconfirmed_replay_save`). The 2026-11-03 rule (a sourced
+  save asks nobody) stands only for a skill whose person confirmed their approvals.
+
+**Still owed:** a skill file is the worker's own to write. Holding the confirmed answer where only the control plane
+writes it (the person's judgement) would make it one a worker cannot edit.
+
 ## What this does not cover (said plainly)
 
 - **Direct input.** The gate decides whether a *yes* exists. It does not stand between the worker and the screen: a

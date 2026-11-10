@@ -217,6 +217,9 @@ def teach(session):
         # The last question also says when the task is finished, so it is matched first.
         if "That is everything I wanted to ask" in text or "What should I call it" in text:
             answer = "yes"
+        elif "Which steps need your OK each time" in text or text.startswith("I will ask before step"):
+            # Which steps stop for an OK (learning._gates): the steps as learned are right.
+            answer = "yes"
         elif "Which of them change" in text:
             # Everything but the warehouse changes with each PO; find its number in the question.
             number = next((m.group(1) for m in re.finditer(r"(\d+)\) [^;]*?into textbox \"(\w+)\"", text)

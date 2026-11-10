@@ -1,11 +1,13 @@
 import copy
 import difflib
+import json
 import math
 import re
 import time
 
 from decurix_agent.computer import elements as el
 from decurix_agent.computer import constraints, launchers, replay, skills
+from decurix_agent.logging_utils import log
 
 
 # ============================================================
@@ -45,10 +47,11 @@ from decurix_agent.computer import constraints, launchers, replay, skills
 #     skips) and the person is told. It is never guessed the other way.
 #   - Nothing is saved as ready until a person says yes to the whole skill.
 #
-# Approval is not a question here: a step that was gated when recorded
-# ("consequential") always stops for approval when the skill runs, whatever
-# anyone answers, because the gate is computer/approval.py's and not the
-# skill's to switch off.
+# Which steps stop for the person's OK is asked (the `gates` question, in
+# their own words): their confirmed answer marks those steps and is kept as
+# skill["approvals"]. It only ever asks the gate for more - the gate is
+# computer/approval.py's and core.py's, and judges every press of every run
+# whatever the answer, because it is not the skill's to switch off.
 # ============================================================
 
 MAX_UNCLEAR = 2
@@ -1405,6 +1408,17 @@ def questions(skill):
 
     found = [_goal(skill)]
 
+    # Steps the person said to leave out (take_gates reads it from any answer that names steps): put back right after
+    # that answer, while it is fresh, and taken out of the steps only on their yes.
+    if skill.get("skips_pending") is not None:
+        found.append(_skips(skill))
+
+    # Which steps stop for the person's OK. Said in their own words in an answer (take_gates), it is put back to them
+    # right after that answer, while it is fresh; otherwise it is asked near the end, once the steps are settled.
+    gates_said = skill.get("gates_pending") is not None
+    if gates_said:
+        found.append(_gates(skill))
+
     # What the model that studied the demonstration could not work out
     # (study.py), one at a time, before the rule-based questions: its answers
     # can settle those too (which values change, what a step is for).
@@ -1439,9 +1453,13 @@ def questions(skill):
     # (a PO into an application, a new joiner into an HRMS) types ten fields, and ten
     # questions in a row, each answered "changes", is what made teaching one
     # tedious. Answers are still kept per step (`variable:<id>`).
-    undecided_values = [step for step in skill["steps"]
-                        if step["id"] not in in_loop and params.get(step.get("param"))
-                        and params[step["param"]]["varies"] is None]
+    # While a loop is undecided the values wait for it: once it is answered, a value typed alike on every line is
+    # asked about in the same question as the rest ("same for every line, or read from each line?"). Found live
+    # (2026-11-10): asked before the loop, the question listed only the values outside it, and the line's quantity -
+    # 1 on both lines of the one bill shown - was never put to the person.
+    undecided_values = [] if undecided else [step for step in skill["steps"]
+                                             if step["id"] not in in_loop and params.get(step.get("param"))
+                                             and params[step["param"]]["varies"] is None]
     first_value = undecided_values[0]["id"] if len(undecided_values) > 1 else None
 
     for step in skill["steps"]:
@@ -1453,7 +1471,7 @@ def questions(skill):
         param = params.get(step.get("param"))
         if step["id"] == first_value:
             found.append(_variables(skill, undecided_values, params))
-        elif param and param["varies"] is None and first_value is None:
+        elif param and param["varies"] is None and first_value is None and not undecided:
             found.append(_variable(skill, step, param))
 
         if step.get("seen", skill["demos"]) < skill["demos"]:
@@ -1464,6 +1482,8 @@ def questions(skill):
         elif step["id"] == first_positional:
             found.append(_coordinates(positional, skill))
 
+    if not gates_said:
+        found.append(_gates(skill))
     found.append(_approval())
     found.append(_confirm(skill))
     return found
@@ -1565,12 +1585,25 @@ def _variable(skill, step, param):
     target = step.get("target") or {}
     where = f"{target['role']} {el._quote(target.get('name') or '', 50)}" if target.get("role") else "the focused field"
     meaning = ((skill.get("understanding") or {}).get("inputs") or {}).get(param["name"])
+    if _per_line(step, param):
+        meaning = f" ({el._quote(meaning, 120)})" if meaning else ""
+        text = (f"Step {step['n']}: on every line you {did} {el._quote(param['example'] or '', 60)} {into} {where}"
+                f"{meaning}. Is that the same for every line, or read from each line? Reply `same` or `changes` "
+                "(read from each line).")
+        return _question(f"variable:{step['id']}", "variable", text, step["id"])
     if meaning:
         same += f" ({el._quote(meaning, 120)})"
     text = (f"Step {step['n']}: you {did} {el._quote(param['example'] or '', 60)} {into} {where}{same}. Is that the "
             "same every time, or does it change from run to run (a different customer, amount, ...)? "
             "Reply `same` or `changes`.")
     return _question(f"variable:{step['id']}", "variable", text, step["id"])
+
+
+def _per_line(step, param):
+    """Whether a value is one a loop's every item types (a line's quantity): a list, until the person says it is the
+    same for every line."""
+
+    return bool(param.get("list") and step.get("repeat"))
 
 
 def _variables(skill, steps, params):
@@ -1594,6 +1627,8 @@ def _variables(skill, steps, params):
             said = f"{el._quote(param['example'] or '', 50)} chosen in {where(step)}"
         else:
             said = f"{el._quote(param['example'] or '', 50)} into {where(step)}"
+        if _per_line(step, param):
+            said += " on every line - same for every line, or read from each line?"
         meaning = (understanding.get("inputs") or {}).get(step["param"])
         return f"{said} ({el._quote(meaning, 120)})" if meaning else said
 
@@ -1603,13 +1638,18 @@ def _variables(skill, steps, params):
         changing = [str(i) for i, s in enumerate(steps, 1) if guess[s["param"]]]
         listed += (". I think " + (" and ".join(changing) + (" change" if len(changing) > 1 else " changes")
                                    if changing else "none of them change"))
+    per_line = [i for i, s in enumerate(steps, 1) if _per_line(s, params[s["param"]])]
     text = (f"You gave {len(steps)} values: {listed}. Which of them change from run to run (a different "
             "customer, amount, date, document number...)? Reply `all change` or `all same`, or name them - for "
             f"example `all change except {len(steps)}`, or `1 and 2 change` (the others then stay as you typed them).")
+    if per_line:
+        text += (" For a value on every line, `change` means I read it from each line; it stays that way unless you "
+                 "name it as the same.")
 
     question = _question("variables:" + "+".join(s["id"] for s in steps), "variables", text)
     question["default"] = CAUTIOUS["variable"]
-    question["values"] = [{"id": s["id"], "param": s["param"]} for s in steps]
+    question["values"] = [{"id": s["id"], "param": s["param"], **({"per_line": True} if i in per_line else {})}
+                          for i, s in enumerate(steps, 1)]
     return question
 
 
@@ -1679,7 +1719,11 @@ def _variable_choices(question, text):
         return None
 
     rest = OPPOSITE[head_choice] if head_numbers else head_choice
-    return {item["id"]: named.get(i, rest) for i, item in enumerate(question["values"], 1)}
+    # A value on every line becomes the same for every line only when the person says so of it - by its number, or
+    # with "all same" - never as "the others" of a reply that named other values.
+    implied = "changes" if head_numbers else rest
+    return {item["id"]: named.get(i, implied if item.get("per_line") else rest)
+            for i, item in enumerate(question["values"], 1)}
 
 
 def _answer_values(skill, question, text):
@@ -1961,6 +2005,20 @@ PLAIN = {
                  "go": {"go", "go ahead", "don't ask", "don't ask me", "do not ask", "do not ask me", "never ask",
                         "no need", "no need to ask", "just do", "proceed", "automatically", "on your own",
                         "by yourself", "without asking"}},
+    # One clause of a reply about which numbered steps stop for the person's OK ("ask 42 and 59, not 55", "also step
+    # 30"); a reply in any other words is the model's to read (_read_gates).
+    "gates": {"ask": {"ask", "ask me", "ask before", "ask me before", "ask first", "also", "also ask", "ask also",
+                      "add", "also before", "stop", "stop before", "stop at", "approve", "approval", "ok first"},
+              "go": {"not", "no", "not before", "not at", "don't", "do not", "don't ask", "do not ask", "don't stop",
+                     "do not stop", "don't stop before", "do not stop before", "don't ask before",
+                     "do not ask before", "no need", "no need to ask", "no need before", "never ask", "without asking",
+                     "remove", "drop", "no approval"}},
+    # The reply, or one clause of it with step numbers ("skip 20 and 29", "keep 29"), to the steps put back to leave out
+    # (_skips); in any other words it is read once (_read_choice), or asked again.
+    "skips": {"skip": {"skip", "also", "also skip", "skip also", "skip too", "leave out", "also leave out",
+                       "leave out too"},
+              "keep": {"keep", "no", "not", "don't skip", "do not skip", "don't leave out", "do not leave out",
+                       "keep every", "leave in"}},
     "confirm": {"yes": set(), "no": set()},  # whole-reply patterns of their own (KEEP_NAME, THROW_AWAY)
 }
 _STEP_NUMBERS = re.compile(r"#?\b\d+(?:\s*(?:-|to)\s*\d+)?(?:st|nd|rd|th)?\b", re.I)
@@ -2003,6 +2061,7 @@ READ_KINDS = {
                     "manual": "the person does this step by hand"},
     "unsupported": {"skip": "leave the step out", "manual": "the person does this step by hand"},
     "loop": {"each": "the steps are done once for each item of a list", "fixed": "the steps are done as recorded"},
+    "skips": {"skip": "yes - leave out the steps listed", "keep": "no - keep those steps, leave none out"},
 }
 
 
@@ -2058,6 +2117,10 @@ def _answer_confirm(skill, question, text):
     """
 
     choice = _choose("confirm", text)
+    if choice is None and take_gates(skill, question.get("text") or "", text):
+        # A correction of which steps stop for their OK ("also ask before Save to portal") is not a name: it is put
+        # back to them in one line (the gates question, asked next), and this question comes again after it.
+        return {"understood": True, "note": "", "decision": None}
     if choice is None:
         from decurix_agent import llm_client
         from decurix_agent.computer import approval
@@ -2125,13 +2188,22 @@ def answer(skill, question, reply):
             # to keep as their explanation.
             skill["answers"]["goal"] = text[:300]
             return {"understood": True, "note": "", "decision": None}
-        return _answer_goal(skill, text)
+        result = _answer_goal(skill, text)
+        take_gates(skill, question.get("text") or "", text)  # (said in the explanation: confirmed next, _gates)
+        return result
 
     if kind == "study":
         # Whatever the person says is the answer, "skip" included; skill_task
         # hands it to the model to fold in (study.absorb).
         skill["answers"][qid] = text[:1000] or "skip"
+        take_gates(skill, question.get("text") or "", text)
         return {"understood": True, "note": "", "decision": None}
+
+    if kind == "gates":
+        return _answer_gates(skill, question, text)
+
+    if kind == "skips":
+        return _answer_skips(skill, question, text)
 
     if question.get("steps"):
         return _answer_positional(skill, question, text)
@@ -2156,6 +2228,13 @@ def answer(skill, question, reply):
     else:
         choice = _choose(kind, text)
     note = ""
+
+    # Asked whether to check before starting, a person often says which steps need their OK instead, or as well ("go
+    # ahead, but ask me before Save to portal"): that is put back to them as its own question (_gates), and a reply
+    # that named steps is never "not caught".
+    if kind == "approval" and _choose(kind, text) is None and take_gates(skill, question.get("text") or "", text) \
+            and choice is None:
+        return {"understood": True, "note": "", "decision": None}
 
     if choice is None:
         tries = skill["unclear"][qid] = skill["unclear"].get(qid, 0) + 1
@@ -2329,11 +2408,14 @@ def _apply_loop(skill, loop, choice):
             # of two lines, the second line's product and quantity typed before its price, kept those two as "typed
             # the same every time" from that one sample, so every line of every later run would get them.
             if len(examples) > 1 and len(set(examples)) == 1:
-                # Typed the same into every repetition (the income account on
-                # every line of an order): part of the procedure, not of the
-                # data - kept as typed, the way a `same` answer keeps it, so a
-                # run is not asked for one copy of it per item.
-                param.update(varies=False, default=examples[0], example=examples[0])
+                # Typed the same into every repetition (an income account on every line of an order, or a quantity of
+                # 1 on both lines of one bill): that may be procedure or may be this one document's data, and a
+                # demonstration cannot tell which. It is asked, in the values question, as "same for every line, or
+                # read from each line?" (_variables); unanswered it stays a value per item, read from each line, and
+                # only the person's `same` makes it a constant (_apply). Found live (2026-11-10): a bill of two lines,
+                # both of quantity 1, kept the quantity "typed the same every time", never asked - and every later bill
+                # would have been entered with a quantity of 1 on every line.
+                param.update(varies=None, default=None, list=True, examples=examples, example=examples[0])
             else:
                 param.update(varies=True, default=None, list=True, examples=examples, example=examples[0])
 
@@ -2466,6 +2548,676 @@ def _answer_positional(skill, question, text):
     return {"understood": True, "note": note, "decision": None}
 
 
+# ============================================================
+# Which steps stop for the person's OK
+#
+# A person teaching a task says in their own words which presses need their OK and which do not: in their explanation
+# of the task, in an answer to a study question, at the start question or as a correction at the end ("ask me before
+# Save to portal, File with EVC and Verify; don't stop before Proceed to file"). Found live (2026-11-10, a return filed
+# from its books): said in the explanation, those words were kept as text only, and the skill saved the recorder's
+# guess - it stopped before "Proceed to file", which the person said not to, and not before "Save to portal" or
+# "Verify".
+#
+# What the person means (which controls to ask about, which not) is read from their words: a reply of plain choices and
+# step numbers in code (_gate_clauses), any other by the model, which copies the names as the person wrote them
+# (_model_gates). Which steps those names are is decided here, in code, by each step's own control label as recorded
+# (_steps_named) - never by the model, never by a list of words. The mapping is put back in one line and only a yes
+# keeps it; a name no step has is asked about on its own, never dropped unsaid.
+#
+# Nothing here lowers the gate: a step's flag is the lesson's request to ask, and the approval gate still judges every
+# press of every run (approval.py).
+#
+# The same reading lists the steps the reply says to leave out ("step 20 and step 29 were glitches - skip them"): mapped
+# onto steps the same way, put back in one line, and taken out of the steps on a yes (_skips). Found live (2026-11-10, a
+# supplier's bill): told that, the lesson made a rule "do not click Add multiple" and kept both steps, so every replay
+# still clicked them.
+# ============================================================
+
+GATES_SYSTEM = """A person is teaching a computer task to a worker that will later do it on its own. You are given what the worker asked or said, and the person's reply. List the controls (buttons, links, steps) the reply says the worker must stop and ask the person about before pressing, the ones it says need no asking or must not be stopped before, and the steps it says to leave out of the task.
+
+- Copy each name exactly as the person wrote it: their words, not a paraphrase and not a name you know from elsewhere. A step number the person gave is listed as the number ("30"); a step named by its number and its control together ("step 20 (clicking 'Add')") is listed once, as the number.
+- ask and no_ask: only what the reply says about asking, approval, an OK, or stopping before a control. A control the reply names for any other reason is not in them.
+- A step the worker's own list offered that the reply takes back ("not 63", "don't ask before Verify") goes in no_ask; one the reply adds ("also step 30") goes in ask.
+- leave_out: only steps the reply says not to do at all on later runs - a mistake, a glitch, a step to skip or drop. A step the reply says to do differently, or to ask about, is not left out.
+- A reply that says none of this: all lists empty.
+
+Reply with JSON only: {"ask": ["..."], "no_ask": ["..."], "leave_out": ["..."]}"""
+
+GATES_TOKENS = 4000
+
+# Where one part of a control's label ends and the next begins ("Proceed to file / summary").
+_LABEL_PARTS = re.compile(r"\s*[/|:;()\[\]]\s*|\s+[-–—]\s+")
+_ARTICLES = {"the", "a", "an"}
+
+
+def _words_of(text):
+    return re.findall(r"[a-z0-9]+", str(text or "").lower())
+
+
+def _phrase_in(part, words):
+    n = len(part)
+    return n > 0 and any(words[i:i + n] == part for i in range(len(words) - n + 1))
+
+
+def _label_of(step):
+    """A step's control label as it was recorded (its target's name), or ''."""
+
+    return " ".join(str((step.get("target") or {}).get("name") or "").split())
+
+
+def _name_words(name):
+    """A control as a person named it, as words: an article and the kind of control ("the X button") aside."""
+
+    roles = {w for role in CONTROL_ROLES for w in role.split()}
+    words = _words_of(name)
+    while words and words[0] in _ARTICLES:
+        words = words[1:]
+    while len(words) > 1 and words[-1] in roles:
+        words = words[:-1]
+    while len(words) > 1 and words[0] in roles:
+        words = words[1:]
+    return words
+
+
+def _steps_named(skill, name):
+    """
+    The steps a person's name for a control is: by its number ("30", "step 30"), else by each step's own recorded
+    label - the whole label, one part of it ("Proceed to file" of "Proceed to file / summary"), its first words (two or
+    more), or a label said inside a longer phrase ("the Save to portal button on the client page"); the closest kind of
+    match wins, and of the last kind the longest label. [] when no step has it: the person is asked, never guessed for.
+    """
+
+    steps = [s for s in skill.get("steps") or [] if s.get("kind") != "manual"]
+    number = re.fullmatch(r"\s*(?:step\s*)?#?\s*(\d+)\s*", str(name or ""), re.I)
+    if number:
+        return [s for s in steps if s.get("n") == int(number.group(1))]
+    words = _name_words(name)
+    if not words:
+        return []
+    labelled = []
+    for step in steps:
+        label = _label_of(step)
+        if label:
+            parts = [p for p in (_words_of(x) for x in _LABEL_PARTS.split(label)) if p]
+            labelled.append((step, _words_of(label), parts))
+
+    for matches in (lambda whole, parts: whole == words,
+                    lambda whole, parts: words in parts,
+                    lambda whole, parts: len(words) >= 2 and whole[:len(words)] == words):
+        hit = [step for step, whole, parts in labelled if matches(whole, parts)]
+        if hit:
+            return _presses_first(hit)
+
+    best, hit = 0, []
+    for step, whole, parts in labelled:
+        size = max((len(p) for p in [whole] + parts if _phrase_in(p, words)), default=0)
+        if size > best:
+            best, hit = size, [step]
+        elif size and size == best:
+            hit.append(step)
+    return _presses_first(hit)
+
+
+def _presses_first(steps):
+    """Of steps that share a label, the presses of a control (the Search button, not the Search field typed into):
+    what needs an OK is a press. All of them when none is one."""
+
+    from decurix_agent.computer import approval
+    pressed = [s for s in steps if s.get("kind") in ("click", "double_click", "right_click")
+               and (s.get("target") or {}).get("role") in approval.PRESS_ROLES]
+    return pressed or steps
+
+
+def _said_in(name, reply):
+    """Whether the person's reply says this name (or step number) itself - a reading never adds a control of its own."""
+
+    if re.fullmatch(r"\d+", name):
+        return bool(re.search(rf"(?<!\d){name}(?!\d)", reply))
+    return _phrase_in(_words_of(name), _words_of(reply))
+
+
+def _gates_yes(text):
+    """A reply that is, whole, a plain yes to the steps put back to the person."""
+
+    return _choose("start", text) == "yes" or _plain_words(text) in {
+        "right", "correct", "exactly", "that's right", "that's correct", "yes right", "yes correct", "yes exactly",
+        "yes that's right", "yes that's correct"}
+
+
+def _gate_clauses(text):
+    """
+    A reply that is, clause by clause, a plain choice and step numbers ("ask 42 and 59, not 55", "also step 30",
+    "yes but not 63"): {"ask": [...], "no_ask": [...]} as numbers. None when any clause is more than that - the model's
+    to read. Bare numbers carry the choice before them.
+    """
+
+    out, last = {"ask": [], "no_ask": []}, None
+    for clause in re.split(r"[;,\n]|\band\b|\bbut\b", text or ""):
+        if not clause.strip(" .!"):
+            continue
+        numbers = _step_numbers(clause) if re.search(r"\d", clause) else []
+        if numbers is None:
+            return None
+        if not numbers:
+            if _gates_yes(clause):
+                continue
+            return None
+        choice = _choose("gates", clause)
+        if choice is None:
+            if last is None or _plain_words(clause):
+                return None
+            choice = last
+        out["ask" if choice == "ask" else "no_ask"] += [str(n) for n in numbers]
+        last = choice
+    return out if out["ask"] or out["no_ask"] else None
+
+
+def _model_gates(asked, reply):
+    """The model's reading of which controls the reply says to ask about and which not, and which steps it says to
+    leave out, as the person named them; None when there is no model or no reading. A name the reply does not itself
+    say is left out (_said_in)."""
+
+    from decurix_agent import llm_client
+    try:
+        if not llm_client.available():
+            return None
+        message, _ = llm_client.chat(
+            [{"role": "system", "content": GATES_SYSTEM},
+             {"role": "user", "content": f"What the worker asked or said: {str(asked or '')[:6000]}\n\n"
+                                         f"The person's reply: {str(reply or '')[:MAX_EXPLANATION * 2]}"}],
+            max_tokens=GATES_TOKENS, response_format={"type": "json_object"}, purpose="py.lesson.gates")
+        found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
+        said = json.loads(found.group(0)) if found else None
+    except Exception as exc:  # noqa: BLE001 - no reading: the reply is asked about again, never guessed at
+        log(f"lesson: could not read which steps need the person's OK: {exc}")
+        return None
+    if not isinstance(said, dict):
+        return None
+    out = {}
+    for side in ("ask", "no_ask", "leave_out"):
+        names = []
+        for name in said.get(side) if isinstance(said.get(side), list) else []:
+            name = " ".join(str(name or "").split())[:120]
+            if name and _said_in(name, reply):
+                if name not in names:
+                    names.append(name)
+            elif name:
+                log(f"lesson: the reading gave {name!r}, which the reply does not say - left out")
+        out[side] = names
+    return out
+
+
+def _read_gates(asked, reply):
+    """{"ask": [names], "no_ask": [names], "leave_out": [names]} the reply says, or None when it cannot be read."""
+
+    gates = _gate_clauses(reply)
+    if gates:
+        return gates
+    plain = _skip_clauses(reply)  # ("skip 20 and 29"; "also 30" is the gates' own, above)
+    if plain and plain["leave_out"] and not plain["keep"]:
+        return {"ask": [], "no_ask": [], "leave_out": plain["leave_out"]}
+    return _model_gates(asked, reply)
+
+
+def _place(pending, ids, side):
+    """Put steps on one side of a proposal (off the other); True when that changed it."""
+
+    other = "no_ask" if side == "ask" else "ask"
+    changed = False
+    for step_id in ids:
+        if step_id in pending[other]:
+            pending[other].remove(step_id)
+            changed = True
+        if step_id not in pending[side]:
+            pending[side].append(step_id)
+            changed = True
+    return changed
+
+
+def _propose(skill, reading, said=""):
+    """
+    Fold a reading into the proposal put back to the person (skill["gates_pending"]): each name onto its steps, a step
+    named both ways in one reply onto the asking side, a name no step has kept to be asked about. `said` (the reply
+    read) is kept with it, as the person's words. True when the proposal changed.
+    """
+
+    pending = skill.get("gates_pending")
+    changed = pending is None
+    if pending is None:
+        pending = {"ask": [], "no_ask": [], "unmapped": [], "said": []}
+    if said:
+        pending.setdefault("said", []).append(" ".join(str(said).split())[:600])
+    found = {"ask": [], "no_ask": []}
+    for side in found:
+        for name in reading.get(side) or []:
+            steps = _steps_named(skill, name)
+            if steps:
+                found[side] += [s["id"] for s in steps if s["id"] not in found[side]]
+            elif not any(u["name"].lower() == name.lower() for u in pending["unmapped"]):
+                pending["unmapped"].append({"name": name, "ask": side == "ask"})
+                changed = True
+    found["no_ask"] = [i for i in found["no_ask"] if i not in found["ask"]]
+    if _place(pending, found["no_ask"], "no_ask"):
+        changed = True
+    if _place(pending, found["ask"], "ask"):
+        changed = True
+    skill["gates_pending"] = pending
+    skill["answers"].pop("gates", None)
+    return changed
+
+
+def _names_a_step(skill, text):
+    """Whether a reply names one of the skill's steps at all: a step number it has, or a step's recorded label (whole,
+    or a part of two words or more). Only such a reply, given to another question, is read for which steps need an OK."""
+
+    words = _words_of(text)
+    numbers = {s.get("n") for s in skill.get("steps") or []}
+    if any(int(n) in numbers for n in re.findall(r"(?<![\d.,])\d{1,4}(?![\d.,]\d)", text)):
+        return True
+    for step in skill.get("steps") or []:
+        label = _label_of(step)
+        if not label:
+            continue
+        parts = [_words_of(label)] + [p for p in (_words_of(x) for x in _LABEL_PARTS.split(label)) if len(p) >= 2]
+        if any(_phrase_in(p, words) for p in parts):
+            return True
+    return False
+
+
+def take_gates(skill, asked, reply):
+    """
+    Read a lesson reply for which steps the person says need their OK and which do not, and which steps they say to
+    leave out; when it says any, the lesson's next questions put that back to them (_skips, _gates). True when it did.
+    A plain yes, skip or no says nothing of it.
+    """
+
+    text = str(reply or "").strip()
+    if not text or NOTHING.match(text) or (YES.match(text) and len(text.split()) <= 3):
+        return False
+    if not _names_a_step(skill, text):
+        return False  # (nothing of the steps in it to read; the gates question itself asks outright, later)
+    reading = _read_gates(asked, text)
+    if not reading:
+        return False
+    took = False
+    if reading.get("leave_out"):
+        _propose_skips(skill, reading["leave_out"], said=text)
+        took = True
+    if reading.get("ask") or reading.get("no_ask"):
+        _propose(skill, reading, said=text)
+        skill.setdefault("unclear", {}).pop("gates", None)
+        took = True
+    return took
+
+
+def _gates_line(skill, pending):
+    """The one line that puts a proposal back: every step that will stop for the person's OK, and the ones named not to."""
+
+    no = set(pending.get("no_ask") or [])
+    ask = set(pending.get("ask") or [])
+    asked = [s for s in skill["steps"] if s["id"] in ask or (s.get("consequential") and s["id"] not in no)]
+    spared = [s for s in skill["steps"] if s["id"] in no]
+
+    def named(group):
+        return ", ".join(f"{s['n']} {_label_of(s) or s['summary']}" for s in group)
+
+    line = f"I will ask before step {named(asked)}" if asked else "I will not stop for your OK before any step myself"
+    if spared:
+        line += f"; not before {named(spared)}"
+    return line
+
+
+# How the question about which steps stop for the person's OK opens, when they have not said yet (tests' stand-ins for a
+# person find it by its kind, "gates").
+GATES_OPENING = "Which steps need your OK each time, before I press them?"
+
+
+def _gates(skill):
+    """
+    The question about which steps stop for the person's OK: asked outright when they have not said, put back in one
+    line when they have (take_gates), or about a name no step has.
+    """
+
+    pending = skill.get("gates_pending")
+    line = _gates_line(skill, pending or {})
+    unmapped = (pending or {}).get("unmapped") or []
+    always = "Either way I always stop and ask before a step that sends, pays or publishes."
+    if unmapped:
+        text = (f"I couldn't find a step for {el._quote(unmapped[0]['name'], 80)} - which step is it? Reply with its "
+                f"number, or `none` to leave it out. So far: {line}.")
+    elif pending is not None:
+        text = f"{line} - right? Reply `yes`, or say what to change (for example `also 30` or `not 63`). {always}"
+    else:
+        text = (f"{GATES_OPENING} As I learned it: {line}. Reply `yes` if that is right, or say in your own words which "
+                "steps need your OK and which do not - for example `ask before Save, not before Next`, or by number "
+                f"`ask 4, not 7`. {always}")
+    return _question("gates", "gates", text)
+
+
+def _gate_entries(steps):
+    return [{"step": s["n"], "id": s["id"], "role": str((s.get("target") or {}).get("role") or ""),
+             "name": _label_of(s)} for s in steps]
+
+
+def _accept_gates(skill, text, cautious=False):
+    """
+    The person's yes: the steps asked about stop for their OK every run, the ones named not to do not, and their answer
+    is kept as confirmed (skill["approvals"]: the presses that need them, by step and label, and their words) - what the
+    gate holds in every run whatever a step's flag says later (core.skill_approvals). `cautious` (the reply was never
+    made sure of) keeps only the asking side and confirms nothing.
+    """
+
+    pending = dict(skill.get("gates_pending") or {})
+    if cautious:
+        pending["no_ask"] = []
+    line = _gates_line(skill, pending)
+    ask, no = set(pending.get("ask") or []), set(pending.get("no_ask") or [])
+    for step in skill["steps"]:
+        if step["id"] in ask:
+            step["consequential"] = True
+        elif step["id"] in no:
+            step["consequential"] = False
+    skill.pop("gates_pending", None)
+    skill["unclear"].pop("gates", None)
+    if cautious:
+        skill["answers"]["gates"] = "(assumed: as learned, and every step named to ask about)"
+        return {"understood": True, "decision": None,
+                "note": f"I could not tell what you meant, so I took the cautious answer: {line}."}
+    skill["answers"]["gates"] = text[:300]
+    said = [s for s in (pending.get("said") or []) + [text] if s][-4:]
+    skill["approvals"] = {"confirmed": True,
+                          "ask": _gate_entries([s for s in skill["steps"] if s.get("consequential")]),
+                          "no_ask": _gate_entries([s for s in skill["steps"] if s["id"] in no]),
+                          "said": [" ".join(str(s).split())[:600] for s in said]}
+    return {"understood": True, "note": f"Got it: {line}.", "decision": None}
+
+
+def _refresh_approvals(skill):
+    """A confirmed approvals answer's step numbers as the steps are numbered now (a step left out later goes with it)."""
+
+    found = skill.get("approvals")
+    if not isinstance(found, dict):
+        return
+    by_id = {s["id"]: s for s in skill.get("steps") or []}
+    for side in ("ask", "no_ask"):
+        entries = []
+        for entry in found.get(side) or []:
+            step = by_id.get(entry.get("id")) if entry.get("id") else None
+            if entry.get("id") and step is None:
+                continue
+            entries.append(dict(entry, step=step["n"]) if step else entry)
+        found[side] = entries
+
+
+def _steps_in_reply(skill, text):
+    """The steps a reply to "which step is it?" names: its numbers (every one a step), else a label (_steps_named)."""
+
+    if re.search(r"\d", text):
+        numbers = _step_numbers(text) or []
+        by_n = {s["n"]: s for s in skill["steps"] if s.get("kind") != "manual"}
+        return [by_n[n] for n in numbers] if numbers and all(n in by_n for n in numbers) else []
+    said = " ".join(text.split()).rstrip(".!")
+    while True:
+        shorter = _LEAD.sub("", said, count=1)
+        if shorter == said:
+            break
+        said = shorter
+    return _steps_named(skill, said)
+
+
+def _answer_unmapped(skill, pending, text):
+    """The reply to "I couldn't find a step for X": its number, its label, or `none`."""
+
+    first = pending["unmapped"][0]
+    side = "ask" if first.get("ask") else "no_ask"
+    left_out = (f"{el._quote(first['name'], 60)} is left out of this list: your words stay with the task, and the "
+                "approval gate still judges every press.")
+    if NOTHING.match(text):
+        pending["unmapped"].pop(0)
+        skill["unclear"].pop("gates", None)
+        return {"understood": True, "note": f"Got it - {left_out}", "decision": None}
+
+    steps = _steps_in_reply(skill, text)
+    if steps:
+        pending["unmapped"].pop(0)
+        _place(pending, [s["id"] for s in steps], side)
+        skill["unclear"].pop("gates", None)
+        return {"understood": True, "note": "", "decision": None}
+
+    tries = skill["unclear"]["gates"] = skill["unclear"].get("gates", 0) + 1
+    if tries >= MAX_UNCLEAR:
+        pending["unmapped"].pop(0)
+        skill["unclear"].pop("gates", None)
+        return {"understood": True, "note": f"I still could not find that step, so {left_out}", "decision": None}
+    return {"understood": False, "decision": None,
+            "note": f"I could not find that step either - reply with the number of the step that is "
+                    f"{el._quote(first['name'], 60)}, or `none`."}
+
+
+def _answer_gates(skill, question, text):
+    """
+    The reply to the question about which steps stop for the person's OK (_gates). A plain yes keeps exactly what was
+    put to them; anything else is read (_read_gates) and the steps it names are put back in one line, again until a
+    yes; a name no step has is asked about alone. Never "I did not catch that" to a reply that names steps: it is told
+    which steps it named and asked which of them to ask before.
+    """
+
+    pending = skill.get("gates_pending")
+    if pending and pending.get("unmapped"):
+        return _answer_unmapped(skill, pending, text)
+    if _gates_yes(text):
+        return _accept_gates(skill, text)
+
+    reading = _read_gates(question.get("text") or "", text)
+    if reading and reading.get("leave_out"):
+        # Steps to leave out, said here: put back first (_skips); this question comes again after.
+        _propose_skips(skill, reading["leave_out"], said=text)
+        if not (reading.get("ask") or reading.get("no_ask")):
+            return {"understood": True, "note": "", "decision": None}
+    if reading and (reading.get("ask") or reading.get("no_ask")):
+        if _propose(skill, reading, said=text):
+            skill["unclear"].pop("gates", None)
+            return {"understood": True, "note": "", "decision": None}
+        if YES.match(text):
+            return _accept_gates(skill, text)  # ("yes, ask before Verify": what was put back already)
+    elif YES.match(text) and reading is not None:
+        return _accept_gates(skill, text)  # (read whole, and it named nothing to change)
+
+    tries = skill["unclear"]["gates"] = skill["unclear"].get("gates", 0) + 1
+    if tries >= MAX_UNCLEAR:
+        return _accept_gates(skill, text, cautious=True)
+    named = [s for s in skill["steps"] if _label_of(s) and _phrase_in(_words_of(_label_of(s)), _words_of(text))]
+    if named:
+        listed = ", ".join(f"{s['n']} {_label_of(s)}" for s in named[:8])
+        return {"understood": False, "decision": None,
+                "note": f"You named step {listed}. Which of them should I ask you before? Reply for example "
+                        f"`ask {named[0]['n']}` or `not {named[0]['n']}`."}
+    return {"understood": False, "decision": None,
+            "note": "Tell me which steps to change - for example `also 30` or `not 63` - or reply `yes` if that is "
+                    "right."}
+
+
+# ============================================================
+# Steps the person says to leave out
+#
+# "Step 20 (clicking 'Add multiple') and step 29 (the drag) were glitches - skip them", said in any answer, is read with
+# the steps that need an OK (take_gates: plain "skip 20 and 29" in code, any other words by the model, which copies the
+# names), mapped onto steps by number or recorded label (_steps_named), and put back in one line ("I will leave out
+# step 20 Add multiple and 29 drag ... - right?"). Only a yes takes them out of the steps; a name no step has is asked
+# about alone. The person's words stay with the task as a note (the study's rules and dialogue, skill["left_out"]),
+# never as the only thing that keeps a replay from doing the step.
+# ============================================================
+
+def _skip_clauses(text):
+    """
+    A reply that is, clause by clause, a plain skip or keep and step numbers ("skip 20 and 29", "keep 29", "yes but
+    also 31"): {"leave_out": [...], "keep": [...]} as numbers. None when any clause is more than that - the model's to
+    read. Bare numbers carry the choice before them.
+    """
+
+    out, last = {"leave_out": [], "keep": []}, None
+    for clause in re.split(r"[;,\n]|\band\b|\bbut\b", text or ""):
+        if not clause.strip(" .!"):
+            continue
+        numbers = _step_numbers(clause) if re.search(r"\d", clause) else []
+        if numbers is None:
+            return None
+        if not numbers:
+            if _gates_yes(clause):
+                continue
+            return None
+        choice = _choose("skips", clause)
+        if choice is None:
+            if last is None or _plain_words(clause):
+                return None
+            choice = last
+        out["leave_out" if choice == "skip" else "keep"] += [str(n) for n in numbers]
+        last = choice
+    return out if out["leave_out"] or out["keep"] else None
+
+
+def _propose_skips(skill, names, said=""):
+    """Fold the names of steps to leave out into the proposal put back to the person (skill["skips_pending"]): each
+    onto its steps (_steps_named), a name no step has kept to be asked about. `said` is kept as the person's words."""
+
+    pending = skill.get("skips_pending") or {"leave_out": [], "unmapped": [], "said": []}
+    if said:
+        pending.setdefault("said", []).append(" ".join(str(said).split())[:600])
+    for name in names:
+        steps = _steps_named(skill, name)
+        if steps:
+            pending["leave_out"] += [s["id"] for s in steps if s["id"] not in pending["leave_out"]]
+        elif name.lower() not in (u.lower() for u in pending["unmapped"]):
+            pending["unmapped"].append(name)
+    skill["skips_pending"] = pending
+    skill["answers"].pop("skips", None)
+    skill.setdefault("unclear", {}).pop("skips", None)
+
+
+def _skips_line(skill, pending):
+    """The one line that puts the steps to leave out back to the person, each by its number and label."""
+
+    ids = set(pending.get("leave_out") or [])
+    named = [f"{s['n']} {_label_of(s) or s['summary']}" for s in skill["steps"] if s["id"] in ids]
+    if not named:
+        return "I will not leave out any step"
+    return "I will leave out step " + (named[0] if len(named) == 1 else ", ".join(named[:-1]) + " and " + named[-1])
+
+
+def _skips(skill):
+    """The question that puts the steps the person said to leave out back to them, or asks about a name no step has."""
+
+    pending = skill.get("skips_pending") or {}
+    line = _skips_line(skill, pending)
+    unmapped = pending.get("unmapped") or []
+    if unmapped:
+        text = (f"I couldn't find a step for {el._quote(unmapped[0], 80)} to leave out - which step is it? Reply with "
+                f"its number, or `none`. So far: {line}.")
+    else:
+        last = next((s["n"] for s in reversed(skill["steps"]) if s["id"] in set(pending.get("leave_out") or [])), None)
+        example = f" (for example `keep {last}`)" if last else ""
+        text = (f"{line} - right? Reply `yes`, `no` to keep every step, or say what to change{example}. What you said "
+                "stays with the task as a note.")
+    return _question("skips", "skips", text)
+
+
+def _drop_steps(skill, ids):
+    """Take steps out of a skill by id - out of its loops' repetitions and the steps between them too - and number the
+    rest again."""
+
+    skill["steps"] = [s for s in skill["steps"] if s["id"] not in ids]
+    for loop in skill.get("loops") or []:
+        loop["blocks"] = [b for b in ([i for i in block if i not in ids] for block in loop.get("blocks") or []) if b]
+        if loop.get("between"):
+            loop["between"] = [[i for i in gap if i not in ids] for gap in loop["between"]]
+        if loop["blocks"] and not any(len(b) == loop.get("length") for b in loop["blocks"]):
+            loop["length"] = max(len(b) for b in loop["blocks"])
+        if not loop["blocks"] or (loop.get("enabled") is None and len(loop["blocks"]) < 2):
+            loop["enabled"] = False  # (nothing left that repeats: its steps are asked about like any others)
+    skills.renumber(skill)
+
+
+def _accept_skips(skill, text):
+    """The person's yes: the steps put back to them are taken out of the skill, and their words kept as a note."""
+
+    pending = skill.pop("skips_pending", None) or {}
+    ids = set(pending.get("leave_out") or [])
+    gone = [s for s in skill["steps"] if s["id"] in ids]
+    line = _skips_line(skill, pending)
+    skill["answers"]["skips"] = text[:300]
+    skill["unclear"].pop("skips", None)
+    if not gone:
+        return {"understood": True, "note": "Got it: no step is left out.", "decision": None}
+    _drop_steps(skill, ids)
+    skill.setdefault("left_out", []).append({"steps": [{"id": s["id"], "summary": s["summary"]} for s in gone],
+                                              "said": (pending.get("said") or [])[-4:]})
+    skill.setdefault("tidied", []).append("left out " + "; ".join(s["summary"] for s in gone) + ", as you said")
+    return {"understood": True, "decision": None,
+            "note": f"Got it: {line.replace('I will leave out', 'I left out', 1)}; the steps after them are numbered "
+                    "again. What you said stays with the task as a note."}
+
+
+def _keep_skips(skill, text, note):
+    """Nothing is left out: the proposal goes, the steps stay, and the person's words stay as a note."""
+
+    skill.pop("skips_pending", None)
+    skill["answers"]["skips"] = text[:300]
+    skill["unclear"].pop("skips", None)
+    return {"understood": True, "decision": None, "note": note}
+
+
+def _answer_skips(skill, question, text):
+    """
+    The reply to the steps put back to leave out (_skips): a yes takes them out, a no keeps every one; step numbers
+    with skip or keep change the list, which is put back again; a name no step has is answered with its number, its
+    label or `none`. Never made sure of, nothing is taken out.
+    """
+
+    pending = skill.get("skips_pending") or {"leave_out": [], "unmapped": [], "said": []}
+    if pending.get("unmapped"):
+        first = pending["unmapped"][0]
+        steps = [] if NOTHING.match(text) else _steps_in_reply(skill, text)
+        if steps or NOTHING.match(text):
+            pending["unmapped"].pop(0)
+            pending["leave_out"] += [s["id"] for s in steps if s["id"] not in pending["leave_out"]]
+            skill["unclear"].pop("skips", None)
+            return {"understood": True, "decision": None,
+                    "note": "" if steps else f"Got it - no step is left out for {el._quote(first, 60)}."}
+        tries = skill["unclear"]["skips"] = skill["unclear"].get("skips", 0) + 1
+        if tries >= MAX_UNCLEAR:
+            pending["unmapped"].pop(0)
+            skill["unclear"].pop("skips", None)
+            return {"understood": True, "decision": None,
+                    "note": f"I still could not find that step, so no step is left out for {el._quote(first, 60)}."}
+        return {"understood": False, "decision": None,
+                "note": f"I could not find that step either - reply with the number of the step that is "
+                        f"{el._quote(first, 60)}, or `none`."}
+
+    if _gates_yes(text):
+        return _accept_skips(skill, text)
+    plain = _skip_clauses(text)
+    if plain:
+        for n in plain["leave_out"]:
+            pending["leave_out"] += [s["id"] for s in _steps_named(skill, n) if s["id"] not in pending["leave_out"]]
+        kept = {s["id"] for n in plain["keep"] for s in _steps_named(skill, n)}
+        pending["leave_out"] = [i for i in pending["leave_out"] if i not in kept]
+        skill["skips_pending"] = pending
+        skill["unclear"].pop("skips", None)
+        return {"understood": True, "note": "", "decision": None}
+
+    choice, _ = _read_choice("skips", question, text)
+    if choice == "skip":
+        return _accept_skips(skill, text)
+    if choice == "keep":
+        return _keep_skips(skill, text, "Got it: I will keep every step. What you said stays with the task as a note.")
+    tries = skill["unclear"]["skips"] = skill["unclear"].get("skips", 0) + 1
+    if tries >= MAX_UNCLEAR:
+        return _keep_skips(skill, f"(assumed keep) {text}", "I could not tell what you meant, so I left every step in; "
+                                                           "what you said stays with the task as a note.")
+    return {"understood": False, "decision": None,
+            "note": "Reply `yes` to leave those steps out, `no` to keep them all, or for example `keep 29`."}
+
+
 def _apply(skill, question, choice):
     kind = question["kind"]
     step = _step_by_id(skill, question["step"]) if question["step"] else None
@@ -2480,8 +3232,12 @@ def _apply(skill, question, choice):
         param = next(p for p in skill["params"] if p["name"] == step["param"])
         param["varies"] = choice == "changes"
         param["default"] = param["example"] if choice == "same" else None
+        if choice == "same" and param.get("list"):
+            # A value of every line the person says is the same for every line: typed as taught on each, not a list.
+            param.pop("list", None)
+            param.pop("examples", None)
 
-        if param["varies"]:
+        if param["varies"] and not param.get("list"):  # (a list's checks follow each item in skills.expand)
             _follow_param(skill, param)
 
     elif kind == "optional":
@@ -2497,6 +3253,7 @@ def _apply(skill, question, choice):
 
     elif kind == "confirm":
         if choice == "yes":
+            _refresh_approvals(skill)
             skill["status"] = skills.READY
             skill["learned_at"] = time.time()
         return {"yes": "save", "no": "discard"}.get(choice, "hold")

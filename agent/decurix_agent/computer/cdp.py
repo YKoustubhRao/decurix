@@ -2330,7 +2330,10 @@ FORM_FIELDS = """function(enter) {
   const others = live.filter(f => !['password', 'text', 'email', '', 'hidden', 'submit', 'button', 'checkbox'].includes((f.type || '').toLowerCase()));
   const signsIn = secrets.length === 1 && !oneTime(secrets[0]) && named.length === 1 && others.length === 0
     && [...form.elements].filter(f => !f.disabled && ['SELECT', 'TEXTAREA'].includes(f.tagName)).length === 0;
-  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60), unset: unset, method: method, signs_in: signsIn};
+  // Whether a password-type field holds something (its value never leaves the page): a code or PIN the press sends.
+  const secretFilled = secrets.some(f => String(f.value || '').trim() !== '');
+  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60), unset: unset, method: method, signs_in: signsIn,
+          secret_filled: secretFilled};
 }""".replace("__VALUE_CHARS__", str(FORM_VALUE_CHARS))
 
 # A form with fewer filled fields than this (a search box and its button, a sign-in) is sent without the check.
@@ -2354,6 +2357,7 @@ def _without_secrets(found):
     from decurix_agent.computer import privacy
 
     fields, cut, formats = [], [], {}
+    secret_filled = bool(found.get("secret_filled"))  # (a password-type field, which the page's read leaves out)
     for item in found.get("fields") or []:
         label, value = (list(item) + ["", ""])[:2]
         kind, autocomplete = (list(item) + ["", "", "", ""])[2:4]
@@ -2362,6 +2366,8 @@ def _without_secrets(found):
             secret = privacy.secret_field(field) or privacy.credential_in(str(value))
         except Exception:  # noqa: BLE001 - not known to be safe to show: withheld
             secret = True
+        if secret and str(value or "").strip():
+            secret_filled = True  # a code or PIN the press sends: its value is never listed (core._authorises)
         if not secret:
             fields.append([label, value])
             if len(item) > 4 and item[4]:
@@ -2371,7 +2377,7 @@ def _without_secrets(found):
     # "cut": the labels whose values were read in part; "unset": choices left in their "no selection" state;
     # "formats": {label: the date format its placeholder writes}.
     return dict(found, fields=fields, cut=cut, unset=[str(u) for u in found.get("unset") or [] if str(u).strip()],
-                formats=formats)
+                formats=formats, secret_filled=secret_filled)
 
 
 # The largest WebSocket frame read from the browser (a screenshot of a large page is a few MB), and how many

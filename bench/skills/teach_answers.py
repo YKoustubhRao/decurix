@@ -20,9 +20,11 @@ PROBE = (
     "skill = json.load(open(max(paths, key=os.path.getmtime), encoding='utf-8'))\n"
     "q = learning.next_question(skill) or {}\n"
     "u = skill.get('understanding') or {}\n"
+    "g = (skill.get('gates_pending') or {}).get('unmapped') or []\n"
     "print(json.dumps({'question': dict({k: q.get(k) for k in ('id', 'kind', 'text', 'step')},\n"
     "                                    values=bool(q.get('values')), steps=bool(q.get('steps'))),\n"
     "                  'study': [{'id': x.get('id'), 'topic': x.get('topic')} for x in u.get('questions') or []],\n"
+    "                  'gates_unmapped': len(g),\n"
     "                  'understood': bool(u.get('summary'))}))\n"
 )
 
@@ -87,6 +89,10 @@ def answer(probe, asked_text=""):
     if kind == "approval":
         # The fixture only saves a local synthetic form.
         return "go ahead"
+    if kind == "gates":
+        # Which steps stop for an OK, read from an answer above and put back (learning._gates): the steps as put back
+        # are right; a name the lesson found no step for is left to the gate.
+        return "none" if probe.get("gates_unmapped") else "yes"
     if kind == "confirm":
         return "yes"
     raise UnknownQuestion(f"a question of a kind this bench does not know ({kind!r}):\n{json.dumps(q)[:400]}")
