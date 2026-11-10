@@ -417,6 +417,52 @@ def spoken(day):
     return f"{d} {_MONTH_NAMES[m - 1]} {y}"
 
 
+# A date format written in a field's label or placeholder ("Date (DD-MM-YYYY)", "mm/dd/yy", "YYYY.MM.DD"): three runs
+# of letters joined by one separator, not inside a longer word. Which runs are a day, a month and a year is read from
+# the runs themselves (stated_date_order), never from a list of formats.
+_FORMAT_IN_LABEL = re.compile(r"(?<![^\W\d_])([^\W\d_]{1,4})([-/. ])([^\W\d_]{1,4})\2([^\W\d_]{1,4})(?![^\W\d_])")
+
+
+def _format_runs(text):
+    """The date formats a text writes, each as its three runs (letter, length) - ("d", 2), ("m", 2), ("y", 4) for
+    "DD-MM-YYYY": runs of one letter each, the letters d, m and y once each, case aside."""
+
+    out = []
+    for m in _FORMAT_IN_LABEL.finditer(_norm(text)):
+        runs = []
+        for run in (m.group(1), m.group(3), m.group(4)):
+            letter = run[0].casefold()
+            if run.casefold() != letter * len(run):
+                break
+            runs.append((letter, len(run)))
+        if len(runs) == 3 and sorted(r[0] for r in runs) == ["d", "m", "y"]:
+            out.append(runs)
+    return out
+
+
+def stated_date_order(label, value):
+    """
+    The date order a form field's own label (or its placeholder) states for `value`: "day" or "month" when the label
+    writes a date format - three runs of the letters D, M and Y, each once ("DD-MM-YYYY", "mm/dd/yy", "D.M.YYYY") -
+    laid out as `value` is: the year last, as many year digits as the format gives (one Y: any), the day and the month
+    in digits (DD/MM, never MMM, a month's name). None when the label writes no such format, writes two that disagree,
+    or `value` is not laid out as the format says (a year-first value is decided without an order). Structure only:
+    the field "Date (DD-MM-YYYY)" holding "02-04-2027" holds 2 April 2027 - the application said so on its own form
+    (found live 2026-11-10: a save was refused as needing the person over exactly this).
+    """
+
+    m = _DIGIT_DATE.fullmatch(_norm(value))
+    if not m or not label:
+        return None
+    orders = set()
+    for runs in _format_runs(label):
+        (first, n1), (second, n2), (last, ny) = runs
+        if last != "y" or n1 > 2 or n2 > 2 or (ny > 1 and ny != len(m.group(3))):
+            continue
+        orders.add("day" if first == "d" else "month")
+    return orders.pop() if len(orders) == 1 else None
+
+
 def _same_date(da, db):
     if "unreadable" in (da.kind, db.kind):
         return Result(None, "date_order:" + ("a" if da.kind == "unreadable" else "b"))

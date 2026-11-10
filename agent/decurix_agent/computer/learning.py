@@ -117,7 +117,7 @@ def build(sources, name=None):
     tidied = []
     for meta, events in sources:
         program = replay.compile_program(meta, events)
-        for note in (_tidy(program, events) + _drop_corrections(program) + _drop_empty_rows(program)
+        for note in (_tidy(program, events) + _drop_corrections(program) + _drop_empty_rows(program, events)
                      + _drop_retried_commits(program) + _drop_clicks_before_select(program)):
             if note not in tidied:
                 tidied.append(note)
@@ -561,7 +561,49 @@ def _next_act(steps, i):
     return None
 
 
-def _drop_empty_rows(program):
+def _change_rows(step, by_index):
+    """
+    The table rows a step's recorded result shows coming and going, as ({rows that appeared}, {rows that disappeared}),
+    each a `row N` of the paths of the controls the recording kept as appeared or disappeared; None when the result is
+    not known to be the same page's (no result kept, or the action opened another page or window).
+    """
+
+    event = by_index.get(step.get("event"))
+    expect = (event or {}).get("expect")
+    if not isinstance(expect, dict) or expect.get("url") or expect.get("windows_opened") or expect.get("active_window"):
+        return None
+
+    def rows(elements):
+        return {_row_of({"target": e}) for e in elements or [] if isinstance(e, dict)} - {None}
+
+    return rows(expect.get("appeared")), rows(expect.get("disappeared"))
+
+
+def _row_number(row):
+    return int(row.split()[-1])
+
+
+def _row_came(step, row, by_index):
+    """Whether a step's recorded result shows `row` added to its table: controls of that row appeared and none went
+    (a row drawn again is no new row), no other row appeared with it (a table or page shown whole), on the same page."""
+
+    change = _change_rows(step, by_index)
+    return change is not None and change[0] == {row} and row not in change[1]
+
+
+def _row_went(step, row, by_index):
+    """Whether a step's recorded result shows the table shrinking by `row`: a row at or after it disappeared and did
+    not appear again (a later row's place is taken when a row before it goes), nothing new appeared, on the same
+    page."""
+
+    change = _change_rows(step, by_index)
+    if change is None:
+        return False
+    came, went = change
+    return not (came - went) and any(_row_number(r) >= _row_number(row) for r in went - came)
+
+
+def _drop_empty_rows(program, events=()):
     """
     Take out, in place, a table row the person added by the way and deleted again with nothing entered into it;
     returns what was changed, in words. Such a row is a path's `row N` that no entry ever went into, which the person
@@ -569,20 +611,32 @@ def _drop_empty_rows(program):
     control outside the table's fields on (the delete). Left in, a run of more lines than the demonstration writes out
     that row and the steps then select it and delete it: a real line.
 
+    Only on the recording's own evidence that the row came and went: the step that made it (the nearest before the
+    row's first step) has a recorded result where that row's controls appeared, alone and on the same page, and the
+    press after the selection has one where the table shrank by it (_row_came, _row_went). A tick in a row that was
+    already there followed by a button outside the table is a bulk action on that row, and stays.
+
     What goes: that selection and that press; every other step aimed at the row (a key pressed with the cursor in it),
-    except a commit, which keeps its keys and loses the row as its target; and the press that made the row, when the
-    recording shows it: the step straight before the row's first step, which saw controls appear. Decided from where
-    each step's control is, never from its words.
+    except a commit, which keeps its keys and loses the row as its target; and the press that made the row, unless it
+    was an entry or a commit. Decided from where each step's control is and what its recorded result showed, never
+    from its words.
 
     Found live (2026-11-08): a Tab out of a bill's last line made an empty third line; the save refused it (a
-    "missing fields" notice), and the person ticked the line and deleted it.
+    "missing fields" notice), and the person ticked the line and deleted it. And (2026-11-10) the other way: a person
+    opened a list of parties, ticked one in row 4 and pressed "Validate selected", ticked it again and pressed a second
+    bulk button; read as an empty row, every one of those steps and the link that opened the list were dropped.
     """
 
     steps = program["steps"]
+    by_index = {e.get("i"): e for e in events or () if isinstance(e, dict)}
     entered = {_row_of(s) for s in steps if _entry(s)} - {None}
     drop, untarget, notes = set(), set(), []
 
     for row in sorted({_row_of(s) for s in steps} - entered - {None}):
+        in_row = [i for i, s in enumerate(steps) if _row_of(s) == row]
+        maker = next((m for m in range(in_row[0] - 1, -1, -1) if steps[m]["kind"] != "scroll"), None)
+        if maker is None or not _row_came(steps[maker], row, by_index):
+            continue  # not seen to be added in this recording: a row that was there, whatever is pressed in it
         pairs = []
         for i, step in enumerate(steps):
             role = ((step.get("target") or {}).get("role") or "").lower()
@@ -594,13 +648,12 @@ def _drop_empty_rows(program):
             after = steps[k]
             role_after = ((after.get("target") or {}).get("role") or "").lower()
             if after["kind"] in ("click", "double_click") and after.get("target") and role_after not in FIELD_ROLES \
-                    and _row_of(after) in (None, row):
+                    and _row_of(after) in (None, row) and _row_went(after, row, by_index):
                 pairs.append((i, k))
         if not pairs:
-            continue  # never selected and deleted: not known to be thrown away
+            continue  # never selected and seen deleted: not known to be thrown away
         for i, k in pairs:
             drop.update((i, k))
-        in_row = [i for i, s in enumerate(steps) if _row_of(s) == row]
         for i in in_row:
             if i in drop:
                 continue
@@ -608,11 +661,8 @@ def _drop_empty_rows(program):
                 untarget.add(i)
             else:
                 drop.add(i)
-        first = in_row[0]
-        maker = first - 1 if first > 0 else None
-        if maker is not None and steps[maker]["kind"] in ("click", "double_click", "key") and not _entry(steps[maker]) \
-                and _row_of(steps[maker]) != row and not replay._step_commits(steps[maker]) \
-                and any(c.get("type") == "element" for c in steps[maker].get("expect") or []):
+        if steps[maker]["kind"] in ("click", "double_click", "key") and not _entry(steps[maker]) \
+                and _row_of(steps[maker]) != row and not replay._step_commits(steps[maker]):
             drop.add(maker)
         notes.append(f"you added a table row ({row}) and deleted it again with nothing entered into it; "
                      "the steps that made, selected and deleted it are left out")

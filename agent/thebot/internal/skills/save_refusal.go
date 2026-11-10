@@ -27,6 +27,13 @@ const (
 // form's own control) are steps of the check, not refusals.
 var saveRefusalRe = regexp.MustCompile(`(?m)^gui: (Not pressed: .+)$`)
 
+// personAskRe is the line a refused save ends with when it waits on a question the agent itself puts to the person
+// (computer/core.py PERSON_ASK_MARKER: which day a date that reads two ways is). The loop asks at once, not after the
+// same refusal came back maxSameSaveRefusals times: the question is the agent's own, asked once, and only the
+// person's answer clears the save. Found live (2026-11-10): the question waited for the worker's next HELP, which
+// never came - it went round the save, and the date nothing had settled failed the read-back round after round.
+var personAskRe = regexp.MustCompile(`(?m)^ASKS_PERSON: *(\S.*?)\s*$`)
+
 // refusedFieldRe finds the first field a refusal names, as core's save check words it ("Notes holds '...'", "No. is
 // empty where ...", "Cost centre is left unset ...") - the shape of the agent's own message, not words of a task.
 // A value refused as made up names its field as "any source: UQC: 'NA'" (the agent's filler.refusal).
@@ -56,10 +63,17 @@ func refusalKey(refusal string) string {
 // noteSaveRefusal counts the same save refusal coming back. A refusal unlike the last one starts the count again;
 // commands between refusals (a field typed again with the same value, a record declared again the same, a look) do not
 // reset it - they changed nothing the check reads. At maxSameSaveRefusals, SaveRefusalAsk holds the question the loop
-// puts to the person, and the count starts again for their answer.
+// puts to the person, and the count starts again for their answer. A refusal that ends with the agent's own question to
+// the person (personAskRe) sets it at once, to that question.
 func (st *operatorState) noteSaveRefusal(command string, r shellResult) {
 	refusal := saveRefusal(command, r)
 	if refusal == "" {
+		return
+	}
+	if m := personAskRe.FindStringSubmatch(r.Output); m != nil {
+		// A save that waits on the agent's own question to the person: asked now (the agent puts it in its own words).
+		st.SaveRefusal, st.SaveRefusals = "", 0
+		st.SaveRefusalAsk = m[1]
 		return
 	}
 	key := refusalKey(refusal)

@@ -1312,8 +1312,7 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             # Several files are given the way list values are: separated by ';'.
             files = val if isinstance(val, list) else [f.strip() for f in str(val).split(";") if f.strip()]
 
-        done = core.act(
-            kind,
+        act_args = dict(
             text=values.get(step.get("param")) if kind == "type" else None,
             keys=step.get("keys"),
             direction=step.get("direction"),
@@ -1328,6 +1327,22 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             check_form="replay",
             **target,
         )
+        try:
+            done = core.act(kind, **act_args)
+        except ActedError:
+            raise
+        except ComputerError:
+            # A choice of this item's record that its list has no entry for, by name: the identifier the item's
+            # document gives that record (step["ids"], set by the run - skill_task._lookup_ids) is searched for next,
+            # as `gui select REF NAME --id ID` does, and what it resolved to is kept as the task's fact (resolve.py).
+            # An entry holding it is the record whatever its name; none is a fact the save of a new one then rests on.
+            # Found live (2026-11-10): the next month's new customer stopped the replay, the model made its ledger,
+            # and the save was refused because nothing had resolved the customer's tax number.
+            if kind != "select" or not step.get("ids"):
+                raise
+            (report or progress.emit)(f"Step {step['n']}: no entry by that name - looking for it by the identifier "
+                                      f"its document gives ({', '.join(step['ids'])})")
+            done = core.act(kind, ids=list(step["ids"]), **act_args)
         if pressed_cell and not _field_appeared(step):
             raise _Halt(f"pressed where {_summary(step).split(' ', 1)[-1]} was when this was recorded, and no such field "
                         "appeared there - the page is laid out differently now", acted=True)

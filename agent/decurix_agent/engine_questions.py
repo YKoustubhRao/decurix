@@ -6,7 +6,9 @@ Split out of skill_task.py (follow-up O-10): skill_task runs taught tasks and ch
 messaging's query gate (_question_gate) - a question already settled by the skill's lesson or the worker's kept
 lessons is answered from them (at most MAX_SELF_ANSWERS a task, on a confident reading, never a check of this run's
 own work), an engine that ran out of room carries on by itself (_carries_on) - and keeps what a person answers on the
-skill (learn_answer), unless it only approved the plan as put (_plan_approved_as_is).
+skill (learn_answer); a run a person answered was helped, unless the answer is one the rules require on every run
+(_required_every_run: the plan's yes as put, an OTP or other secret given and nothing more; note_approval: the gate's
+yes).
 
 This module never imports skill_task: what the lesson says for this run (_criteria, _for_this_run) and the question
 it asks are skill_task's, handed over at its import (use_run).
@@ -284,6 +286,90 @@ def _plan_approved_as_is(asked, reply):
     return said["choice"] == "as_planned" and not said.get("instruction")
 
 
+# A word of a reply that may be a secret value: it holds a digit (the control plane's rule for a reply to a question
+# asked for a secret, withhold.Reply). Masked before the reply is read, so no code reaches a model.
+_DIGIT_WORD = re.compile(r"\S*\d\S*")
+_MASK = "[withheld]"
+_MASKS = re.compile(r"\[withheld[^\]]*\]|\[held back[^\]]*\]", re.IGNORECASE)
+
+
+def _letter_words(text):
+    """The words of `text` with every withheld marker taken out."""
+
+    return re.findall(r"[^\W\d_]+", _MASKS.sub(" ", str(text or "")))
+
+
+def _secret_given(asked, reply):
+    """
+    Whether a reply to a question raised for a secret gives that value and nothing more: the OTP of a filing, a
+    password, a PIN - a value the person gives on every run, which no document holds, so not help (owner's ruling
+    2026-11-10). `secret` is the caller's, from structure (soul marked the question, or the control plane withheld the
+    reply), never from words. Found live (GSTR-1 curve, 2026-11-10): every month asks for the OTP by design, that answer
+    made every run "helped", and the skill could never earn trust.
+
+    Read with every word that holds a digit masked and every known secret withheld (privacy.scrub): a reply of nothing
+    else, or one word, is the value; anything else is read once (approval.read_choice) - a reply that also corrects,
+    adds data, sets a condition or redirects the work is help. A reply that cannot be read safely, or no model to read
+    it, is help: the run then only waits longer for trust, never earns it wrongly.
+    """
+
+    from decurix_agent.computer import approval, privacy
+
+    masked = " ".join(_DIGIT_WORD.sub(_MASK, str(reply or "")).split())
+    if not masked:
+        return False
+    shown = privacy.scrub(masked)
+    if not isinstance(shown, str):
+        return False
+    if not _letter_words(shown):
+        # Nothing but the value: a code alone, or one word the worker knows as a secret. Several words withheld whole
+        # are a reply nobody may read here: help.
+        return len(_letter_words(masked)) <= 1
+    question = privacy.scrub(" ".join(str(asked or "").split())[:2000])
+    try:
+        said = approval.read_choice(shown, question if isinstance(question, str) else "", {
+            "value": "it gives the value the question asks for (a code, password or PIN - shown withheld) and perhaps "
+                     "where it came from, and asks, adds, corrects or changes nothing else",
+            "more": "besides or instead of that value it gives any other value or fact, corrects something, adds work, "
+                    "sets a condition, or says to do something differently",
+        })
+    except Exception as exc:  # noqa: BLE001 - a reply that cannot be read is help (the safe way)
+        log(f"Could not read the reply to a question asked for a secret: {exc}")
+        return False
+    return said.get("choice") == "value" and not said.get("instruction")
+
+
+def _required_every_run(asked, reply, secret=False):
+    """
+    Whether a person's answer to an engine's question is one the rules require on every run, so the run was not
+    helped (owner's ruling 2026-11-10): the plan's yes as it was put (_plan_approved_as_is), or the value asked for a
+    secret and nothing more (_secret_given). Every other answer to the engine is help - a corrected value, data the
+    documents should have held, "do X instead". (The other required confirmations never reach here as help: a gate's
+    yes settles the approval (note_approval), and the date order, a field's unit, a hole in a series and picked
+    entries are answered to questions of their own - watchers, final_gate._confirm_reply, _picks_reply.)
+    """
+
+    if _plan_approved_as_is(asked, reply):
+        return True
+    return bool(secret) and _secret_given(asked, reply)
+
+
+def note_approval(outcome):
+    """
+    A person's reply settled an on-screen approval the engine of a taught run met (watchers, `outcome` "granted" or
+    "declined"). The gate's yes is one action's, required every run for a control the lesson or the case lists: not
+    help. Anything else to an approval - a no, a yes with a condition, "use the other button" - is the person
+    directing the work: the run was helped (owner's ruling 2026-11-10). Only a reply to a question asked as an approval
+    (state.last_query_kind); a reply to another question that a gate also read decides nothing here.
+    """
+
+    if outcome in (None, "granted") or getattr(state, "last_query_kind", "") != "approval":
+        return
+    run = (guidance.get() or {}).get("run")
+    if run is not None:
+        run["asked_person"] = True
+
+
 def learn_answer(reply, secret=False, judgement_id=""):
     """
     Keep a person's answer to a question the engine asked during a taught
@@ -297,9 +383,10 @@ def learn_answer(reply, secret=False, judgement_id=""):
     asked = (guided or {}).pop("asked", None) if guided else None
     reply = " ".join((reply or "").split())[:500]
 
-    if run is not None and asked and not _plan_approved_as_is(asked, reply):
+    if run is not None and asked and not _required_every_run(asked, reply, secret):
         # A run a person had to answer was helped, however well it then went (_gate). Found live: three runs
-        # in a row, two of them answered by a person, counted as three clean runs and the skill was trusted.
+        # in a row, two of them answered by a person, counted as three clean runs and the skill was trusted. An
+        # answer the rules require on every run (the plan's yes, an OTP) is not help (_required_every_run).
         run["asked_person"] = True
 
     if run is None or run.get("one_off") or not asked or not reply:

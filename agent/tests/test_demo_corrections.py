@@ -194,12 +194,22 @@ class NotCorrections(unittest.TestCase):
         self.assertEqual(len(skill["steps"]), 2, "a secret entry is a step of its own, kept (made manual)")
 
 
-ITEM_3, CHECK_3 = [390, 337, 216, 43], [319, 350, 14, 14]
+ITEM_3, RATE_3, CHECK_3 = [390, 337, 216, 43], [720, 337, 110, 43], [319, 350, 14, 14]
 
 
-def empty_row_demo(entered_in_row_3=False, delete=True, notice=False):
+def row_3_controls():
+    """Row 3's controls as a recorded result lists them (role, name, path): what appears when it is added and
+    disappears when it is deleted."""
+
+    return [{k: c[k] for k in ("role", "name", "path")}
+            for c in (at("combobox", "Item", ITEM_3, row=3), at("textbox", "Rate", RATE_3, row=3))]
+
+
+def empty_row_demo(entered_in_row_3=False, delete=True, notice=False, added_seen=True, deleted_seen=True):
     """Two lines entered; a Tab out of the last field makes a third, empty row (controls appear); Escape in it; a save;
-    then the person ticks row 3 and deletes it, and saves again. The live shape of 2026-11-08."""
+    then the person ticks row 3 and deletes it, and saves again. The live shape of 2026-11-08. `added_seen` and
+    `deleted_seen` say whether the recording kept the row's controls appearing after the Tab and disappearing after the
+    delete."""
 
     events, i = [], 0
 
@@ -215,7 +225,7 @@ def empty_row_demo(entered_in_row_3=False, delete=True, notice=False):
     add("type", at("combobox", "Item", ITEM_2, row=2), text="Ink")
     add("type", at("textbox", "Rate", RATE_2, row=2), text="20")
     add("key", at("textbox", "Rate", RATE_2, row=2), keys=["Tab"],
-        expect={"appeared": [{"role": "textbox", "name": "Rate"}]})
+        expect={"appeared": row_3_controls() if added_seen else [{"role": "textbox", "name": "Rate"}]})
     add("key", at("combobox", "Item", ITEM_3, row=3), keys=["Escape"])
     if entered_in_row_3:
         add("type", at("combobox", "Item", ITEM_3, row=3), text="Paper")
@@ -229,7 +239,8 @@ def empty_row_demo(entered_in_row_3=False, delete=True, notice=False):
         add("key", at("combobox", "Item", ITEM_3, row=3), keys=["ctrl+s"])
     if delete:
         add("click", at("checkbox", "", CHECK_3, row=3), expect={"appeared": [{"role": "button", "name": "Delete row"}]})
-        add("click", at("button", "Delete row", [310, 395, 87, 26]))
+        add("click", at("button", "Delete row", [310, 395, 87, 26]),
+            expect={"disappeared": row_3_controls()} if deleted_seen else {})
     add("key", None, keys=["ctrl+s"])
     return META, events
 
@@ -279,6 +290,83 @@ class EmptyRows(unittest.TestCase):
             param["varies"] = True
         group = skills.repeated_rows(skill)
         self.assertEqual(len(group["rows"]), 2)
+
+    def test_a_row_not_seen_added_is_not_taken_for_an_added_one(self):
+        """The Tab's result kept no control of row 3: nothing shows the row was made in this recording."""
+
+        skill = learning.build([empty_row_demo(added_seen=False)])
+        self.assertTrue([s for s in rows_in(skill) if s[2] == "row 3"])
+        self.assertIn(("click", "Delete row", None), rows_in(skill))
+        self.assertFalse(any("deleted it again" in n for n in skill["tidied"]))
+
+    def test_a_press_that_showed_no_row_go_is_not_taken_for_its_delete(self):
+        skill = learning.build([empty_row_demo(deleted_seen=False)])
+        self.assertTrue([s for s in rows_in(skill) if s[2] == "row 3"])
+        self.assertIn(("click", "Delete row", None), rows_in(skill))
+        self.assertFalse(any("deleted it again" in n for n in skill["tidied"]))
+
+
+LIST = "http://books.test/app/parties"
+
+
+def on_list(i, kind, element=None, **extra):
+    return event(i, kind, element, window="Check parties - Chromium", url=LIST, **extra)
+
+
+def party(role, name, row=None):
+    path = ["site books.test", "table \"Parties\""] + ([f"row {row}"] if row else []) + [f"{role} \"{name}\""]
+    return field(role, name, box=[300, 200 + 30 * (row or 0), 14, 14], path=" > ".join(path),
+                 window_title="Check parties - Chromium")
+
+
+def brief(element):
+    return {k: element[k] for k in ("role", "name", "path")}
+
+
+def bulk_action_demo(pages=True):
+    """
+    The live shape of 2026-11-10: a link opens a list of parties (rows 1-4 there at once); the person ticks the party
+    in row 4 and presses a bulk button outside the table, which draws row 4 again with what it found; ticks it again
+    and presses a second bulk button; then leaves. `pages`: each press moves to another address (a page that answers
+    with a reload), else everything happens in place.
+    """
+
+    ticked = party("checkbox", "Select P-4", row=4)
+
+    def result(url, **seen):
+        return dict(seen, url=url) if pages else seen
+
+    return META, [
+        on_form(0, "click", at("link", "Check parties", [900, 80, 90, 20]),
+                expect=result(LIST, appeared=[{"role": "heading", "name": "Check parties", "path": "site books.test"}]
+                              + [brief(party("checkbox", f"Select P-{n}", row=n)) for n in (1, 2, 3, 4)],
+                              active_window="Check parties - Chromium" if pages else None)),
+        on_list(1, "click", ticked),
+        on_list(2, "click", party("button", "Validate selected"),
+                expect=result(LIST + "?done=validated",
+                              appeared=[{"role": "status", "name": "Validated.", "path": "site books.test"},
+                                        brief(ticked)], disappeared=[brief(ticked)])),
+        on_list(3, "click", ticked),
+        on_list(4, "click", party("button", "Update names from the registry"),
+                expect=result(LIST + "?done=names",
+                              appeared=[{"role": "status", "name": "Names updated.", "path": "site books.test"},
+                                        brief(ticked)], disappeared=[brief(ticked)])),
+        on_list(5, "click", party("link", "Back to the bill")),
+    ]
+
+
+class BulkActionOnARow(unittest.TestCase):
+    """A tick in a row that was already there, then a button outside the table, is a bulk action on that row: kept."""
+
+    def test_the_ticks_the_bulk_buttons_and_the_link_before_them_stay(self):
+        for pages in (True, False):
+            with self.subTest(pages=pages):
+                skill = learning.build([bulk_action_demo(pages=pages)])
+                self.assertEqual([(s["kind"], s["target"]["name"]) for s in skill["steps"]], [
+                    ("click", "Check parties"), ("click", "Select P-4"), ("click", "Validate selected"),
+                    ("click", "Select P-4"), ("click", "Update names from the registry"),
+                    ("click", "Back to the bill")])
+                self.assertFalse(any("deleted it again" in n for n in skill["tidied"]), skill["tidied"])
 
 
 class RetriedCommits(unittest.TestCase):

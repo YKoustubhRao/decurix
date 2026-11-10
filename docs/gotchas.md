@@ -1022,3 +1022,12 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A command's output went to the person as the question
 - [part-6.md](gotchas/part-6.md): A pick the client's invoices state was held as backed by nothing
 - [part-6.md](gotchas/part-6.md): A replay that entered every bill right ended "Not done" over the customers it picked
+- [part-6.md](gotchas/part-6.md): A bulk action on a ticked row was learned as an empty row added and deleted
+- [part-6.md](gotchas/part-6.md): A date both sides said the order of waited on the person, who was never asked
+- [part-6.md](gotchas/part-6.md): A replay's takeover entered again the bill the replay had saved
+- [part-6.md](gotchas/part-6.md): A new customer's tax number was never resolved by the replay
+- [part-6.md](gotchas/part-6.md): The how-to called a missing list entry a question for the person, against the lesson
+- [part-6.md](gotchas/part-6.md): A key on a focused button skipped the pre-save checks, and a no did not hold the control
+- [part-6.md](gotchas/part-6.md): An element read (`gui read e700`) was a document to cover, and an unchanged review point went back round after round
+- [part-6.md](gotchas/part-6.md): The OTP every run asks for made every run "helped" (helped, asked_person), so the skill could never be trusted
+- [part-6.md](gotchas/part-6.md): A lesson that named the OTP was taught with holes ("OTP: ask me" took "ask"; a question naming a secret withheld every marked word of a reply; possessives, hyphenated words, ratios) - a reply is secret only by structure

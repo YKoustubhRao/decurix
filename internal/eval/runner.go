@@ -834,6 +834,18 @@ func (s *Service) post(ctx context.Context, d desktop.PracticeDesktop, path stri
 	return nil
 }
 
+// replyBody is the /request body that carries the expert's reply to question: told "secret" exactly when the records
+// keep the reply withheld (tasks.ReplyForm, C14.1), as a person's reply is (httpapi.markWithheld). Found 2026-11-10:
+// without it an expert's OTP reached the worker as an ordinary answer, which counted as help on every run, so a taught
+// filing skill never earned trust (the worker reads a secret given and nothing more as no help).
+func replyBody(taskID, reply, question string, askedSecret bool) map[string]any {
+	body := map[string]any{"content": reply, "task_id": taskID}
+	if _, withheld := tasks.ReplyForm(reply, false, question, askedSecret); withheld {
+		body["secret"] = true
+	}
+	return body
+}
+
 // agentRefused is the worker's agent answering a delivered request with an error: the worker's failure.
 type agentRefused int
 
@@ -1148,7 +1160,7 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				// The expert's words are the person's on this desktop: kept where its control plane (the broker) serves
 				// a person's judgements, and sent with their id as the control plane sends a person's reply, so what
 				// they back now and on the worker's later tasks is what a person's reply would back.
-				body := map[string]string{"content": asked.Reply, "task_id": taskID}
+				body := replyBody(taskID, asked.Reply, o.Text, o.Secret)
 				if id := s.Broker.KeepReply(taskID, o.Text, asked.Reply); id != "" {
 					body["judgement_id"] = id
 					s.recordExpertReply(id, desktopID, taskID, o.Text, asked)

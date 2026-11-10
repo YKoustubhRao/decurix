@@ -2307,7 +2307,11 @@ FORM_FIELDS = """function(enter) {
       const gap = v.search(/\\s\\S*$/);
       if (gap > __VALUE_CHARS__ / 2) v = v.slice(0, gap);
     }
-    out.push([labelOf(f).slice(0, 60), v, ft, (f.getAttribute('autocomplete') || '').toLowerCase(), cut]);
+    // A placeholder that writes a date format ("DD-MM-YYYY") states the order the field takes a date in
+    // (values.stated_date_order); any other placeholder is not passed on.
+    const holder = (f.getAttribute('placeholder') || '').trim();
+    const format = /^[ymd]{1,4}([-\\/. ][ymd]{1,4}){2}$/i.test(holder) ? holder : '';
+    out.push([labelOf(f).slice(0, 60), v, ft, (f.getAttribute('autocomplete') || '').toLowerCase(), cut, format]);
   }
   const name = form.getAttribute('aria-label') || form.getAttribute('name') || form.id ||
     ((form.querySelector('legend, h1, h2, h3') || {}).textContent || '').trim() || 'the form';
@@ -2349,7 +2353,7 @@ def _without_secrets(found):
         return found
     from decurix_agent.computer import privacy
 
-    fields, cut = [], []
+    fields, cut, formats = [], [], {}
     for item in found.get("fields") or []:
         label, value = (list(item) + ["", ""])[:2]
         kind, autocomplete = (list(item) + ["", "", "", ""])[2:4]
@@ -2362,8 +2366,12 @@ def _without_secrets(found):
             fields.append([label, value])
             if len(item) > 4 and item[4]:
                 cut.append(label)  # read in part (FORM_VALUE_CHARS): never judged as the whole value
-    # "cut": the labels whose values were read in part; "unset": choices left in their "no selection" state.
-    return dict(found, fields=fields, cut=cut, unset=[str(u) for u in found.get("unset") or [] if str(u).strip()])
+            if len(item) > 5 and item[5] and _FORMAT_PLACEHOLDER.match(str(item[5])):
+                formats[str(label)] = str(item[5])[:20]  # its placeholder's date format (values.stated_date_order)
+    # "cut": the labels whose values were read in part; "unset": choices left in their "no selection" state;
+    # "formats": {label: the date format its placeholder writes}.
+    return dict(found, fields=fields, cut=cut, unset=[str(u) for u in found.get("unset") or [] if str(u).strip()],
+                formats=formats)
 
 
 # The largest WebSocket frame read from the browser (a screenshot of a large page is a few MB), and how many

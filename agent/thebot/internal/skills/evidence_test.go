@@ -30,6 +30,34 @@ func TestWhatIsReadIsKeptAsUnitsWithTheirSource(t *testing.T) {
 	}
 }
 
+// Found live (2026-11-10): "gui read e700" was kept as a document named "e700", and the coverage check sent the work
+// back three times with "e700 (read; none of its figures went into what was entered)".
+func TestAnElementReadOffTheScreenIsScreenEvidenceNeverACoverageGap(t *testing.T) {
+	st := &operatorState{ActiveWindow: "Return summary - Portal - Chromium"}
+	st.noteEvidence("gui read e700", "text \"Summary\" (e700) holds 52 characters in 2 lines:\nTaxable value 41,250.00\nTax 7,425.00")
+	st.noteEvidence("gui read --role textbox --name Notes", "textbox \"Notes\" (e12) holds 14 characters in 1 line:\nRef 99881 kept")
+	for _, u := range st.Units {
+		if u.Kind != "screen" || u.Source != screenSource("Return summary - Portal - Chromium") {
+			t.Fatalf("an element read became %+v", u)
+		}
+	}
+	if gaps := st.coverageGaps(); len(gaps) != 0 {
+		t.Fatalf("an element read is a coverage gap: %q", gaps)
+	}
+	if issues := st.coverageIssues("Filed."); len(issues) != 0 {
+		t.Fatalf("an element read sent the work back: %+v", issues)
+	}
+	// Still evidence: a record's values it shows stand together in it.
+	if !st.unitHolds("7425.00") || st.recordFinding([]string{"41250.00", "7425.00"}) != "" {
+		t.Error("what an element read showed is no longer evidence")
+	}
+	// A document read whole still counts.
+	st.noteEvidence("office read /w/Invoice_455.pdf", "Invoice No: 455\nTaxable 8,000.00")
+	if gaps := strings.Join(st.coverageGaps(), "\n"); !strings.Contains(gaps, "Invoice_455.pdf (read;") {
+		t.Fatalf("a document read and never entered is no longer a gap: %q", gaps)
+	}
+}
+
 // Found live (2026-10-23): invoice 455's number with 456's amount.
 func TestValuesOfOneRecordFromDifferentSourceRecordsAreFound(t *testing.T) {
 	st := &operatorState{Hosted: true}

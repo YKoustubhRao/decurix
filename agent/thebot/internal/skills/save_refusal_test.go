@@ -108,6 +108,68 @@ func TestTheOperatorAsksInsteadOfTryingTheSameRefusedSaveAgain(t *testing.T) {
 	}
 }
 
+// A save refused because it waits on the agent's own question to the person (core.PERSON_ASK_MARKER), as the gui
+// command printed it in the live run of 2026-11-10.
+const dateAskRefusal = "gui: Not pressed: the form does not hold what record B-2 says - Date (DD-MM-YYYY) holds " +
+	"'02-04-2027' and the record says '02-04-2027', and which day '02-04-2027' is cannot be told from here - this needs " +
+	"the person.\nASKS_PERSON: Before I save: the document writes the date 02-04-2027, which can be read two ways. " +
+	"Reply 1 if it is 2 April 2027 (day first), or 2 if it is 4 February 2027 (month first)."
+
+// TestASaveWaitingOnTheAgentsQuestionAsksAtOnce: found live (2026-11-10) - the date question waited for the worker's
+// next HELP, which never came; the first such refusal now asks, with the agent's own question.
+func TestASaveWaitingOnTheAgentsQuestionAsksAtOnce(t *testing.T) {
+	st := &operatorState{}
+	st.noteSaveRefusal("gui click e16", refused(dateAskRefusal))
+	q := st.SaveRefusalAsk
+	if !strings.HasPrefix(q, "Before I save: the document writes the date 02-04-2027") ||
+		!strings.Contains(q, "which can be read two ways. Reply 1 if it is") {
+		t.Fatalf("not asked at once with the agent's question: %q", q)
+	}
+	if st.SaveRefusals != 0 {
+		t.Errorf("counted as a repeat: %d", st.SaveRefusals)
+	}
+	// The marker counts only on a gui action the save check refused.
+	for _, r := range []struct {
+		command string
+		res     shellResult
+	}{
+		{"cat notes.txt", refused(dateAskRefusal)},
+		{"gui click e16", shellResult{ExitCode: 0, Output: dateAskRefusal}},
+		{"gui click e16", refused("gui: something else\nASKS_PERSON: Before I save: ...")},
+	} {
+		st := &operatorState{}
+		st.noteSaveRefusal(r.command, r.res)
+		if st.SaveRefusalAsk != "" {
+			t.Errorf("%s (exit %d) asked: %q", r.command, r.res.ExitCode, st.SaveRefusalAsk)
+		}
+	}
+}
+
+func TestTheOperatorAsksTheAgentsQuestionOnTheFirstRefusal(t *testing.T) {
+	refuse := `gui() { printf '%s\n' "` + strings.ReplaceAll(dateAskRefusal, `"`, `\"`) + `"; return 1; }; gui click e16`
+	chat := &scriptedChat{replies: []string{
+		"COMMAND:\n" + refuse,
+		"COMMAND:\necho went round the save", // never run: the person is asked first
+		"DONE:\nSaved.",
+	}}
+	res, err := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "enter the bill", Type: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Verified || res.Meta["needsUserInput"] != true {
+		t.Fatalf("not a question: %+v", res)
+	}
+	if q, _ := res.Meta["question"].(string); !strings.Contains(q, "Reply 1 if it is 2 April 2027 (day first)") {
+		t.Fatalf("question = %q", q)
+	}
+	if len(chat.calls) != 1 {
+		t.Fatalf("the model was asked %d times; the loop should ask the person after the first refusal", len(chat.calls))
+	}
+	if res.Checkpoint == nil {
+		t.Fatal("the goal was not kept for the person's answer")
+	}
+}
+
 // TestARefusedMadeUpValueNamesItsField: the agent's refusal of a value that looks made up names its field as
 // "any source: UQC: 'NA'"; the person is asked about UQC, and a refusal naming no field never says "the field it
 // names: the field it names" (found live 2026-11-09).

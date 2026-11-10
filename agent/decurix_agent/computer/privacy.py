@@ -89,9 +89,18 @@ def request_pins(text):
 # A secret after its name in a request: "password Northwind#2026", "api key=abc", "token is xyz". (A PIN is
 # PIN_VALUE's.) The value runs to a space or a quote: "password: Abc;123xyz" is all secret (review 2026-11-03: the
 # part after ";" got through); the punctuation that ends it ("x9y8z7);") is left out.
+# An apostrophe between two letters ("receiver's", "don't") is part of its word, never a quote mark (found live
+# 2026-11-10: possessives in a lesson read as quote marks): _APOSTROPHE. A quote mark that opens a quoted value is a
+# double one, or a single one that is not such an apostrophe: _QUOTE_OPEN.
+_APOSTROPHE = r"(?<=[^\W\d_])['\u2018\u2019](?=[^\W\d_])"
+_APOSTROPHE_RE = re.compile(_APOSTROPHE)
+_QUOTE_OPEN = r"(?:[\"\u201c]|(?<![^\W\d_])['\u2018]|['\u2018](?![^\W\d_]))"
+# What may follow a value: a space, a quote mark that closes (not an apostrophe going on into a word), the end.
+_VALUE_END = r"(?:[\s\"\u201d]|['\u2019](?![^\W\d_])|$)"
 REQUEST_SECRET = re.compile(
     r"(?i)\b(?P<label>pass(?:word|code|phrase)|pwd|otp|one[- ]time (?:code|password)|token|api[ _-]?key|secret(?: key)?)"
-    r"\b\s*(is\s+|[:=]\s*)?([\"'\u201c\u2018]?)([^\s\"'\u201d\u2019]{2,199}?[^\s\"'\u201d\u2019.,;:!?)\]])(?=[.,;:!?)\]]*(?:[\s\"'\u201d\u2019]|$))")
+    r"\b\s*(is\s+|[:=]\s*)?(" + _QUOTE_OPEN + r"?)((?:[^\s\"'\u201d\u2019]|" + _APOSTROPHE + r"){2,199}?"
+    r"[^\s\"'\u201d\u2019.,;:!?)\]])(?=[.,;:!?)\]]*" + _VALUE_END + r")")
 _WORD = re.compile(r"[^\s\"'\u201c\u201d\u2018\u2019(),;<>\[\]{}=]+")
 # A whole word between spaces or quotes, checked as well as its parts: a password with a ";" or "," in it is one
 # word here and two for _WORD.
@@ -135,11 +144,30 @@ def _request_value(m):
         return False
     if value.isalpha() and value.lower() in {"number", "no", "code", "id", "field", "box", "reset"}:
         return False
-    if m.group(2) or m.group(3):
+    if m.group(3):
         return True
+    if m.group(2):
+        # "OTP: ask me for it" is an instruction, not a code (found live 2026-11-10, _runs_on).
+        return not _runs_on(m.string, value, m.end(4))
     if m.group("label").lower().startswith(("token", "api", "secret")):
         return len(value) >= 16 and re.search(r"[A-Za-z]", value) is not None and re.search(r"\d", value) is not None
-    return not value.isalpha()
+    return not _APOSTROPHE_RE.sub("", value).isalpha()  # ("the OTP isn't here": a word, its apostrophe aside)
+
+
+# What follows a word that runs on into its sentence: spaces on the same line, then another word.
+_RUNS_ON = re.compile(r"[ \t]+[^\W\d_]")
+
+
+def _runs_on(text, value, end):
+    """Whether `value`, unquoted after a secret's name and ending at `end` in `text`, is a word of a running sentence
+    rather than a value: a plain lowercase word (an apostrophe between its letters aside: "don't") with more words of
+    the same clause straight after it - no punctuation between, the same line ("OTP: ask me for it", "the OTP is sent
+    to the client"). A value written after its name is digits, mixed, marked, or stands alone at the end of its clause
+    ("password: tiger."). Found live (2026-11-10): "Only the client has the OTP: ask me for it" kept "ask" as a
+    secret, and every "ask" of a taught lesson read [withheld]."""
+
+    bare = _APOSTROPHE_RE.sub("", value or "")
+    return bool(bare) and bare.isalpha() and bare.islower() and _RUNS_ON.match(text, end) is not None
 
 
 def remember_secrets(text):
@@ -856,7 +884,7 @@ def _credential_in(text):
 
     for label, pattern, group in GENERIC_SECRETS:
         for match in pattern.finditer(text):
-            if _is_secret_value(label, match.group(group) if group else match.group(0)):
+            if _is_secret_value(label, match.group(group) if group else match.group(0), match, group):
                 return label
 
     for match in PIN_VALUE.finditer(text):
@@ -874,9 +902,14 @@ def _credential_in(text):
 # A credential written out in a sentence: `the password "Ttlh"`, `otp: '1234'`. A task's
 # own words often carry one, and a recording's title and description are shown to
 # anyone who opens the page and exported with it. (A PIN is PIN_VALUE's: digits only, so "pin 'Mumbai'" is none.)
+# An apostrophe between two letters is never one of its quote marks: "the OTP sent to the client's phone; the
+# receiver's GSTIN" quotes nothing (found live 2026-11-10: possessives in a lesson read as quote marks). It may stand
+# inside a quoted value ("password 'Tom's9'"). (_APOSTROPHE, _QUOTE_OPEN: above, REQUEST_SECRET's.)
+_QUOTE_CLOSE = r"(?:[\"\u201d]|(?<![^\W\d_])['\u2019]|['\u2019](?![^\W\d_]))"
 SPOKEN_SECRET = re.compile(
-    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|otp|cvv2?)\b[\"'\u201d\u2019]?[^\"'\u201c\u2018\n]{0,20}?"
-    r"[\"'\u201c\u2018]((?=[^\s\"'\u201d\u2019])[^\"'\u201d\u2019\n]{1,200})[\"'\u201d\u2019]"
+    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|otp|cvv2?)\b" + _QUOTE_CLOSE + r"?"
+    r"(?:[^\"'\u201c\u2018\n]|" + _APOSTROPHE + r"){0,20}?"
+    + _QUOTE_OPEN + r"((?=[^\s\"'\u201d\u2019])(?:[^\"'\u201d\u2019\n]|" + _APOSTROPHE + r"){1,200})" + _QUOTE_CLOSE
 )
 
 
@@ -886,9 +919,11 @@ SPOKEN_SECRET = re.compile(
 _SECRET_NAME = (r"pass(?:word|code|phrase)|passwd|pwd|api[ _-]?(?:key|secret)|secret(?:[ _-]?key)?|client[ _-]?secret"
                 r"|access[ _-]?(?:key|token)|refresh[ _-]?token|auth(?:entication)?[ _-]?token|private[ _-]?key|token")
 # The value runs to a space or a quote ("password: Abc;123xyz" is all secret; review 2026-11-03 found the part after
-# ";" let through); the punctuation that ends it is left out.
+# ";" let through); the punctuation that ends it is left out. An apostrophe between two letters is part of it
+# ("password: don't guess" is one word, _runs_on).
 LABELLED_SECRET = re.compile(
-    r"(?i)(?<![A-Za-z])(?:" + _SECRET_NAME + r")(?![A-Za-z])\s*[:=]\s*[`\"'“‘]?([^\s`\"'”’]{2,199}?[^\s`\"'”’.,;:!?)\]])(?=[.,;:!?)\]]*(?:[\s`\"'”’]|$))")
+    r"(?i)(?<![A-Za-z])(?:" + _SECRET_NAME + r")(?![A-Za-z])\s*[:=]\s*[`\"'“‘]?((?:[^\s`\"'”’]|" + _APOSTROPHE
+    + r"){2,199}?[^\s`\"'”’.,;:!?)\]])(?=[.,;:!?)\]]*(?:`|" + _VALUE_END + r"))")
 
 # Generic shapes of a secret written out, beyond the named credentials above (review 2026-11-02: only named secrets
 # were withheld). Each is unambiguous on its own or by the word next to it, so a figure, a date, a GSTIN, an invoice
@@ -940,12 +975,19 @@ def _entropy(value):
     return -sum(n / len(value) * math.log2(n / len(value)) for n in counts.values())
 
 
-def _is_secret_value(label, value):
-    """Whether what a GENERIC_SECRETS pattern caught is a secret's value (and not already withheld)."""
+def _is_secret_value(label, value, match=None, group=0):
+    """Whether what a GENERIC_SECRETS pattern caught is a secret's value (and not already withheld). `match` and
+    `group`, when given, say where it stands: a plain word running on into its sentence after "password:" is an
+    instruction ("password: ask the client for it", _runs_on), unless it was quoted."""
 
     value = value or ""
     if not value or value.startswith("[withheld") or value.startswith("[held back"):
         return False
+    if label == "password" and match is not None and group:
+        at = match.start(group)
+        quoted = at > 0 and match.string[at - 1] in "`\"'“‘"
+        if not quoted and _runs_on(match.string, value, match.end(group)):
+            return False
     if label in ("private key", "password in a web address", "one-time code", "card security code"):
         return True
     if label == "password said":
@@ -994,7 +1036,7 @@ def _withhold_shapes(text):
     for label, pattern, group in GENERIC_SECRETS:
         def hide(m, label=label, group=group):
             value = m.group(group) if group else m.group(0)
-            if not _is_secret_value(label, value):
+            if not _is_secret_value(label, value, m, group):
                 return m.group(0)
             if not group:
                 return "[withheld: " + label + "]"
@@ -1032,12 +1074,31 @@ _URL = re.compile(r"(?i)(?:[a-z][a-z0-9+.-]*://|www\.)\S+")
 _HOST = re.compile(r"(?i)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
 _TIME_WORD = re.compile(r"(?i)\d{1,2}[:.]\d{2}(?::\d{2})?(?:[ap]\.?m\.?)?")
 _CONTRACTION = re.compile(r"[^\W\d_]+['\u2019][^\W\d_]+")
+# One figure over another: a rate or a share ("100/118", "18/100"), as Go's ratioWord.
+_RATIO = re.compile(r"[0-9]+(?:\.[0-9]+)?/[0-9]+(?:\.[0-9]+)?")
+
+
+def _letter_words(word):
+    """Whether a word is words of letters joined by hyphens ("tax-inclusive", "made-up", "one-time"): a hyphen alone
+    gives no word a value's shape (found live 2026-11-10: a lesson's hyphenated words were held as secrets)."""
+
+    parts = word.split("-")
+    return len(parts) > 1 and all(part and part.isalpha() for part in parts)
+
+
+def _value_shaped(word):
+    """Whether a word of a marked message has a value's shape: 4 or more characters with a digit or a mark
+    (punctuation or a symbol) in it, but not letters joined by hyphens alone (_letter_words). Go's valueShaped."""
+
+    return (len(word) >= 4 and any(ch.isdigit() or unicodedata.category(ch)[0] in "PS" for ch in word)
+            and not _letter_words(word))
 
 
 def _is_data(word, data_words):
     """Whether a value-shaped word of a marked message is data by its structure, not a secret: a number, an amount, a
     date or a time (values.py reads it so), an e-mail address, a URL or a host name, a word of letters with only an
-    apostrophe (a contraction), or a word the task's input files hold too (their data, not the person's secret) -
+    apostrophe (a contraction), one figure over another (a ratio: "100/118"), or a word the task's input files hold
+    too (their data, not the person's secret) -
     review round 5, R4-B1: a marked message's own figures and dates were withheld from the task's record ledger, so its
     saves could never pass."""
 
@@ -1046,7 +1107,7 @@ def _is_data(word, data_words):
         return True
     if _TIME_WORD.fullmatch(word) or _EMAIL.fullmatch(word) or _URL.match(word) or _HOST.fullmatch(word):
         return True
-    if _CONTRACTION.fullmatch(word):
+    if _CONTRACTION.fullmatch(word) or _RATIO.fullmatch(word):
         return True
     return word.casefold() in data_words
 
@@ -1094,8 +1155,7 @@ def marked_values(text):
         shaped = []
         for word in text.split():
             word = word.strip(_EDGE_PUNCTUATION)
-            if len(word) >= 4 and any(ch.isdigit() or unicodedata.category(ch)[0] in "PS" for ch in word) \
-                    and not _is_data(word, data_words):
+            if _value_shaped(word) and not _is_data(word, data_words):
                 shaped.append(WHOLE_TOKEN + word)
         # The message whole is always a value: every kept and emitted copy of it is withheld, whatever its length or
         # content (review round 6, R5-B1: dropping it for a long message carrying data put the message back in the

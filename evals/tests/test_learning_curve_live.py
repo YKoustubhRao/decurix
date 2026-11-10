@@ -48,7 +48,7 @@ def load(path):
 
 def args(out, **kw):
     base = dict(cp="http://cp", run="e1", workflow="gstr1-chat", arm="taught", build="ab3b380f",
-                cases="oc-5-january,oc-6-february", skill_cmd="", pilot=False, once=False, poll=0, out=out)
+                cases="oc-5-january,oc-6-february", skill_cmd="", pilot=False, freeze="freeze-2", once=False, poll=0, out=out)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -74,6 +74,7 @@ class TestLiveRows(unittest.TestCase):
         self.assertEqual(r["failed_graders"], ["reports-arn"])
         self.assertFalse(r["graders_pass"])
         self.assertNotIn("pilot", r)
+        self.assertEqual(r["freeze"], "freeze-2")
 
     def test_a_row_is_written_once_however_often_the_run_is_read(self):
         with mock.patch.object(lc, "get", answers("done", [ROW])):

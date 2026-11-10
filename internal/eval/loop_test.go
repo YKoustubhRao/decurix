@@ -249,3 +249,19 @@ func TestListedApprovalsDoNotCountTowardTheQuestionLimit(t *testing.T) {
 		t.Fatalf("a runaway of approvals: %+v", row)
 	}
 }
+
+// The expert's reply reaches the worker marked secret exactly when the records keep it withheld, as a person's reply
+// through the control plane does (C14.1): an OTP given is a secret, which the worker counts as no help; an ordinary
+// answer is not marked.
+func TestTheExpertsOTPReachesTheWorkerAsASecret(t *testing.T) {
+	otp := replyBody("t1", "The client read it out: the OTP is 730146.", "What is the OTP sent to the client's phone?", false)
+	if otp["secret"] != true || otp["content"] != "The client read it out: the OTP is 730146." || otp["task_id"] != "t1" {
+		t.Fatalf("an OTP reply: %+v", otp)
+	}
+	if plain := replyBody("t1", "Charge it to Birch.", "Which cost centre?", false); plain["secret"] != nil {
+		t.Fatalf("an ordinary reply was marked secret: %+v", plain)
+	}
+	if figure := replyBody("t1", "Invoice 1105 is 5,000.", "What is the amount of invoice 1105?", false); figure["secret"] != nil {
+		t.Fatalf("a figure the documents should hold was marked secret: %+v", figure)
+	}
+}

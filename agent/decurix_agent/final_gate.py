@@ -167,13 +167,22 @@ def _saved_unread():
 def _helped(run, guided):
     """
     Whether a run that ends done was helped, so it does not count towards the skill's trust: a person stepped in (a
-    correction, an answer that was more than the plan's plain yes - asked_person), the replay was taken over, or what
-    the run had reported done was reworked in the application (_reworked). Owner's decision 2026-11-09: the worker's
-    own check sending back a closing check or report that changed nothing saved is no help; found live, every gathered
-    month counted as helped because the gather, the replay and the closing check made more than one attempt.
+    corrected value, data the documents should have held, a "do X instead", a result sent back - asked_person), a
+    stuck replay step was put to them (asked_ids), the replay was taken over (now, or before a send-back put the run
+    back in the model's hands - taken_over), or what the run had reported done was reworked in the application
+    (_reworked). Owner's decision 2026-11-09: the worker's own check sending back a closing check or report that
+    changed nothing saved is no help; found live, every gathered month counted as helped because the gather, the replay
+    and the closing check made more than one attempt.
+
+    Owner's ruling 2026-11-10: an answer the rules require on every run is no help either, decided by the question it
+    answers, never by its words - the plan's plain yes and an OTP or other secret given and nothing more
+    (engine_questions._required_every_run), the gate's yes for an approval (note_approval), a hole in the documents'
+    own series confirmed (_confirm_reply), picked entries confirmed (_picks_reply), and the date order or a field's
+    unit (watchers). None of those sets asked_person; what carries an instruction or another value does.
     """
 
-    return guided["mode"] == "takeover" or bool(run.get("asked_person")) or _reworked(run)
+    return (guided["mode"] == "takeover" or bool(run.get("asked_person")) or bool(run.get("taken_over"))
+            or bool(run.get("asked_ids")) or _reworked(run))
 
 
 def _reworked(run):

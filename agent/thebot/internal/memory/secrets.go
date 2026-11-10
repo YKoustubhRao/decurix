@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ErrSecret is why Store refused a fact: it holds a secret-shaped value.
@@ -120,6 +121,92 @@ func secretValue(kind credentialKind, separated bool, value string) bool {
 	}
 }
 
+// namedSecret is the value a secretNamedRe match m in text gives after a credential's name, and whether it is that
+// credential's value (secretValue). A plain lowercase word running on into its sentence after "password:" is the
+// person's instruction, not a password ("password: ask the client for it", runsOn) - unless it was quoted.
+func namedSecret(text string, m []int) (string, bool) {
+	if m[8] < 0 {
+		return "", false
+	}
+	separated := m[4] >= 0 || m[6] >= 0
+	value := strings.TrimRight(text[m[8]:m[9]], ".!?:")
+	kind := kindOf(text[m[2]:m[3]])
+	if !secretValue(kind, separated, value) {
+		return value, false
+	}
+	quoted := m[8] > 0 && strings.ContainsAny(text[m[8]-1:m[8]], `"'`) ||
+		strings.HasSuffix(text[:m[8]], "“") || strings.HasSuffix(text[:m[8]], "‘")
+	if kind == kindPassword && separated && !quoted {
+		// The word as written: an apostrophe between letters is part of it ("password: don't guess").
+		word, end := value, m[8]+len(value)
+		if len(value) == m[9]-m[8] {
+			end = contractionEnd(text, end)
+			word = text[m[8]:end]
+		}
+		if runsOn(text, word, end) {
+			return value, false
+		}
+	}
+	return value, true
+}
+
+// contractionEnd is where the word ending at end in text really ends: past an apostrophe between two letters and the
+// letters after it ("don" in "don't" ends after the t).
+func contractionEnd(text string, end int) int {
+	for end > 0 && end < len(text) {
+		before, _ := utf8.DecodeLastRuneInString(text[:end])
+		mark, n := utf8.DecodeRuneInString(text[end:])
+		if (mark != '\'' && mark != '’') || !unicode.IsLetter(before) {
+			return end
+		}
+		after, _ := utf8.DecodeRuneInString(text[end+n:])
+		if !unicode.IsLetter(after) {
+			return end
+		}
+		end += n
+		for end < len(text) {
+			r, size := utf8.DecodeRuneInString(text[end:])
+			if !unicode.IsLetter(r) {
+				break
+			}
+			end += size
+		}
+	}
+	return end
+}
+
+// runsOn reports whether value, ending at end in text, is a word of a running sentence rather than a value: a plain
+// lowercase word (an apostrophe between its letters aside: "don't") with more words of the same clause straight after
+// it - spaces on the same line, then a letter, no punctuation between ("password: ask the client for it"). A value
+// written after its name is digits, mixed, marked, or stands alone at the end of its clause ("password: hunter.").
+// Found live (2026-11-10): "Only the client has the OTP: ask me for it" kept "ask" as a secret on the desktop, and a
+// taught lesson read "[withheld]" for every "ask" (the agent's privacy._runs_on and the control plane's
+// withhold.runsOn are the same rule).
+func runsOn(text, value string, end int) bool {
+	letters := false
+	for _, r := range value {
+		if r == '\'' || r == '’' {
+			continue
+		}
+		if !unicode.IsLetter(r) || !unicode.IsLower(r) {
+			return false
+		}
+		letters = true
+	}
+	if !letters {
+		return false
+	}
+	i := end
+	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
+		i++
+	}
+	if i == end || i >= len(text) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(text[i:])
+	return unicode.IsLetter(r)
+}
+
 // LooksSecret reports whether text holds a secret VALUE: a password, PIN,
 // OTP, login or key given after its name (secretValue decides, by the kind
 // of credential, whether the word after the name is one), a token or key
@@ -131,10 +218,8 @@ func LooksSecret(text string) bool {
 	if tokenShapeRe.MatchString(text) {
 		return true
 	}
-	for _, m := range secretNamedRe.FindAllStringSubmatch(text, -1) {
-		separated := m[2] != "" || m[3] != ""
-		value := strings.TrimRight(m[4], ".!?:")
-		if secretValue(kindOf(m[1]), separated, value) {
+	for _, m := range secretNamedRe.FindAllStringSubmatchIndex(text, -1) {
+		if _, ok := namedSecret(text, m); ok {
 			return true
 		}
 	}
@@ -165,19 +250,19 @@ const Withheld = "[withheld]"
 // random-looking run. It uses LooksSecret's own rules, so what is withheld and what is judged a secret never drift.
 func RedactSecrets(text string) string {
 	text = tokenShapeRe.ReplaceAllString(text, Withheld)
-	text = secretNamedRe.ReplaceAllStringFunc(text, func(match string) string {
-		m := secretNamedRe.FindStringSubmatchIndex(match)
-		if m == nil || m[8] < 0 {
-			return match
+	var b strings.Builder
+	last := 0
+	for _, m := range secretNamedRe.FindAllStringSubmatchIndex(text, -1) {
+		value, ok := namedSecret(text, m)
+		if !ok {
+			continue
 		}
-		separated := m[4] >= 0 || m[6] >= 0
-		raw := match[m[8]:m[9]]
-		value := strings.TrimRight(raw, ".!?:")
-		if !secretValue(kindOf(match[m[2]:m[3]]), separated, value) {
-			return match
-		}
-		return match[:m[8]] + Withheld + raw[len(value):] + match[m[9]:]
-	})
+		b.WriteString(text[last:m[8]])
+		b.WriteString(Withheld)
+		last = m[8] + len(value)
+	}
+	b.WriteString(text[last:])
+	text = b.String()
 	return longRunRe.ReplaceAllStringFunc(text, func(run string) string {
 		var upper, lower, digit bool
 		for _, r := range run {

@@ -502,6 +502,10 @@ def handle(call):
         # From the gate's own copy of the signed request only (approval.site_known in the gate).
         return {"known": approval.site_known(str(call.get("host") or ""), task_id=str(call.get("task_id") or ""),
                                              url=str(call.get("url") or "") or None)}
+    if op == "declined":
+        # Read only: the controls the person did not say yes to in a task, which the caller holds again. Nothing a
+        # caller sends adds to or removes from it (only a settled reply does, approval._note_declined).
+        return {"declined": approval._local_declined(str(call.get("task_id") or ""))}
     if op == "pending":
         return {"pending": with_question(approval._local_pending())}
     if op == "has_grant":

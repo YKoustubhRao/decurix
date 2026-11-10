@@ -101,6 +101,9 @@ func (st *operatorState) addUnit(kind, source, text string) {
 		return
 	}
 	st.Units = append(st.Units, evidenceUnit{Kind: kind, Source: source, Text: truncateText(text, maxUnitChars)})
+	if sourceKind(kind) || kind == "person" {
+		st.Changes++ // a source read or a reply of the person can settle a review point (knowledge.go unsentPoints)
+	}
 	size := 0
 	for _, u := range st.Units {
 		size += len(u.Text)
@@ -135,13 +138,26 @@ func (st *operatorState) noteEvidence(command, output string) {
 		return
 	}
 	segs := shellSegments(command)
-	if len(segs) == 1 && (officeReadRe.MatchString(segs[0].Text) || guiReadRe.MatchString(segs[0].Text)) {
+	if len(segs) == 1 && guiReadRe.MatchString(segs[0].Text) {
+		// gui read shows what an element on the screen holds (a field, a page's text): screen evidence, kept whole so a
+		// record's values in it stand together - never a document of the work that what went out must reflect. Found live
+		// (2026-11-10): "gui read e700" was kept as a document named "e700", and the coverage check sent the work back
+		// three times with "e700 (read; none of its figures went into what was entered)"; the worker read more elements
+		// to settle it, each one more such "document".
+		source := "the screen"
+		if st.ActiveWindow != "" {
+			source = screenSource(st.ActiveWindow)
+		}
+		st.addUnit("screen", source, output)
+		return
+	}
+	if len(segs) == 1 && officeReadRe.MatchString(segs[0].Text) {
 		args := positional(shellWords(segs[0].Text)[2:])
 		source := "a file"
 		if len(args) > 0 {
 			source = path.Base(strings.ReplaceAll(unquoteWord(args[0]), `\`, "/"))
 		}
-		if guiReadRe.MatchString(segs[0].Text) || (len(args) > 0 && docFileTypeRe.MatchString(source)) {
+		if len(args) > 0 && docFileTypeRe.MatchString(source) {
 			st.addUnit("document", source, output)
 			return
 		}

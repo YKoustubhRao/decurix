@@ -785,6 +785,11 @@ type operatorState struct {
 	AnsweredKeys  map[string]string `json:",omitempty"`
 	WorkSendBacks int               `json:",omitempty"`
 	lastWork      []reviewIssue
+	// Changes counts what could settle a review point: a command that does more than look, a source read, a reply of
+	// the person. SentPoints is each point sent back to the worker (sentKey) with Changes as it was then: one sent with
+	// nothing changed since is not sent again (knowledge.go unsentPoints).
+	Changes    int            `json:",omitempty"`
+	SentPoints map[string]int `json:",omitempty"`
 	// UnseenTold is each window the report was once told it typed into without looking again (evidence.go unseenTyping).
 	UnseenTold map[string]bool `json:",omitempty"`
 	// AnswerUnreviewed is set when the person answered a question about the calls and no round has weighed it since:
@@ -1260,6 +1265,9 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	// The task's trace carries the output, bounded, not its first line alone; withheld before it is bounded.
 	rc.Logf("operator", "%s", traceLine(shellResult{ExitCode: res.ExitCode, TimedOut: res.TimedOut, Output: clean(res.Output)}))
 	st.CommandsRun++
+	if !onlyLooks(command) {
+		st.Changes++ // (a failed command too: a chain can act before its last step fails)
+	}
 	if guiOpenRe.MatchString(command) {
 		st.Opens = append(st.Opens, strings.TrimSpace(command)+" -> "+headline(res))
 	}
@@ -2204,7 +2212,8 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			}
 			if q := st.SaveRefusalAsk; q != "" {
 				st.SaveRefusalAsk = ""
-				rc.Logf("operator", "the save check refused the same unchanged form %d times - asking the person", maxSameSaveRefusals)
+				// (Or at once, for a refusal that waits on the agent's own question to the person: save_refusal.go.)
+				rc.Logf("operator", "the save check refused the form and only the person can clear it - asking them")
 				return ask(q)
 			}
 

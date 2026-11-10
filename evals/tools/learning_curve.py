@@ -253,6 +253,8 @@ def live_row(cp, r, a, order, skill):
     }
     if a.pilot:
         row["pilot"] = True
+    if getattr(a, "freeze", ""):
+        row["freeze"] = a.freeze  # (which frozen build's curve this row belongs to, for the page to group)
     return row
 
 
@@ -390,6 +392,7 @@ def main(argv=None):
     v.add_argument("--cases", default="", help="the run's case ids in curve order (n = place in this list)")
     v.add_argument("--skill-cmd", default="", help="a command printing the taught skill's JSON, for its trust")
     v.add_argument("--pilot", action="store_true")
+    v.add_argument("--freeze", default="", help="the curve's freeze label (e.g. freeze-2), kept on each row")
     v.add_argument("--once", action="store_true", help="one pass, then return (backfill)")
     v.add_argument("--poll", type=float, default=60)
     v.add_argument("--out", required=True, help="the curve's JSON list (created when missing)")

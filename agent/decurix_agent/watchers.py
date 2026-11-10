@@ -813,6 +813,12 @@ def answer_waiting(path, content, already_marked=False):
                 skill_task.learn_answer(content, secret=secret, judgement_id=state.reply_judgement)
             except Exception as exc:
                 log(f"Could not keep the answer on the skill: {exc}")
+        elif outcome is not None:
+            # An approval's yes is no help; a no, a condition or "do X instead" is (engine_questions.note_approval).
+            try:
+                skill_task.engine_questions.note_approval(outcome)
+            except Exception as exc:  # noqa: BLE001
+                log(f"Could not note the approval's reply on the run: {exc}")
         target, args = continue_after_query, (content,)
         # A reply that only calls the task off ends it here: the
         # engine is not handed it. Found live: told `stop` at a

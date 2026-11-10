@@ -286,6 +286,13 @@ The curves run on one frozen build; these were seen on it or on the pilot build 
   that asks for a secret (secret: true by structure), never because it names the OTP while explaining the work.
   The lane re-taught gstr1-chat with plain-word replies as a workaround; books and gstr1-books curves run on lessons
   stored with the holes.
+  **Fixed 2026-11-10 (uncommitted):** see gotchas part-6, "A lesson that named the OTP was taught with holes"
+  (control plane, agent and soul; lessons stored with holes must be taught again on a recreated desktop).
+
+- **Approvals the person gave on earlier tasks do not hold a control on this one.** The gate's holds (core._person_hold,
+  2026-11-10) read this task's declined controls, the worker's own question, and the steps the person approved while
+  teaching. They do not read the control plane's approvals log, which only humans can read (/api/access/approvals). A
+  desktop-readable view of it would be a control-plane change. Coordinator's ruling 2026-11-10: not now.
 
 ## Live checks after the next build
 
@@ -476,6 +483,8 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   `mira.k` too (any word with a digit or a mark), and since round 2 that value is held for 24 h by the call recorder
   and given to the gate, so the username is withheld from that desktop's calls and the gate's questions. Narrow the
   rule by the question's structure (the field it asks for), never by a word list.
+  **Narrowed 2026-11-10:** the sweep now reads only a bare answer (one line, at most 5 words); this reply is kept as
+  `Text` keeps it (the password withheld, `mira.k` kept). A short "user mira.k, pwd x" is still swept.
 - **A secret reply whose question changes between Plan and commit** (a faster reply resumed the task and it asked
   again) can be told "secret" by one intervention and stored by another (C14.1 decides before delivery, the store at
   commit). The window is the length of a delivery. The late remember in `recordDelivered` feeds the call recorder

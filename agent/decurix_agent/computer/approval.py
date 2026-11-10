@@ -1537,6 +1537,10 @@ def _decide_local(fingerprint, description, reason, element, about):
             "action": description,
             "about": about or "",
             "created": time.time(),
+            # Which task and control it was, so a no to it holds that control for the rest of the task (_note_declined).
+            "task": _store_task(),
+            "control": {"role": str((element or {}).get("role") or ""),
+                        "name": " ".join(str((element or {}).get("name") or "").split())[:120]},
         }
         state["pending"] = request
 
@@ -1555,6 +1559,57 @@ def _local_pending():
 
     with _locked() as state:
         return state["pending"]
+
+
+MAX_DECLINED = 50
+
+
+def _store_task():
+    """The task an approval in this store belongs to: in the gate, the one the signed request named (_gate_task)."""
+
+    return (_gate_task.id if IN_GATE else "") or _task_now() or ""
+
+
+def _note_declined(state, request):
+    """
+    Keep that the person did not say yes to this request's control, for the rest of its task (declined_controls).
+    Found live (2026-11-10, a return-prep eval): "Save to portal" was put to the person, the reply did not say yes, and
+    the worker pressed it again a moment later - the hold had been the plan's, the plan was not in force after the
+    reply, and the write went out with no yes. A no only ever adds a hold; nothing here makes a grant.
+    """
+
+    control = request.get("control") or {}
+    if not request.get("task") or not str(control.get("name") or "").strip():
+        return
+    declined = [d for d in state.get("declined") or [] if isinstance(d, dict)]
+    declined.append({"task": request["task"], "control": control, "at": time.time()})
+    state["declined"] = declined[-MAX_DECLINED:]
+
+
+def _local_declined(task_id):
+    """The controls the person did not say yes to in this task ([{"role", "name"}]), in this store."""
+
+    if not task_id:
+        return []
+    with _locked() as state:
+        return [dict(d["control"]) for d in state.get("declined") or []
+                if isinstance(d, dict) and d.get("task") == task_id and isinstance(d.get("control"), dict)]
+
+
+def declined_controls(task_id=None):
+    """The controls the person did not say yes to when asked in this task: the gate's record, read only (it is the
+    gate's to keep; a caller can neither add nor remove one). [] when there is none or the gate does not answer."""
+
+    task_id = task_id or _task_now()
+    if not task_id:
+        return []
+    if not remote():
+        return _local_declined(task_id)
+    try:
+        found = gate_call("declined", task_id=task_id).get("declined")
+    except (OSError, ValueError):
+        return []
+    return [c for c in found or [] if isinstance(c, dict)]
 
 
 def _local_resolve_reply(reply, asked=""):
@@ -1595,6 +1650,7 @@ def _local_resolve_reply(reply, asked=""):
         state["reading"] = dict(said, reply=" ".join(str(reply or "").split()), at=time.time())
 
         if said["decision"] != "yes":
+            _note_declined(state, request)
             return "declined"
 
         state["grants"].append({

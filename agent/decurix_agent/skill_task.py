@@ -1279,6 +1279,12 @@ def _execute(run):
                               "A step that was skipped or done by hand was not checked."})
         return
 
+    # Each item's choice of a record the person made before the block: searched for by the identifier the item's own
+    # document gives when its list has no entry by that name (replay._run_step).
+    ids = _lookup_ids(run, program)
+    if ids:
+        program["steps"] = [dict(s, ids=ids[s["n"]]) if s.get("n") in ids else s for s in program["steps"]]
+
     ladder = run["ladder"]
     ladder.total = len(program["steps"])
 
@@ -1338,6 +1344,134 @@ def _click_left_to_a_person(steps, n):
     step = steps[n - 1]
     what = " ".join(str(step.get("by_hand") or "").lower().split())
     return step.get("kind") == "manual" and bool(what) and what.startswith(("click", "double", "right", "press", "scroll"))
+
+
+# An item's step in a program written out per item (skills.expand): its parameter "<list>__<n>".
+_ITEM_PARAM = re.compile(r"^(?P<base>.+)__(?P<n>\d+)$")
+
+
+def _entered_documents(run):
+    """The documents of a run done once per document that its replay enters, in item order ([] for any other run)."""
+
+    if run.get("gathered") != "done":
+        return []
+    gone = {x["document"] for x in (run.get("left_out") or []) + (run.get("by_hand") or [])}
+    return [d for d in run.get("documents") or [] if d not in gone]
+
+
+def _lookup_ids(run, program):
+    """
+    {step number: [identifier]} for each step of the written-out program that chooses, for item n, a record the person
+    made before the per-item block (skills.made_before), where that making typed an identifier: the one token of item
+    n's own document with that identifier's shape that the run's other documents do not all hold (skills.identifier_in
+    - the sender's own number is on every one of them). Only in a run done once per document with two or more
+    documents; a step with no such token gets none, and runs as before. Never raises.
+    """
+
+    try:
+        made = [m for m in skills.made_before(run["skill"], _loop_start(run["skill"])) if m.get("identifier")]
+        docs = _entered_documents(run)
+        if not made or len(docs) < 2:
+            return {}
+        params = {p["name"]: p for p in run["skill"].get("params") or []}
+        texts = {}
+        out = {}
+        for step in program.get("steps") or []:
+            m = _ITEM_PARAM.match(str(step.get("param") or ""))
+            if step.get("kind") != "select" or not m:
+                continue
+            making = next((x for x in made if x["pick"] == m.group("base")), None)
+            n = int(m.group("n"))
+            if making is None or not 1 <= n <= len(docs):
+                continue
+            for d in docs:
+                if d not in texts:
+                    texts[d] = binding._document_text(d)
+            example = params.get(making["identifier"], {}).get("example") or params.get(making["identifier"], {}).get("default")
+            ident = skills.identifier_in(example, texts[docs[n - 1]], [texts[d] for d in docs if d != docs[n - 1]])
+            if ident:
+                out[step["n"]] = [ident]
+        return out
+    except Exception as exc:  # noqa: BLE001 - no identifiers: each choice runs by name, as before
+        log(f"Skill {run['skill']['name']}: the items' identifiers were not read: {exc}")
+        return {}
+
+
+def _where_in_lesson(run, from_step):
+    """
+    Where step `from_step` of this run's written-out program (skills.expand) is in the person's steps the engine is
+    shown: "step 68 of this run is the person's step 43, for item 2 of 5 (1073 X.docx)", or "" when it is the same.
+    """
+
+    program = run.get("expanded") or {}
+    steps = program.get("steps") or []
+    if not from_step or from_step > len(steps) or len(steps) == len(run["skill"].get("steps") or []):
+        return ""
+    step = steps[from_step - 1]
+    own = next((s["n"] for s in run["skill"].get("steps") or [] if s.get("id") == step.get("id")), None)
+    if own is None:
+        return ""
+    item = re.search(r"\(item (\d+) of (\d+)\)\s*$", str(step.get("summary") or ""))
+    docs = _entered_documents(run)
+    text = f"Step {from_step} of this run is the person's step {own}"
+    if item:
+        n = int(item.group(1))
+        text += f", for item {n} of {item.group(2)}"
+        if len(docs) >= n:
+            text += f" (the document {Path(docs[n - 1]).name})"
+    return text + "."
+
+
+def _takeover_ledger_note():
+    """What the record ledger of this task says was saved and what is left, for an engine taking over part way: the
+    saved records are never entered again (records.ledger_lines). "" when nothing was declared."""
+
+    try:
+        lines = records.ledger_lines(task_context.current())
+    except Exception:  # noqa: BLE001 - the note is guidance; the save's own checks stand without it
+        return ""
+    if not lines:
+        return ""
+    return ("What this task has entered so far, from its record ledger - each record marked saved IS in the "
+            "application: never enter it again, do not declare it again under another key, and do not open a new "
+            "form for it. Enter only those left, each once:\n" + "\n".join(lines))
+
+
+def _made_how(run):
+    """
+    The engine's how-to line for a list that has no entry for an item: when the person's own steps before the
+    per-item block made such a record (skills.made_before), make it the way they did - with the steps named - never a
+    question for the person; else, as before, a question for the person (HELP).
+    """
+
+    skill = run["skill"]
+    made = skills.made_before(skill, _loop_start(skill))
+    if not made:
+        between = any(loop.get("between_summaries") for loop in skill.get("loops") or [])
+        if between:
+            return ("If it stopped because a list has no entry for something, look at what the person did between "
+                    "items (above): if it made such an entry, make it the same way from this item's document; "
+                    "otherwise that is a question for the person (HELP), not something to work around.")
+        return ("If it stopped because a list has no entry for something, that is a question for the person (HELP), "
+                "not something to work around.")
+    by_n = {s["n"]: s for s in skill.get("steps") or []}
+    parts = []
+    for m in made:
+        first, last = m["steps"][0], m["steps"][-1]
+        param = next((p for p in skill.get("params") or [] if p["name"] == m["pick"]), {})
+        what = param.get("label") or m["pick"]
+        typed = [f"{by_n[n].get('summary') or by_n[n]['kind']}" for n in m["steps"] if n in by_n
+                 and by_n[n].get("kind") in ("type", "select")][:8]
+        line = (f"If it stopped because the list for {what} has no entry for this item, the lesson itself shows what to "
+                f"do: the person's steps {first}-{last} MADE such a record ({'; '.join(typed)}). Make it the same way, "
+                "with every value read from THIS item's document")
+        if m.get("identifier"):
+            line += (" - first resolve its identifier (gui select REF \"<the name as the document writes it>\" --id "
+                     "<the identifier the document gives>) so an existing record holding it is used, never made twice")
+        line += (". Save it once, then go back and pick it for this item, and carry on. Ask the person (HELP) only "
+                 "when the document does not give what the record needs.")
+        parts.append(line)
+    return " ".join(parts)
 
 
 def _approval_text(run, result, values):
@@ -1838,7 +1972,8 @@ def _succeed(run, result, checked_by, seen="", helped=False):
     # the run's own copy is older, and saving it whole would erase that.
     _keep_noted_since(skill)
     experience.note_verdict(skill, "replay", True, checked_by=checked_by,
-                            helped=helped or bool(run["asked_ids"]) or bool(run.get("taken_over")),
+                            helped=helped or bool(run["asked_ids"]) or bool(run.get("taken_over"))
+                            or bool(run.get("asked_person")),
                             basis=basis)
     skills.save(skill)
     text += experience.advice(skill)
@@ -1914,8 +2049,10 @@ def _run_reply(paused, reply, approval_outcome):
             run["approved" if kind == "go" else "checked"] = True
             return _prepare(run)
         if said["decision"] == "if" and kind == "start" and _engine_can_drive():
-            # "yes, close the popup first": the model takes the run, with their words.
+            # "yes, close the popup first": the model takes the run, with their words - the person directed it, so the
+            # run was helped (a plain yes to start is not: final_gate._helped).
             run["checked"] = True
+            run["asked_person"] = True
             return _by_model(run, note=f"The person said, about starting from the screen as it was: {reply}")
         if said["decision"] == "no" or paused.get("asked_again"):
             return _stopped("before " + ("starting" if kind == "go" else "the first step") + ". Nothing was done.")
@@ -2619,7 +2756,13 @@ def _procedure(run, from_step=None, note="", ran=False, phase=None):
         lines.append(f"A replay of these steps already ran up to step {from_step} and stopped there: {note} "
                      + ("That step WAS done but its result did not show: look at the screen before doing anything - "
                         "never repeat it blindly. " if ran else "")
-                     + f"Carry on from step {from_step}.")
+                     + f"Carry on from step {from_step}."
+                     + (" " + _where_in_lesson(run, from_step) if _where_in_lesson(run, from_step) else ""))
+        # What the replay saved before it stopped, from the record ledger: found live (2026-11-10), told only "carry on
+        # from step 68", the model entered the month's first bill - saved by the replay - a second time.
+        ledger = _takeover_ledger_note()
+        if ledger:
+            lines.append(ledger)
     elif note:
         lines.append(note)
 
@@ -2664,9 +2807,10 @@ def _procedure(run, from_step=None, note="", ran=False, phase=None):
         "and check each entry on the screen as you go.\n"
         "  4. The command stops at the first step it cannot do, and says which step and why. Look (gui observe), do THAT "
         "ONE step yourself with gui, and carry on with the same command and `--from N` for the next step number - "
-        "never from the start again: what it entered is there, and starting over enters the request twice. If it "
-        "stopped because a list has no entry for something, that is a question for the person (HELP), not "
-        "something to work around.\n"
+        "never from the start again: what it entered is there, and starting over enters the request twice. "
+        # Found live (2026-11-10): told a missing list entry is "a question for the person", the model was steered
+        # against the lesson itself, which made the new customer's ledger before the bills (_made_how).
+        + _made_how(run) + "\n"
         "  5. When it has run to the end it has checked nothing. Read the result off the screen (gui observe) "
         "against this run's values and the person's rules, and report what you read. Do not press its last "
         "step again to make sure: it ran. Found live - a save shortcut pressed a second time on a record just "

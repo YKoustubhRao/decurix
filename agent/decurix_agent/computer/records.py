@@ -66,18 +66,21 @@ def as_date(value, order=None):
     return values.as_iso(value, task_context.source_date_order() if order is None else order)
 
 
-def compare_shown(shown, wanted, source_order=None, label="", units=()):
+def compare_shown(shown, wanted, source_order=None, label="", units=(), date_format=""):
     """values.compare of what the application shows (`shown`, read under the application's date order) against what
     the record wants (`wanted`, read under its source's order: `source_order`, else the task's) - two orders, never one
     for both (review round 2, B4). `label`: the form field's label, whose stated unit a bare figure carries
     (values.field_units, review round 3, R5). `units`: more units the field takes, as the person said
-    (unit_answers.answered)."""
+    (unit_answers.answered). `date_format`: the field's placeholder when it writes a date format (cdp.FORM_FIELDS).
+    The application's order for `shown` is the one the field's own label or placeholder states for it
+    (values.stated_date_order: "Date (DD-MM-YYYY)"), else the task's (task_context.app_date_order)."""
 
     # (The same digits are not the same day when the two sides write dates in different orders: identical text is no
     # answer to which day it is - test_values, "the source's own digits". A record keeps a date the document writes
     # with its month named as the document writes it (declare), which settles it.)
-    return values.compare(shown, wanted, task_context.app_date_order(),
-                          source_order or task_context.source_date_order(),
+    app = (values.stated_date_order(" ".join(p for p in (str(label or ""), str(date_format or "")) if p), shown)
+           or task_context.app_date_order())
+    return values.compare(shown, wanted, app, source_order or task_context.source_date_order(),
                           values.field_units(label) | frozenset(units or ()))
 
 
@@ -337,6 +340,90 @@ def saved_on_form(records, form_fields):
                for label in own for flabel, fvalue in form_fields):
             return rec
     return None
+
+
+def same_source(a, b):
+    """Whether two sources name one document (a path written with ~ or with ./ parts is the same file)."""
+
+    def norm(source):
+        text = str(source or "").strip()
+        return os.path.normpath(os.path.expanduser(text)) if text else ""
+
+    return bool(norm(a)) and norm(a) == norm(b)
+
+
+def saved_from_same_document(records, source, fields):
+    """
+    The record of this task already saved from the same document `source` whose own key field (the declared field
+    whose intent is its key) is given the same value under the same label in `fields` ({label: value}) - or None.
+    One document, one number in the record's own number field: the same record, whatever key it is declared under.
+    Found live (2026-11-10, a month of bills): a replay declared and saved bill "1072"; the model that took over at
+    the next bill declared "V1072" from the same file, entered it again, and the books held the bill twice.
+    """
+
+    given = {tuple(label_words(label)): " ".join(str(value if value is not None else "").split())
+             for label, value in (fields or {}).items()}
+    for rec in reversed([r for r in records if r.get("saved_at")]):
+        if not same_source(rec.get("source"), source):
+            continue
+        key = rec.get("key") or ""
+        for label, f in (rec.get("fields") or {}).items():
+            if not (isinstance(f, dict) and f.get("intent") and same_value(f["intent"], key, order=_source_order(rec))):
+                continue
+            value = given.get(tuple(label_words(label)))
+            if value and same_value(value, key, order=""):
+                return rec
+    return None
+
+
+def read_back_whole(rec):
+    """Whether a saved record was read back whole off the page its save left: every declared value and line seen."""
+
+    rb = rec.get("readback") or {}
+    return bool(rec.get("saved_at") and rb.get("seen") and not rb.get("absent") and not _rows_unread(rec))
+
+
+def person_asked_again(rec, task_id=None):
+    """
+    Whether the person said, in this task, to save record `rec` again although it is saved: an answer the control
+    plane confirms as theirs (person_record.answers) to a question that named the record's key, read as a yes. Never
+    the worker's own files or words; nothing is confirmed when the control plane cannot be read. Never raises.
+    """
+
+    key = " ".join(str(rec.get("key") or "").split())
+    if not key:
+        return False
+    try:
+        from decurix_agent import person_record
+        from decurix_agent.computer import approval
+        for answer in person_record.answers(task_id):
+            if stands_in(key, answer.get("asked") or "") and approval.says_yes(answer.get("text") or "",
+                                                                                answer.get("asked") or ""):
+                return True
+    except Exception:  # noqa: BLE001 - what cannot be confirmed lets nothing through
+        return False
+    return False
+
+
+def ledger_lines(task_id=None, limit=40):
+    """
+    What this task's record ledger holds, for a worker taking the work over part way (a replay that stopped): one line
+    per record - each saved one ("saved: KEY - never enter it again"), whether it was read back whole, and each
+    declared one not saved yet ("left: KEY"). [] when nothing was declared.
+    """
+
+    lines = []
+    for rec in load(task_id)[:limit]:
+        key = " ".join(str(rec.get("key") or "").split())
+        name = Path(str(rec.get("source") or "")).name or str(rec.get("source") or "")
+        where = f" (from {name})" if name else ""
+        if rec.get("saved_at"):
+            how = ("saved and read back off its page" if read_back_whole(rec)
+                   else "saved, not read back whole - open it and look at it")
+            lines.append(f"- saved: {key}{where} - {how} - never enter it again")
+        else:
+            lines.append(f"- left: {key}{where} - declared from its document, not saved yet")
+    return lines
 
 
 def _shown_now(task_id=None):
@@ -1356,8 +1443,10 @@ def declare(key, source, fields, scope="", task_id=None, rows=None):
         raise ComputerError("a record needs its source: --from PATH (the document it comes from) or --from screen")
     # A record this task saved already is not declared again: a second save of it makes a second record (review round
     # 9, B: a task tried again from the start declared and saved its bill twice).
-    # (Or the saved record whose own number is this key: the same record, declared under its number.)
-    done = saved_record(load(task_id), key=key) or saved_by_number(load(task_id), key)
+    # (Or the saved record whose own number is this key: the same record, declared under its number. Or the saved record
+    # of the same document whose own number field these fields give the same number: the same record under another key.)
+    done = (saved_record(load(task_id), key=key) or saved_by_number(load(task_id), key)
+            or saved_from_same_document(load(task_id), source, fields if isinstance(fields, dict) else {}))
     text = _source_text(source)
     # The key on a page of the application this task read before (a list, a record): it may be entered already - the
     # task stops once and asks (review round 9, C: a bill already in the books was entered again).
@@ -1588,8 +1677,10 @@ def _undecided(flabel, fvalue, want, why, place=("", ""), unit=""):
         if question:
             return (f"{flabel} holds {fvalue!r} and the record says {want!r}, and which day {value!r} is cannot be told "
                     "from here - this needs the person. The agent puts the two readings to them itself, as a question "
-                    "of its own, when you next ask them anything (HELP: say the save waits on this date) or stop; "
-                    "do not retype the field (a date written the same way is no answer).")
+                    "of its own, now (the save waits on it), and their answer comes back to "
+                    "you - then save again; if you are not paused for it, say the save waits on this date when you next "
+                    "ask them anything (HELP) or stop. Do not retype the field, go round the save, or save it another "
+                    "way (a date written the same way is no answer).")
         if task_context.date_left_open(side=side):
             # (Asked once in this task, and the person could not say: not asked again, and not saved on a guess.)
             return (f"{flabel} holds {fvalue!r} and the record says {want!r}, and the person could not say which day "
@@ -1620,7 +1711,7 @@ def _undecided(flabel, fvalue, want, why, place=("", ""), unit=""):
             "person.")
 
 
-def presave(rec, form_fields, cut=(), unset=()):
+def presave(rec, form_fields, cut=(), unset=(), formats=None):
     """
     The intent against a form about to be saved: (blocking, advisory) lines. A matched field whose value is not the
     intent's blocks; an intent field the form does not name, or a filled form field the intent does not cover, is
@@ -1629,7 +1720,8 @@ def presave(rec, form_fields, cut=(), unset=()):
     cut: the form's labels whose values were read in part (cdp.FORM_VALUE_CHARS) - compared only as far as they were
     read, never called different for the part not read (_read_in_part). unset: the form's choices left in their "no
     selection" state (cdp.FORM_FIELDS, by structure) - one the record does not declare is a point (unset_choice_line;
-    ADVISORY until UNSET_CHOICE_BLOCKS).
+    ADVISORY until UNSET_CHOICE_BLOCKS). formats: {label: placeholder} for the form's fields whose placeholder writes
+    a date format (cdp.FORM_FIELDS) - what it states of the field's date order (compare_shown).
     """
 
     fields = {l: f for l, f in rec.get("fields", {}).items() if f.get("intent")}
@@ -1637,6 +1729,7 @@ def presave(rec, form_fields, cut=(), unset=()):
     blocking, advisory = [], []
     chosen = place = None
     cut = {str(c) for c in cut or ()}
+    formats = {str(k): str(v) for k, v in (formats or {}).items()} if isinstance(formats, dict) else {}
     if matched and any(values.parse_date(str(v)) for _l, _f, v in matched):
         # The application the form is on: where a person's answer about its date order is kept and read
         # (task_context.note_app_host, kept_app_order).
@@ -1656,7 +1749,8 @@ def presave(rec, form_fields, cut=(), unset=()):
                 blocking.append(f"{flabel} is empty where the record says {want!r} - a record is saved with its identifier")
             else:
                 advisory.append(f"{flabel} is empty where the record says {want}")
-        elif (decided := compare_shown(fvalue, want, _source_order(rec), flabel)).same is not True:
+        elif (decided := compare_shown(fvalue, want, _source_order(rec), flabel,
+                                       date_format=formats.get(str(flabel), ""))).same is not True:
             unit = ""
             if decided.same is None and decided.why == "unit":
                 # A unit on one side only: the person's recorded word about this field's unit decides it, if any.

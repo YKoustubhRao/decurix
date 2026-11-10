@@ -544,3 +544,169 @@ ever kept for the next month. Now skill_task._succeed asks the same question whe
 And the question asks for a plain yes, but the confirm reading's vague-yes guard took "yes" first and asked for `done`:
 the picks reading now comes first. The eval's scripted expert confirms picked entries that the case's expected records
 hold (confirm.go picksReply), as a person who knows their own customers would.
+
+### A bulk action on a ticked row was learned as an empty row added and deleted
+
+A person's demonstration opened a list of parties by a link, ticked the party in row 4, pressed a bulk button outside
+the table ("Validate selected"), ticked it again and pressed a second bulk button. `learning._drop_empty_rows` saw a
+`row N` nothing was typed into, a press in it and then a press outside the table, and took it for a row added by the way
+and deleted: the ticks, both buttons and the link before them were dropped, the teaching log said "you added a table
+row (row 4) and deleted it again", and every later run skipped that step. The shape of the presses cannot tell a delete
+from a bulk action; what the screen did can. A row is now dropped only on the recording's own evidence that it came and
+went: the step before the row's first one has a recorded result where that row's controls appeared, alone (no other row
+with it: not a table or page shown whole) and none of them disappeared (not a row drawn again), on the same page and
+window; and the press after the selection has one where the table shrank by it (a row at or after it disappeared and did
+not reappear, nothing new appeared). No result kept, or another page, is no evidence, and the steps stay
+(`_row_came`, `_row_went`).
+
+### A date both sides said the order of waited on the person, who was never asked
+
+Eval case ob-7 (2026-11-10): "Save voucher" was refused because which day "02-04-2027" is "cannot be told from here".
+Both sides could be: the field's own label read "Date (DD-MM-YYYY)", and the other bills of the folder the request named
+wrote 15-04-2027 and 22-04-2027 (a day above 12: day first) - but only attached files were read for the source's order.
+And the question waited "until you next ask them anything": the worker never used HELP, went round the save, and the
+unsettled date failed the read-back round after round. Now a date format in a field's label or placeholder states the
+application's order for a value laid out as it says (`values.stated_date_order`: three runs of D, M and Y read by their
+letters, never a list of formats; the placeholder comes from `cdp.FORM_FIELDS`), the files already in a folder the request
+names decide the source's order when the request and its own files say nothing, all agreeing
+(`task_context._derived_order`, reusing `records._request_folder_files`), and a refused save that still waits on the date
+question ends with an `ASKS_PERSON:` line (`core.person_ask_line`) on which soul's operator asks at once
+(`save_refusal.go`); `messaging.ask_for_query` sends the kept question in its own words, asked once as before. A two-way
+date is still never decided without an order. The `ASKS_PERSON:` half needs soul rebuilt (`go generate .`).
+
+### A replay's takeover entered again the bill the replay had saved
+
+The books curve (2026-11-10, a month of five bills): the taught replay saved bill 1072, then stopped at the next bill,
+and the model was told only "a replay ran up to step 68 ... carry on from step 68" - a number of the run's written-out
+steps, while the steps it was shown are the person's, and nothing of what was saved. It declared 1072 again as "V1072"
+from the same file and saved a second voucher (a Tab-Tab-Enter on the focused Save button, after the date question
+refused its clicks). Now the takeover note lists the task's record ledger (`records.ledger_lines`: "saved: KEY (from
+FILE) - saved and read back - never enter it again", and each record left) and places the step in the person's steps and
+its item and document (`skill_task._where_in_lesson`). A declaration from the same document that gives a saved record's
+own number field the same number is that record under another key (`records.saved_from_same_document` → the existing
+`_add_to_saved`: refused unless it adds fields). And the save of a new-record form holding a saved record's key in its
+own key field is refused even while another record is open, unless that open record is another document's and the form
+shows its key (`core._saved_again`); only the person's yes to a question naming the key lets it through
+(`records.person_asked_again`). Still open: Enter on a focused save button does not go through the pre-save checks
+(`core._commit_check`'s key path finds no form on a button) - the gate's to close.
+
+### A new customer's tax number was never resolved by the replay
+
+Same run: the next bill's customer was not in the "Party A/c name" list; the model made the ledger and its save was
+refused, "nothing in this task resolved 29AA...". Now, in a run done once per document, a per-item choice of a record the
+lesson made before the block (below) carries the identifier the item's own document gives that record
+(`skill_task._lookup_ids`, `skills.identifier_in`: the one token shaped like the lesson's identifier - same length,
+letters and digits in nearly the same places - that the run's other documents do not all hold, since every bill holds
+its sender's; none with one document alone, or with two candidates). When the choice by name misses, the replay searches
+by that identifier as `gui select REF NAME --id ID` does (`replay._run_step`): an entry holding it is the record whatever
+its name, and "no record holds it" is the task's fact the save of the new record then rests on. Known limit: a native
+`<select>` whose entries show names only writes "no record holds it" after reading every name
+(`selecting._select_native_by_id`); the identifier is not on those entries at all, so that fact is weaker than one from
+a list that shows identifiers.
+
+### The how-to called a missing list entry a question for the person, against the lesson
+
+Same run: step 4 of the takeover how-to said "if it stopped because a list has no entry for something, that is a
+question for the person (HELP)", while the person's own steps before the bills made a new customer's ledger. A record
+the lesson made before the per-item block and the block later picks by name is now found in the skill
+(`skills.made_before`: the run of steps up to a save that typed one of the items the block chose as recorded, with the
+identifier it typed); the how-to then says which steps made it and to make it the same way from this item's document,
+resolving its identifier first (`skill_task._made_how`). With what the person did between items it says to look there
+first; with neither it is the person's question, as before.
+
+### A key on a focused button skipped the pre-save checks, and a no did not hold the control
+
+Two holes found in the learning curves (2026-11-10).
+
+**Return on a focused button.** "Save voucher" was refused twice, then `Tab Tab Return` saved voucher 1072 a second
+time. The checks read an Enter only in a text field (`core._commit_check`), and the page's form read gives nothing
+for a focused button, so a key on a button passed every pre-save check, the "entered twice" guard among them. Now:
+- Return or Space alone on a focused button is checked as a click on it.
+- Keys that move the keyboard and then press, on a page that saves, are refused with the moving keys to send first;
+  the press that follows is then checked against the control it lands on.
+- The gate's question names the control such a key presses ("press Return in button "Verify"", not "in the screen"),
+  and the yes is bound to it.
+
+**A no did not hold the control.** In a return-prep eval, "Save to portal" was held only in runs whose plan of the
+work listed it. In others the reply to it was a refusal or "I don't know", and the worker pressed it again a moment
+later. Now `core._person_hold` puts the press to the gate whatever the plan says, when:
+- the person did not say yes to that control when the gate asked, in this task (`approval.declined_controls`, kept
+  by the gate, read only);
+- the worker's own question in this task named it and the reply did not say yes;
+- the person approved it while teaching (a taught step marked consequential, on the same site).
+
+Each only adds a question; nothing makes a yes.
+
+### An element read was a document to cover, and an unchanged review point went back round after round
+
+Found on the return-filing learning curve (2026-11-10): operator turns rose 67 -> 79 -> 103 -> 110 over four cases,
+mostly in review rounds.
+
+**Phantom documents.** The soul kept the output of `gui read e700` (what one element on the screen holds) as a
+*document* named "e700". The coverage check (`coverageGaps`) then sent the work back with "e700 (read; none of its
+figures went into what was entered or written)", three times in one case and three in the next. To settle it the
+worker read more elements, and each one became one more such "document". Now `gui read` is screen evidence (kind
+`screen`, source the active window), kept whole so one record's values in it still stand together. Only a file read
+(`office read`, a loop's reads) is a document the result must cover.
+
+**Unchanged review points.** One point was sent back three times with only `gui observe` between sends, then carried
+with the result anyway; in another case the work nudge repeated the settle nudge with no command between them. Now a
+point whose text and settle are word for word one already sent back is not sent again unless something that could
+settle it happened since (`Changes`: a command that does more than look, a source read, a reply of the person). It
+goes on the way it does when the send-backs are used up: a point that is the worker's to do is carried open with the
+result, a point to recheck by looking goes to the person. This never passes a finding; it only stops repeating it.
+A point reworded, or now carrying the person's answer, is a new point.
+
+### The OTP every run asks for made every run "helped", so the skill could never be trusted
+
+Found on the GSTR-1 learning curve (2026-11-10, eval run e1400a754a9e37de7): filing asks the person for the OTP on
+every run, by design. `learn_answer` counted every answer to the engine except the plan's plain yes as help, so every
+run was helped, the clean streak stayed 0, and every case ran on the model: no replayed step, tokens rising from 2.4M
+to 4.2M a case.
+
+Owner's ruling: an answer the rules require on every run is not help - the OTP or another secret given and nothing
+more, the gate's yes, the plan's yes, a hole in the series confirmed, picked entries confirmed, the date order. Help
+is a corrected value, data the documents should have held, a takeover, "do X instead", or a save after a send-back.
+Decided from which question was asked and whether the reply carried more (`engine_questions._required_every_run`,
+`note_approval`, `final_gate._helped`), never from a list of reply words. A secret reply is read with its digits
+masked and known secrets withheld, so no code reaches a model.
+
+The eval runner sent the expert's reply without the "secret" mark the control plane gives a person's reply when its
+records withhold it (C14.1), so on the curve the OTP arrived as an ordinary answer and the ruling alone would not
+have changed anything there. `eval.replyBody` now marks it exactly as `tasks.ReplyForm` decides.
+
+Two holes closed on the way: an approval answered "no, use the other button" never reached `learn_answer` and counted
+as no help; and a takeover sent back once was counted by the guidance mode alone, which the send-back resets to
+"model" (now `run["taken_over"]` counts too).
+
+### A lesson that named the OTP was taught with holes: "ask", possessives, codes and figures read [withheld]
+
+Found live on build 83f4a53d (2026-11-10), two lessons. The person's reply to a lesson's read-back, not marked
+secret, was stored "Only the client has the OTP: [withheld] me for it", "a [withheld] GSTIN" (receiver's), "Verify
+[withheld] app asks each)" ("(the"), and on the other lesson "Table 4A [withheld]" (B2B), "above [withheld]"
+(1,00,000), "amount times [withheld]" (100/118), "[withheld] round amounts" (tax-inclusive); 5 of one skill's 14
+rules carried the holes, and every later "ask" on that desktop read [withheld].
+
+Three rules on two sides did it. (1) The control plane's `withhold.Reply` withheld every word of a reply with a digit
+or a mark whenever the question's words named a secret - a word list over the question; a lesson's read-back says
+"the OTP" while explaining the work. The stored form then differed from the typed one, so the desktop was told
+"secret" (C14) and held the reply as a marked message (`privacy.remember_marked`, `marked_values`). (2)
+`REQUEST_SECRET` (and `withhold.Text`, soul's `RedactSecrets`) took the word after "OTP:" as its value whatever it
+was, so "ask" was remembered as a secret hash and withheld everywhere. (3) A hyphenated word of letters and a ratio
+had a value's shape, and an apostrophe between letters could open or close a quoted value.
+
+Now, by structure: a reply is withheld whole only where it answers a question asked for a secret (its `secret`) or
+the person marked it; `Reply`'s shape sweep is kept only for a bare answer (one line, at most 5 words: "552901",
+"it is 4821."), never for a reply that explains. A plain lowercase word running on into its sentence after a label
+("OTP: ask me for it", "the OTP is sent to") is an instruction (`privacy._runs_on`, `withhold.runsOn`, soul
+`memory.runsOn`); a value is digits, mixed, marked, quoted, or stands alone at the end of its clause. An apostrophe
+between two letters is part of its word, never a quote mark. Letters joined by hyphens are not value-shaped, and one
+figure over another is data (`_value_shaped`, `_is_data`, Go `valueShaped`, `isData`; shared vectors in
+`internal/withhold/testdata/marked-values.json`). Tests: `agent/tests/test_lesson_reply_not_secret.py`,
+`internal/withhold/withhold_test.go`, `internal/tasks/withhold_reply_test.go`,
+`agent/thebot/internal/memory/secrets_test.go`.
+
+Kept on purpose: "password: tiger then sign in" (a plain lowercase password followed by more words) is now read as an
+instruction - the protection for an unlabelled secret is the person's "secret" mark or the question's, not the text.
+A desktop that already remembered "ask" keeps the hash in `~/.decurix/withheld-secrets` (rolling, 200) until it is
+recreated; lessons taught with holes must be taught again.

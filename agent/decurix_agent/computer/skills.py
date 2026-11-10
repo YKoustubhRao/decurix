@@ -408,6 +408,96 @@ def list_params(skill):
     return [p for p in skill.get("params") or [] if p.get("list")]
 
 
+# A value that reads as an identifier a record is found by: letters and digits, at least one of each, 10 to 20 long (a
+# tax or registration number, an account code). The same shape as core._IDENTIFIER without its emails.
+IDENTIFIER_SHAPE = re.compile(r"(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{10,20}")
+
+
+def _plain(text):
+    return " ".join(str(text if text is not None else "").split()).casefold()
+
+
+def made_before(skill, start):
+    """
+    The records the person made in the steps before the per-item block (which begins at step `start`) that the block
+    later picks by name: [{"pick": the list parameter whose step chooses it, "name": the parameter the making typed
+    its name with, "identifier": the parameter it typed an identifier into (None when it typed none), "steps": the
+    making's step numbers, from the first after the commit before it through its own commit}]. A making is the run of
+    steps up to and including a press that commits (replay._step_commits) that typed, as recorded, one of the items the
+    block's choosing step chose when it was taught. Nothing is guessed: no commit, no name typed as one of those
+    items - no making. Found live (2026-11-10): a person created a new customer's ledger before entering the month's
+    bills; the next month's new customer was not in the list and the replay stopped, with nothing telling the model
+    that the lesson itself makes such a record.
+    """
+
+    if not start:
+        return []
+    steps = sorted(skill.get("steps") or [], key=lambda s: s.get("n") or 0)
+    params = {p["name"]: p for p in skill.get("params") or []}
+    before = [s for s in steps if (s.get("n") or 0) < start]
+    # (A link that reads like an act - "Create ledger" - opens the form: it begins a making, never ends one.)
+    commits = [s["n"] for s in before if (s.get("consequential") or replay._step_commits(s))
+               and (s.get("target") or {}).get("role") != "link"]
+    out = []
+    for pick in list_params(skill):
+        chooser = next((s for s in steps if s.get("param") == pick["name"]), None)
+        if chooser is None or (chooser.get("n") or 0) < start or chooser.get("kind") != "select":
+            continue
+        chosen = {_plain(x) for x in pick.get("examples") or [] if _plain(x)}
+        for step in before:
+            param = params.get(step.get("param") or "")
+            if step.get("kind") != "type" or param is None or param.get("list"):
+                continue
+            typed = _plain(param.get("example") if param.get("example") is not None else param.get("default"))
+            if not typed or typed not in chosen:
+                continue
+            end = next((n for n in commits if n > step["n"]), None)
+            if end is None:
+                continue
+            begin = max([n for n in commits if n < step["n"]], default=0) + 1
+            span = [s for s in before if begin <= s["n"] <= end]
+            ident = next((params[s["param"]]["name"] for s in span
+                          if s.get("kind") == "type" and s.get("param") in params
+                          and IDENTIFIER_SHAPE.fullmatch(str(params[s["param"]].get("example")
+                                                             or params[s["param"]].get("default") or "").strip())),
+                         None)
+            out.append({"pick": pick["name"], "name": param["name"], "identifier": ident,
+                        "steps": [s["n"] for s in span]})
+            break
+    return out
+
+
+def identifier_in(example, text, others=()):
+    """
+    The one token of `text` (a document's) with the shape of the identifier `example` (the same length, letters and
+    digits in nearly the same places) that the texts of the run's other documents, `others`, do not ALL hold too (a
+    token every one of them holds is their sender's): what this document gives as the identifier a record of its own
+    is found by, where the documents of one run share their sender's. None when there is not exactly one - and with no
+    other document, since which of a document's identifiers is its sender's own cannot then be told (a bill to an
+    unregistered customer holds only the sender's).
+    """
+
+    example = str(example or "").strip()
+    if not IDENTIFIER_SHAPE.fullmatch(example) or not others:
+        return None
+    # (Of the same length, letters and digits mixed, and the same kind of character in all but a fifth of its places:
+    # a check character or an entity's number is a letter in one identifier of a kind and a digit in another.)
+    loose = len(example) // 5
+
+    def alike(word):
+        return (len(word) == len(example) and IDENTIFIER_SHAPE.fullmatch(word) is not None
+                and sum(a.isdigit() != b.isdigit() for a, b in zip(word, example)) <= loose)
+
+    def tokens(t):
+        return {w.upper() for w in re.findall(r"[A-Za-z0-9]+", str(t or "")) if alike(w)}
+
+    found = tokens(text)
+    others = [tokens(t) for t in others]
+    if others:
+        found = {w for w in found if not all(w in o for o in others)}
+    return next(iter(found)) if len(found) == 1 else None
+
+
 def list_problem(skill, values):
     """What is wrong with the lists a run was given, in words for a person, or None."""
 

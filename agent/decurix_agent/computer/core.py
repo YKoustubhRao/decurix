@@ -1152,6 +1152,88 @@ def _plan_ask_first():
     return [" ".join(v.split()) if isinstance(v, str) else "" for v in value]
 
 
+def _task_exchanges(task_id):
+    """[(asked, reply)] of this task, as kept on disk for the task's processes (guidance.note_exchange)."""
+
+    if not task_id:
+        return []
+    from decurix_agent.computer import evidence
+    out = []
+    try:
+        lines = (evidence.NOTES_DIR / f"{task_id}.said").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("asked") and row.get("reply"):
+            out.append((str(row["asked"]), str(row["reply"])))
+    return out
+
+
+def _taught_approvals(before):
+    """The controls a person approved while teaching a task on this desktop (a taught step marked consequential: the
+    gate asked them during the demonstration and they said yes), on the site the page is on: [{"role", "name"}]."""
+
+    from urllib.parse import urlparse
+    from decurix_agent.computer import skills
+    here = (urlparse(str(before.get("page_url") or "")).hostname or "").lower()
+    out = []
+    try:
+        taught = skills.all_skills()
+    except Exception:  # noqa: BLE001 - skills that cannot be read hold nothing more
+        return []
+    for skill in taught:
+        for step in skill.get("steps") or []:
+            target = step.get("target") or {}
+            name = " ".join(str(target.get("name") or "").split())
+            if not step.get("consequential") or not name:
+                continue
+            there = (urlparse(str(step.get("url") or "")).hostname or "").lower()
+            if here and there and here != there:
+                continue
+            out.append({"role": str(target.get("role") or ""), "name": name})
+    return out
+
+
+def _person_hold(control, before):
+    """
+    Why a press is put to the person whatever else decides, or None. Three facts, each the person's own, each only ever
+    adding a question - nothing here makes a yes:
+    - the person did not say yes when this control was put to them in this task (approval.declined_controls, kept by the
+      gate);
+    - this task asked them about this control in words (the question names it whole) and their reply did not say yes;
+    - they approved this control while teaching the task (_taught_approvals): it is asked in every run, not only when
+      the plan of the work happens to list it.
+    Found live (2026-11-10, a return-prep eval): "Save to portal" was held only in runs whose plan listed it; in others
+    the worker asked in words, the reply was "I don't know", and the worker pressed it anyway.
+    """
+
+    if control is None or control.get("role") not in approval.PRESS_ROLES:
+        return None  # a field, a cell, text: a press there only puts the keyboard somewhere
+    label = " ".join(str(control.get("name") or "").split())[:60]
+    if not label:
+        return None
+    from decurix_agent import task_context
+    tid = task_context.current()
+
+    def same(other):
+        return approval.names_control(label, {"name": other.get("name")}) and \
+            approval.names_control(other.get("name") or "", control)
+
+    if any(same(c) for c in approval.declined_controls(tid)):
+        return f'you did not say yes to "{label}" earlier in this task - it is put to you again, never pressed on its own'
+    for asked, reply in _task_exchanges(tid):
+        if approval.names_control(asked, control) and not approval.says_yes(reply, asked):
+            return (f'this task asked you about "{label}" and your reply did not say yes - it is put to you again, never '
+                    "pressed on its own")
+    if any(same(c) for c in _taught_approvals(before)):
+        return f'you approved "{label}" yourself when you taught this task - it is made with your OK first, every time'
+    return None
+
+
 def _phase_refusal(control):
     """
     Why a committing press (control: what _commit_check found it commits with, or None) is refused: the task is in a
@@ -2056,7 +2138,8 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         # Never sent, with or without --checked, a replay's press too: the person is the one to give the code.
         return f"Not pressed: {el._quote(found['form'], 60)}: " + records.wordy_text(wordy)
     ledger_lines = []
-    judged = _ledger_check(found["fields"], cut=found.get("cut") or (), unset=found.get("unset") or ())
+    judged = _ledger_check(found["fields"], cut=found.get("cut") or (), unset=found.get("unset") or (),
+                           formats=found.get("formats") or None)
     if judged is not None:
         held, clean, ledger_lines = judged
         if held:
@@ -2204,6 +2287,23 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
     typed_enter = kind == "type" and bool(text) and "\n" in text and element is not None
     if kind != "key" and not typed_enter:
         return ""
+    if kind == "key":
+        # Return or Space on a focused button presses it: the same checks as a click on it. Found live (2026-11-10):
+        # "Save voucher" was refused twice, then `Tab Tab Return` saved the voucher a second time - the checks read an
+        # Enter only in a text field, so a key on a focused button passed every one of them.
+        focus = _keyboard_field(before)
+        keyed = _pressed_by_key(kind, element, keys, before, focus=focus)
+        if keyed is not None:
+            return _commit_check("click", keyed, None, before, checked=checked, listing=listing, pressed=pressed)
+        moving = approval.press_after_focus_move(keys, element or focus)
+        if moving and before.get("page_url") and any(
+                e.get("role") in approval.PRESS_ROLES and approval.commits(e) for e in before.get("elements") or []):
+            # Which control the press lands on cannot be told before the keys that move the keyboard have run.
+            stripped = [str(k).strip() for k in keys]
+            moves = " ".join(k for k in stripped[:stripped.index(moving)] if k) if moving in stripped else ""
+            return (f"Not pressed: {' '.join(keys)} moves the keyboard and then presses {moving} on a control nothing "
+                    f"has looked at, on a page that saves. Press the keys that move it first (gui key {moves or 'Tab'}), "
+                    f"then {moving} on its own: it is checked as a press of the control it lands on.")
     enter, save = _commit_keys(keys) if kind == "key" else (True, False)
     field = element if element is not None else _keyboard_field(before)
     if enter and field is not None and field.get("source") == "cdp":
@@ -2233,13 +2333,14 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
     return ""
 
 
-def _ledger_check(form_fields, cut=(), unset=()):
+def _ledger_check(form_fields, cut=(), unset=(), formats=None):
     """
     The declared record (records.py) against the form about to be saved: None when no record is open; else
     (what stops the click or "", whether the diff is clean enough to save without a listing, advisory lines). A field
     holding a value the record does not stops the click; the record's scope absent from the window stops it once.
     cut: the form's labels whose values were read in part (cdp.FORM_VALUE_CHARS); unset: its choices left in their
-    "no selection" state (records.presave).
+    "no selection" state; formats: the fields whose placeholder writes a date format (records.presave). A refusal that
+    waits on a question the agent puts to the person ends with it (person_ask_line).
     """
 
     from decurix_agent import task_context
@@ -2260,7 +2361,12 @@ def _ledger_check(form_fields, cut=(), unset=()):
         if done is not None and _new_record_fields(events)[1]:
             return ("Not pressed: " + records.saved_again_text(done), False, [])
         return None
-    blocking, advisory, matched = records.presave(rec, form_fields, cut=cut, unset=unset)
+    again = _saved_again(found, rec, form_fields, form_text, events)
+    if again is not None:
+        return ("Not pressed: " + records.saved_again_text(again) + " (If the person wants a second record of it, ask "
+                f"them (HELP) in a question that names {again.get('key')}; only their yes lets it be saved again.)",
+                False, [])
+    blocking, advisory, matched = records.presave(rec, form_fields, cut=cut, unset=unset, formats=formats)
     # A field this task set on the form that the record does not declare: its value has no source on record. ADVISORY
     # at the save until it passes the replay gate (records.UNDECLARED_FIELD_BLOCKS); the final check holds it against
     # the saved record (records.gate_faults) - review round 9, A.
@@ -2294,10 +2400,61 @@ def _ledger_check(form_fields, cut=(), unset=()):
                 + ". Correct the field (gui type REF \"value\" / gui select REF \"option\"), then save again. If the "
                 "record's own intent was misread, declare it again from its source (gui record): the declaration is "
                 "checked against the document, so a value the document writes otherwise is refused there - never save "
-                "a value the document does not give, nor a part of one." + (" Also: " + "; ".join(advisory) if advisory else ""), False, advisory)
+                "a value the document does not give, nor a part of one." + (" Also: " + "; ".join(advisory) if advisory else "")
+                + person_ask_line(task_context.current()), False, advisory)
     wanted = sum(1 for f in rec.get("fields", {}).values() if f.get("intent"))
     clean = matched >= max(1, (wanted + 1) // 2)
     return "", clean, ([f"record {key}: {matched} of {wanted} declared values match the form"] + advisory)
+
+
+# The line a refused save ends with when it waits on a question the agent itself puts to the person - which day a date
+# that reads two ways is (task_context.ask_date_order). The engine pauses on it and asks at once (soul's operator,
+# save_refusal.go personAskRe); the agent's ask_for_query sends the kept question in its own words and only the reply
+# to it settles it. Found live (2026-11-10): the question waited for the worker's next HELP, which never came - the
+# worker went round the save, and the date nothing had settled then failed the read-back, round after round.
+PERSON_ASK_MARKER = "ASKS_PERSON:"
+
+
+def person_ask_line(task_id):
+    """"\\n" + PERSON_ASK_MARKER + the question, when a save of the task waits on a date question not yet put to the
+    person (task_context.date_question with no query); "" otherwise - asked already, settled, or left open (asked once:
+    date_left_open)."""
+
+    from decurix_agent import task_context
+    try:
+        question = task_context.date_question(task_id)
+        if question and not question.get("query_id"):
+            return "\n" + PERSON_ASK_MARKER + " " + " ".join(task_context.date_question_text(question).split())
+    except Exception:  # noqa: BLE001 - the refusal stands; the question waits for the next HELP as before
+        pass
+    return ""
+
+
+def _saved_again(found, rec, form_fields, form_text, events):
+    """
+    The record this task saved already that a new record's form, with record `rec` open, would save a second time - or
+    None. The form holds a saved record's key in that record's own key field (records.saved_on_form) on a new-record
+    page, and the open record is no other document's record shown on this form: it comes from the saved record's own
+    document, or the form shows none of its key (it was matched by its field labels only). A record of another document
+    that the form shows (a receipt numbered like a bill saved before) is another record. The person's yes to a question
+    naming the key lets it through (records.person_asked_again). Found live (2026-11-10, a month of bills): the model
+    that took over a replay declared the saved bill 1072 again as "V1072" and saved it a second time.
+    """
+
+    from decurix_agent.computer import records
+
+    try:
+        done = records.saved_on_form(found, form_fields)
+        if done is None or not _new_record_fields(events)[1]:
+            return None
+        shown = records.stands_in(rec.get("key", ""), form_text) or records._key_number_on_form(rec, form_fields)
+        if shown and not records.same_source(rec.get("source"), done.get("source")):
+            return None
+        if records.person_asked_again(done):
+            return None
+    except Exception:  # noqa: BLE001 - a ledger that cannot be read judges nothing here; the checks below stand
+        return None
+    return done
 
 
 def _task_events_now():
@@ -3490,7 +3647,18 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             require = f"{why}; {require}" if require else why
     elif spot_why:
         require = f"{spot_why}; {require}" if require else spot_why
-    decision = approval.check(kind, element if element is not None else bound, text=text, keys=keys,
+    # The control the action presses, when the action names none itself: the gate's question names it ("press Return in
+    # button 'Verify'", not "in the screen") and its yes is bound to it.
+    pressed_control = bound or keyed or ({k: v for k, v in by_enter.items() if k != "form"} if by_enter else None)
+    # What the person said about this press before: a no in this task, or an approval they taught (_person_hold).
+    if kind in ("click", "double_click", "key"):
+        for control in (element if kind != "key" else None, pressed_control,
+                        pressed[0] if check_form and pressed else None):
+            said_before = _person_hold(control, before) if control is not None else None
+            if said_before:
+                require = f"{said_before}; {require}" if require else said_before
+                break
+    decision = approval.check(kind, element if element is not None else pressed_control, text=text, keys=keys,
                               point=point, context=context,
                               about=_what_it_acts_on(before, element), require=require,
                               sends=lambda: _what_it_sends(before, element if by_enter is None else by_enter,

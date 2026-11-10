@@ -473,13 +473,15 @@ def request_date_marker(request):
 # is too slow on the save path).
 _ORDER_FILES = 6
 _ORDER_CHARS = 200000
+# How many of the files already in a folder the request names are read for their dates (_folder_files).
+_ORDER_FOLDER_FILES = 12
 _derived = {}
 
 
-def _files_text(paths):
+def _files_text(paths, limit=_ORDER_FILES):
     from decurix_agent.tools import office
     texts = []
-    for path in list(paths)[:_ORDER_FILES]:
+    for path in list(paths)[:limit]:
         try:
             if os.path.splitext(str(path))[1].lower() in office.IMAGE_TYPES:
                 continue
@@ -604,8 +606,10 @@ def date_order(task_id=None):
 def _derived_order(task_id):
     """
     "day" or "month" from the request's own marker, then from the dates in the request and the text of its files that
-    cannot be read the other way (28/09/2026 is day first: binding.date_order), when they all agree; None otherwise.
-    Kept for the task, so the `gui` process that checks a save does not read the files again.
+    cannot be read the other way (28/09/2026 is day first: binding.date_order), when they all agree; then, when those
+    say nothing, from the same in them and the files already in a folder the request names (_folder_files: the other
+    bills of the batch a request points to by folder); None otherwise. Kept for the task, so the `gui` process that
+    checks a save does not read the files again - except a None while the folder could not be listed yet.
     """
 
     import hashlib
@@ -623,14 +627,40 @@ def _derived_order(task_id):
         _derived[key] = None if kept["order"] == "none" else kept["order"]
         return _derived[key]
     order = request_date_marker(request)
+    listed = True
     if order is None:
         from decurix_agent import attachments, binding
         files = current_files() if task_id and task_id == current() else []
-        order = binding.date_order([attachments.text(request)] + _files_text(files or attachments.files(request)))
+        given = [attachments.text(request)] + _files_text(files or attachments.files(request))
+        order = binding.date_order(given)
+        if order is None:
+            # Found live (2026-11-10): a bill's "02-04-2027" was a question to the person while the other bills of
+            # the folder the request named wrote 15-04-2027 and 22-04-2027 - day first - unread, since only attached
+            # files were. They decide only where the request and its own files say nothing, and only all agreeing.
+            folder, listed = _folder_files(task_id, files)
+            if folder:
+                order = binding.date_order(given + _files_text(folder, _ORDER_FOLDER_FILES))
     _derived[key] = order
-    if task_id:
+    if task_id and (order is not None or listed):
+        # (A None while the folder could not be listed is kept by this process only: another reads the folder again
+        # once the task's start is known.)
         _keep_context(task_id, derived_date_order={"request": key[1], "order": order or "none"})
     return order
+
+
+def _folder_files(task_id, attached=()):
+    """(paths, listed): the files already in a folder the request names, less what the task made and the request's own
+    files (records._request_folder_files); listed is False when the folder could not be told from what the task made
+    (its start unknown) - nothing is decided from it then."""
+
+    if not task_id or task_id != current() or since() is None:
+        return [], False
+    try:
+        from decurix_agent.computer import records
+        own = {os.path.realpath(str(p)) for p in attached or ()}
+        return [p for p in records._request_folder_files(task_id) if os.path.realpath(str(p)) not in own], True
+    except Exception:  # noqa: BLE001 - a folder not listed says nothing about dates
+        return [], True
 
 
 # ============================================================
