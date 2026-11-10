@@ -15,7 +15,7 @@
   },
   "budget": {
     "max_tokens": 8000000,
-    "max_minutes": 60
+    "max_minutes": 120
   },
   "cases": [
     "ob-1-october",

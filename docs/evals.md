@@ -126,7 +126,7 @@ browser maps to the run's own mock (`practice-mock-<run>:8000`, `desktop.Practic
 `Load` validates all of it and returns every problem, not the first: schema names, ids
 (`^[a-z0-9][a-z0-9-]{0,63}$`), categories, every named file present with a flat name, sizes (8 MB a file, 16 MB a
 case, 64 MB a suite) and counts (200 cases a suite, 30 graders and 20 facts a case, 200 oracle steps, a request of
-8,000 bytes, a case budget of 60 minutes, a sleep of 60 s), no credential-shaped text in any input (request, files, fixture, fact answers, oracle lines,
+8,000 bytes, a case budget of 120 minutes, a sleep of 60 s), no credential-shaped text in any input (request, files, fixture, fact answers, oracle lines,
 with the oracle's own secrets taken out first), grader kinds and fields, the outcome against the graders, facts, the
 budget, and every tar entry belonging to the layout (no links, no paths out, nothing twice).
 
@@ -658,6 +658,8 @@ redirected in a person's desktop. `teach-stop` stops the mock and removes the bl
 6. Calibrate, then measure from the taught worker and against the untaught baseline:
    `run --suite ... --arm oracle --arm nothing --arm ask --repeats 1`, then
    `run --suite ... --arm default+expert --repeats 5 --from-worker <id>` and the same without `--from-worker`.
+
+**The curve, case by case** (`evals/tools/learning_curve.py live`): for a curve, the taught worker runs a suite's fresh cases in order with `--cases <ids> --carry-state --repeats 1 --from-worker <id>`, and the untaught baseline the first three. `learning_curve.py live --cp <plane> --run <run id> --workflow <name> --arm taught|untaught --build <sha> --cases <ids> --out <file>.json` follows the run and appends each case's row the moment it lands: correct, minutes, tokens in / cached / out, model turns, questions (required / other), the final check's send-backs, steps the taught replay did against commands the model ran, and with `--skill-cmd` (a command printing the taught skill's JSON) its trust stage and whether this run's verdict counted, and why not. Each row is written once, the file stays a whole JSON list (a temporary file renamed over it, under a lock file), so two followers can share one file and a page can read it while the runs go on.
 
 ## Adding a case (fails before, passes after)
 

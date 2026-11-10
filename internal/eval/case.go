@@ -53,7 +53,7 @@ const (
 	MaxRefersTo     = 16
 	MaxOracleSteps  = 200
 	MaxRequestBytes = 8000
-	MaxCaseMinutes  = 60
+	MaxCaseMinutes  = 120 // a throttled run (one key, 250k tokens a minute, workers in parallel) is never cut off
 	MaxApproves     = 10
 	// MaxControlName is the longest control name an approval may list: the gate cuts a name it quotes at 80
 	// characters, the last of them an ellipsis, so a longer one could never be matched whole.

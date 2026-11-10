@@ -255,6 +255,11 @@ The curves run on one frozen build; these were seen on it or on the pilot build 
   GSTR-1 ... The summary shows ...") were both answered "I don't know" (oc-2, oc-3). Options: a per-case `picks` fact
   like `date_orders`, and a confirm reply for a summary whose figures the case's expected tables hold.
 - **File with EVC was asked twice in one run** (oc-3, events e1376 and e1571). Not yet read.
+- **The lesson's reader refused a person's answer that gave its reason.** Teaching office-gstr1-books case 1: "3 and 4
+  change; 1, 2 and 5 stay (5 is that client's signatory - another client would have its own)" was refused, and the
+  terse retry "3 and 4 change" left the signatory fixed, so og-2 (another client) stopped to ask about it. The answer
+  said 5 varies per client in plain words; a reader that needs the bare form loses what the person meant. Learning and
+  QnA area.
 
 ## Live checks after the next build
 
