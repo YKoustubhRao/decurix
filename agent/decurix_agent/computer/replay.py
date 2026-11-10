@@ -1861,7 +1861,9 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
         if step["kind"] == "manual":
             return finish(NEEDS_HUMAN, step, reason=step.get("reason"), resume_from=step["n"] + 1)
 
-        audit.origin = {"session": program.get("session"), "step": step["n"]}
+        # (The step's id as well: a taught step's number moves when the run writes out more rows, its id does not -
+        # the gate finds the step the person's approvals name by it, core._replayed_step.)
+        audit.origin = {"session": program.get("session"), "step": step["n"], "id": step.get("id")}
         try:
             next_step = steps[index + 1] if index + 1 < total else None
             result = _run_step(step, values, ladder, report, next_step=next_step)

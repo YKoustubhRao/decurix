@@ -1035,3 +1035,6 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): Which steps need the person's OK, said in their own words, was kept as text and the recorder's guess was saved - the lesson asks it now, the model reads intent, code maps names to steps by label
 - [part-6.md](gotchas/part-6.md): A line's quantity, 1 on both lines of the one bill shown, became a constant nobody was asked about - a value alike on every line is asked "same for every line, or read from each line?" and stays per line until the person says same
 - [part-6.md](gotchas/part-6.md): "Step 20 and step 29 were glitches - skip them" became a rule, and the replay still clicked both - steps named to leave out are mapped by number or label, put back in one line, and taken out on a yes
+- [part-6.md](gotchas/part-6.md): A replayed coordinate click sent the person's OTP with no yes
+- [part-6.md](gotchas/part-6.md): A case's mock app outlived it and served the next cases
+- [part-6.md](gotchas/part-6.md): "Skip steps 13-16" put back only 13 and 16, and leaving out two steps of a repetition crashed the lesson - ranges read whole, a loop keeps only repetitions that line up by kind

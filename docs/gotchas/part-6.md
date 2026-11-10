@@ -774,3 +774,39 @@ model, which copies names; code maps them to steps by number or recorded label (
 one line ("I will leave out step 20 Add multiple and 29 drag 491,365 to 680,316 - right?") and a yes takes them out
 of the steps and of the loop's gaps; a name no step has ("the drag": a drag has no label) is asked about alone. The
 words stay as a note. A person's instruction about a step belongs on the step, not only in prose beside it.
+
+### A replayed coordinate click sent the person's OTP with no yes
+
+A lesson recorded an OTP form's "Verify" only as a click at 54,384 (the form's control names were withheld at record
+time), and the person's approvals named it as "step 86" with no control. On a replay where the look listed nothing at
+that point, the commit checks were skipped (they ran only for a click with an element), the page's own name for the
+button came too late to matter, and a hold by name had no name to hold. Resolve a point to its control before any
+check (`core._gate_spot` first), hold a step the person named by its place (`core._step_hold`), and treat "can't tell
+what's there" as ask (`core._unidentified_hold`). Before a curve, run the dry `holdcheck` on the stored skill.
+
+### A case's mock app outlived it and served the next cases
+
+An eval run's books curve (2026-11-10, under heavy load): ob-5's bundle pull used up the one 60-second clean-up context
+it shared with unpausing, the ledger read and the mock's removal, so RemovePractice ran on a spent context and failed
+silently. Every case's mock answers to the run's one name (PracticeMockHost), so Docker's DNS spread ob-6..ob-9's
+requests between their own mock and ob-5's: vouchers went to the stale app, and its older company period refused April
+and May bills. Now the mock is removed on a context of its own and a failure is logged (runner.go), and
+StartPracticeMock first removes any mock this control plane started for the same run (removeRunMocks: by the run and
+mock labels, only its own). Tests: TestACaseMockIsRemovedEvenWhenItsBundlePullTimesOut, TestPracticeMockAndCollection.
+
+### "Skip steps 13-16" put back only 13 and 16, and leaving out two steps of a repetition crashed the lesson
+
+Found live (2026-11-10, the bill lesson taught again on desktop erpcurve2, task tf18e6dc0fe52f44b). Three faults in one
+exchange. The reading of "skip steps 13-16" was checked against the reply word by word, and 14 and 15 are not words of
+it: only the range's ends were put back. The person's correction "leave out 13, 14, 15 and 16 - all four were the
+due-date try that did not take" was not read as plain numbers because of its explanation, and a yes-like reading of it
+took the old line. Then 13-16 and 17-20 were two repetitions of one loop: with 13 and 16 gone, the loop's template
+typed where the shortened repetition had a key press, and reading that press's typed text stopped the lesson
+("internal error: 'samples'").
+
+Now a number inside a range the reply says counts as said, and a range is mapped to every step in it (never a date's
+"01-10"); a reply to the steps put back is read without its explanation, and steps it names that are not on the line
+yet are added and put back again; a loop some of whose steps are left out keeps only the repetitions that still line
+up kind by kind with the one most share (no loop if fewer than two), and no reader of a loop's aligned steps reads a
+step of another kind. A structure edited by a person's answer must be checked for the invariants its readers assume.
+Tests: `agent/tests/test_lesson_line_values_and_left_out.py` (`LeftOutOfARepetition`, the live replies word for word).

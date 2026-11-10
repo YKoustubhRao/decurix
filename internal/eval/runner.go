@@ -945,7 +945,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	usage := s.Broker.CaseUsage()
 	drafts, _ := s.Broker.EndCase()
 	ev.Drafts = drafts
-	clean, done := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+	clean, done := context.WithTimeout(context.WithoutCancel(ctx), caseCleanupTimeout)
 	_ = s.Sandbox.UnpausePractice(clean, d.ContainerID, mockID)
 	// The worker's own ledger is read once it runs again: it is worker-written, reported and never a pass (D8).
 	ev.Ledger = s.readLedger(clean, d, route.TaskID)
@@ -953,10 +953,17 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	if why != "" {
 		problems = append(problems, why)
 	}
-	if mockID != "" {
-		_ = s.Sandbox.RemovePractice(clean, mockID)
-	}
 	done()
+	// The mock goes on its own time, never on what the bundle pull left: found live (2026-11-10), a pull that ran out
+	// the shared minute left a case's mock up, and the run's later cases' requests were spread by Docker's DNS between
+	// their own mock and that stale one (its old company period refused their vouchers).
+	if mockID != "" {
+		gone, cancelGone := context.WithTimeout(context.WithoutCancel(ctx), caseCleanupTimeout)
+		if err := s.Sandbox.RemovePractice(gone, mockID); err != nil {
+			log.Printf("eval %s: case %s's mock app %s could not be removed: %v", run.ID, c.ID, mockID, err)
+		}
+		cancelGone()
+	}
 	ev.Minutes = time.Since(started).Minutes()
 	mode := Mode{Expert: arm.Expert || arm.Kind == ArmOracle}
 	res := Grade(c, ev, mode)
@@ -1096,6 +1103,10 @@ func (s *Service) recordExpertReply(id, workerID, taskID, question string, asked
 		log.Printf("eval: recording the expert's reply on %s: %v", taskID, err)
 	}
 }
+
+// caseCleanupTimeout bounds each of a finished case's two clean-ups: reading its ledger and pulling its bundle, and
+// (on a time of its own) removing its mock app. A variable for the tests.
+var caseCleanupTimeout = 60 * time.Second
 
 // pullBundle pulls a case's bundle (its recording, ledger, notes, soul trace) off the practice desktop before the next
 // case resets it, and returns the execution id its trajectory is served by: for a model arm, and for the oracle, whose

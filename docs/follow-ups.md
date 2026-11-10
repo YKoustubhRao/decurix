@@ -327,6 +327,30 @@ The curves run on one frozen build; these were seen on it or on the pilot build 
   additions may come from the file. Honest runs behave the same, so the curves on 2.1 do not wait. With the gate
   agent, as a follow-up commit.
 
+- **The lesson's gates and skips readings over-read a rule (freeze 2.1 relearn of office-gstr1-books, s2gstr).**
+  (a) "don't look for a password anywhere - stop and ask me to sign in" was read as a step to leave out ("which step is
+  'look for a password'?") and added 45 Sign in to the ask list; the person had to answer "none" and "not 45". (b) After
+  that correction the read-back dropped the earlier "not before 55"; the person had to say it again. (c) A relearn saved
+  as a new skill (`-2`) beside the old one instead of replacing it; a run could pick the stale skill. Fix: a rule about
+  what not to do is neither a skip nor a gate unless it names a step; a correction keeps the rest of the reading; a
+  relearn of the same recording replaces its skill (the old one kept as a version).
+- **A control inside a secret form loses its name in the recording.** The chat lesson's Verify (inside the OTP form) was
+  recorded as "click 54,384", and its approvals entry has no name, so the gate cannot hold it by label. Same root as the
+  locator-path entry above: a control's name is structure, never the secret typed into the form.
+
+- **Several coordinate clicks asked about together cannot be named.** The chat lesson (freeze 2.1, s2chat) kept five
+  clicks recorded as screen positions (11, 27, 41, 73, 86 Verify): the grouped question takes only keep / skip / manual,
+  so the person could not say what each one presses; only a lone coordinate step can be named (gstr's step 52 was).
+  Each kept coordinate step should be nameable, and a named one replays by its control.
+
+- **A screen read that names fields can fail silently, and the recording keeps nameless fields.** ERPNext lesson
+  (erpcurve2, 2026-11-10, an overloaded desktop): the recorder ran minutes behind, and the read used for steps 8-16 had
+  lost every label-derived name (cdp.observe's `_GROUP_LABELS` script; cdp.py ~927 swallows its failure as `[]`, and
+  `CDPPage.evaluate` ~301 ignores `exceptionDetails`), so the steps were stored as `textbox ""` and a coordinate. Not a
+  regression (load). Harden: an evaluate exception raises; a failed name pass is retried once and otherwise marks the
+  read `names_partial`; the recorder reads again for a click on a nameless fillable field; a learned step on a nameless
+  field is flagged, never generalised silently. Until then demonstrations are recorded only at low load.
+
 ## Live checks after the next build
 
 The writers could not run these. Run them on the next build, before calling this review done.

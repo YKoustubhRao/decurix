@@ -1226,6 +1226,84 @@ def _unconfirmed_replay_save(element):
                     "need your OK - each save it replays is put to you until you do")
 
 
+def _ask_steps(skill):
+    """The step numbers and ids the person's confirmed approvals hold - every entry that names its step, whether or not
+    it names a control (a step recorded as a bare point has no name to hold it by). Empty while none is confirmed."""
+
+    if skill_approvals(skill) is None:
+        return set()
+    out = set()
+    for entry in ((skill or {}).get("approvals") or {}).get("ask") or []:
+        if isinstance(entry, dict):
+            out.update(entry[k] for k in ("step", "id") if entry.get(k) not in (None, ""))
+    return out
+
+
+def _replayed_step(skill):
+    """The taught step a replay is pressing now (audit.origin: by its id, else by its number), or None."""
+
+    origin = audit.origin or {}
+    if not origin or not skill:
+        return None
+    for step in skill.get("steps") or []:
+        if origin.get("id") and step.get("id") == origin.get("id"):
+            return step
+        if not origin.get("id") and step.get("n") == origin.get("step"):
+            return step
+    return None
+
+
+def _step_hold(check_form, skill=None):
+    """
+    Why a replayed step is put to the person by its place in the task, whatever the press resolves to: the person's
+    confirmed approvals name it (by number or id), or the gate asked them about it while they taught it and they said
+    yes (consequential). Found (2026-11-10): a lesson recorded the OTP form's "Verify" as a bare point, its approvals
+    entry named only step 86, and a hold by name could not hold it. None otherwise. `skill`: the task's by default.
+    """
+
+    if check_form != "replay":
+        return None
+    skill = skill if skill is not None else _task_skill()
+    step = _replayed_step(skill)
+    if step is None:
+        return None
+    asks = _ask_steps(skill)
+    what = f"step {step.get('n')} of this task ({step.get('summary') or step.get('kind')})"
+    if step.get("n") in asks or step.get("id") in asks:
+        return f"you said {what} needs your OK when you taught it - it is put to you every time"
+    if step.get("consequential"):
+        return f"you approved {what} when you showed it - it is put to you every time"
+    return None
+
+
+def _unidentified_hold(kind, element, bound, point, before, check_form, skill=None):
+    """
+    Why a replayed press at a point where nothing can be identified is put to the person, or None. "Can't tell what is
+    there" means ask, never go, when the recorded step is one the person marked (consequential, or named in their
+    confirmed approvals), when the skill has no confirmed approvals answer, or when there is no element tree to ask at
+    all (no page: an application drawn in pixels, where a Save button can be pixels only). A press on blank space in
+    a step the recording shows as plain, with a confirmed answer, on a page that said nothing is there, still goes
+    (owner decision via main, 2026-11-10).
+    """
+
+    if check_form != "replay" or kind not in ("click", "double_click") or element is not None or bound is not None \
+            or point is None:
+        return None
+    skill = skill if skill is not None else _task_skill()
+    step = _replayed_step(skill)
+    asks = _ask_steps(skill)
+    if step is not None and (step.get("consequential") or step.get("n") in asks or step.get("id") in asks):
+        why = "you marked this step as one that needs your OK"
+    elif skill_approvals(skill) is None:
+        why = "you have not yet said which presses of this task need your OK"
+    elif not before.get("page_url"):
+        why = "this application gives no list of its controls to tell what is there"
+    else:
+        return None
+    return (f"this replays a press at {point[0]},{point[1]} where nothing on the screen can be identified, and {why} - "
+            "it is put to you, never pressed blind")
+
+
 def _authorises(form, element):
     """
     A press put to the person because the form it sends holds a value the person gave in this task as a secret - a
@@ -3681,11 +3759,16 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         and _may_download(kind, element, point, before) else None
     acted_at = time.time()
     require = None
+    # A press at a point (found by eye or given) is the press of the control the page names there (_gate_spot): it gets
+    # every check a click on that control gets, from the pre-save checks on. Found (2026-11-10): a point press whose
+    # look listed nothing there went past the commit checks, and a form holding the person's OTP was sent unasked.
+    spot, spot_why, bound = _gate_spot(kind, element, point, grounded, before)
     if check_form:
         # Every committing action an engine or a replay takes, however it is pressed (_commit_check). A replay's
         # (check_form="replay") listing of today's values is put to the person instead (AskFirst).
         pressed = []
-        held = _commit_check(kind, element, keys, before, checked=check_form == "checked", text=text,
+        held = _commit_check(kind, element if element is not None else bound, keys, before,
+                             checked=check_form == "checked", text=text,
                              listing="ask" if check_form == "replay" else True, pressed=pressed)
         if isinstance(held, AskFirst):
             require = str(held)
@@ -3720,9 +3803,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             label = " ".join(str(keyed.get("name") or "").split())[:60]
             why = f'{" ".join(keys)} on "{label}" presses it - {why}'
             require = f"{why}; {require}" if require else why
-    # A press at a point (found by eye or given) is judged by the control the page names there, and its yes is bound
-    # to that control, not to the pixel (_gate_spot).
-    spot, spot_why, bound = _gate_spot(kind, element, point, grounded, before)
+    # A press at a point is judged by the control the page names there, and its yes is bound to that control, not to
+    # the pixel (_gate_spot, above).
+    for held_by_place in (_step_hold(check_form), _unidentified_hold(kind, element, bound, point, before, check_form)):
+        if held_by_place:
+            require = f"{held_by_place}; {require}" if require else held_by_place
     if bound is not None and bound.get("role") == "link" and approval.press_effect(bound) == "asks":
         context["navigates"] = _only_navigates(kind, bound)
     if spot is not None:

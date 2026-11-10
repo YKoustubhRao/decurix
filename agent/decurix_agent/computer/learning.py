@@ -1261,6 +1261,20 @@ def _aligned(blocks, position, length):
     return found
 
 
+def _aligned_like(blocks, position, length, step):
+    """The steps aligned with `step` (_aligned) that are of its kind: a step of another kind at that place is never
+    read as a repetition of it. Found live (2026-11-10): two steps taken out of one repetition left a key press where
+    the template typed, and reading its typed text stopped the lesson on an internal error."""
+
+    return [s for s in _aligned(blocks, position, length) if s.get("kind") == step.get("kind")]
+
+
+def _sample(step):
+    """What a step typed as recorded (its first sample), or None when it has none."""
+
+    return (step.get("samples") or [None])[0]
+
+
 def _loops_over_data(blocks, demos):
     """Whether repeating this block is about data: it types something different each time."""
 
@@ -1272,7 +1286,7 @@ def _loops_over_data(blocks, demos):
         at = _aligned(blocks, position, length)
         if len(at) < 2:
             continue
-        if at[0]["kind"] == "type" and len({s["samples"][0] for s in at}) > 1:
+        if at[0]["kind"] == "type" and len({_sample(s) for s in at if s["kind"] == "type"}) > 1:
             return True
         if at[0]["kind"] == "upload" and len({tuple(s.get("files", [])) for s in at}) > 1:
             return True
@@ -1774,9 +1788,9 @@ def _loop(skill, loop):
     typed = []
     for position, step in enumerate(template):
         if step["kind"] == "type":
-            values = [s["samples"][0] for s in _aligned(blocks, position, loop["length"])]
+            values = [_sample(s) for s in _aligned_like(blocks, position, loop["length"], step)]
             if len(set(values)) > 1:
-                typed.append(f"{step['param']}: " + ", ".join(el._quote(v or "", 30) for v in values))
+                typed.append(f"{step.get('param') or step['summary']}: " + ", ".join(el._quote(v or "", 30) for v in values))
 
     shown = "; ".join(s["summary"] for s in template)
     if len(shown) > 600:
@@ -2401,7 +2415,7 @@ def _apply_loop(skill, loop, choice):
         step["repeat"] = loop["id"]
 
         if step.get("param"):
-            examples = [s["samples"][0] for s in _aligned(blocks, position, loop["length"])]
+            examples = [_sample(s) for s in _aligned_like(blocks, position, loop["length"], step)]
             param = next(p for p in skill["params"] if p["name"] == step["param"])
             # Seen in one repetition only (a step of the way to the next item, which the first item reached another
             # way) is not seen to be the same in every one: it stays a value per item. Found live (2026-11-08): a form
@@ -2575,7 +2589,7 @@ def _answer_positional(skill, question, text):
 
 GATES_SYSTEM = """A person is teaching a computer task to a worker that will later do it on its own. You are given what the worker asked or said, and the person's reply. List the controls (buttons, links, steps) the reply says the worker must stop and ask the person about before pressing, the ones it says need no asking or must not be stopped before, and the steps it says to leave out of the task.
 
-- Copy each name exactly as the person wrote it: their words, not a paraphrase and not a name you know from elsewhere. A step number the person gave is listed as the number ("30"); a step named by its number and its control together ("step 20 (clicking 'Add')") is listed once, as the number.
+- Copy each name exactly as the person wrote it: their words, not a paraphrase and not a name you know from elsewhere. A step number the person gave is listed as the number ("30"); a step named by its number and its control together ("step 20 (clicking 'Add')") is listed once, as the number; a range of steps is listed as written ("13-16"), not as its numbers.
 - ask and no_ask: only what the reply says about asking, approval, an OK, or stopping before a control. A control the reply names for any other reason is not in them.
 - A step the worker's own list offered that the reply takes back ("not 63", "don't ask before Verify") goes in no_ask; one the reply adds ("also step 30") goes in ask.
 - leave_out: only steps the reply says not to do at all on later runs - a mistake, a glitch, a step to skip or drop. A step the reply says to do differently, or to ask about, is not left out.
@@ -2631,6 +2645,13 @@ def _steps_named(skill, name):
     number = re.fullmatch(r"\s*(?:step\s*)?#?\s*(\d+)\s*", str(name or ""), re.I)
     if number:
         return [s for s in steps if s.get("n") == int(number.group(1))]
+    span = _STEP_RANGE.fullmatch(str(name or "").strip())
+    if span:
+        # A range ("13-16", "steps 13 to 16") is every step in it, or none when one of them is not a step.
+        ranges = _ranges_in(span.group(0))
+        wanted = set(range(ranges[0][0], ranges[0][1] + 1)) if ranges else set()
+        hit = [s for s in steps if s.get("n") in wanted]
+        return hit if wanted and len(hit) == len(wanted) else []
     words = _name_words(name)
     if not words:
         return []
@@ -2669,11 +2690,34 @@ def _presses_first(steps):
 
 
 def _said_in(name, reply):
-    """Whether the person's reply says this name (or step number) itself - a reading never adds a control of its own."""
+    """Whether the person's reply says this name (or step number) itself - a reading never adds a control of its own.
+    A number inside a range the reply says ("skip steps 13-16") is said; so is the range itself."""
 
     if re.fullmatch(r"\d+", name):
-        return bool(re.search(rf"(?<!\d){name}(?!\d)", reply))
+        n = int(name)
+        return (bool(re.search(rf"(?<!\d){name}(?!\d)", reply))
+                or any(low <= n <= high for low, high in _ranges_in(reply)))
+    span = _STEP_RANGE.fullmatch(name.strip())
+    if span:
+        return (int(span.group(1)), int(span.group(2))) in _ranges_in(reply)
     return _phrase_in(_words_of(name), _words_of(reply))
+
+
+# A range of step numbers as a person writes it ("13-16", "steps 13 to 16"), never a part of a date or a longer
+# number ("01-10-2026").
+_STEP_RANGE = re.compile(r"(?:steps?\s*)?#?\s*(?<![\d\-/.])(\d{1,4})\s*(?:-|–|—|to|through)\s*#?(\d{1,4})(?![\d\-/.])",
+                         re.I)
+
+
+def _ranges_in(text):
+    """The ranges of step numbers a text says, as (low, high): low before high, at most 200 apart."""
+
+    found = []
+    for match in _STEP_RANGE.finditer(str(text or "")):
+        low, high = int(match.group(1)), int(match.group(2))
+        if low < high <= low + 200:
+            found.append((low, high))
+    return found
 
 
 def _gates_yes(text):
@@ -2753,7 +2797,7 @@ def _read_gates(asked, reply):
     gates = _gate_clauses(reply)
     if gates:
         return gates
-    plain = _skip_clauses(reply)  # ("skip 20 and 29"; "also 30" is the gates' own, above)
+    plain = _skip_clauses(reply, explained=False)  # ("skip 20 and 29"; "also 30" is the gates' own, above)
     if plain and plain["leave_out"] and not plain["keep"]:
         return {"ask": [], "no_ask": [], "leave_out": plain["leave_out"]}
     return _model_gates(asked, reply)
@@ -3048,15 +3092,18 @@ def _answer_gates(skill, question, text):
 # never as the only thing that keeps a replay from doing the step.
 # ============================================================
 
-def _skip_clauses(text):
+def _skip_clauses(text, explained=True):
     """
     A reply that is, clause by clause, a plain skip or keep and step numbers ("skip 20 and 29", "keep 29", "yes but
     also 31"): {"leave_out": [...], "keep": [...]} as numbers. None when any clause is more than that - the model's to
-    read. Bare numbers carry the choice before them.
+    read. Bare numbers carry the choice before them. What the person adds to explain it - in brackets, or after a dash
+    or a colon ("leave out 13, 14, 15 and 16 - all four were the try that did not take", found live) - is not a clause,
+    when `explained` (a reply to the steps put back; any other reply is read whole, as it may say more than that).
     """
 
+    text = _leading_choice_head(re.sub(r"\([^)]*\)", " ", text or "")) if explained else (text or "")
     out, last = {"leave_out": [], "keep": []}, None
-    for clause in re.split(r"[;,\n]|\band\b|\bbut\b", text or ""):
+    for clause in re.split(r"[;,\n]|\band\b|\bbut\b", text):
         if not clause.strip(" .!"):
             continue
         numbers = _step_numbers(clause) if re.search(r"\d", clause) else []
@@ -3127,14 +3174,53 @@ def _drop_steps(skill, ids):
 
     skill["steps"] = [s for s in skill["steps"] if s["id"] not in ids]
     for loop in skill.get("loops") or []:
+        touched = any(i in ids for block in (loop.get("blocks") or []) + (loop.get("between") or []) for i in block)
         loop["blocks"] = [b for b in ([i for i in block if i not in ids] for block in loop.get("blocks") or []) if b]
         if loop.get("between"):
             loop["between"] = [[i for i in gap if i not in ids] for gap in loop["between"]]
+        if touched and loop.get("enabled") is None and loop["blocks"]:
+            _reshape_loop(skill, loop)
         if loop["blocks"] and not any(len(b) == loop.get("length") for b in loop["blocks"]):
             loop["length"] = max(len(b) for b in loop["blocks"])
         if not loop["blocks"] or (loop.get("enabled") is None and len(loop["blocks"]) < 2):
             loop["enabled"] = False  # (nothing left that repeats: its steps are asked about like any others)
     skills.renumber(skill)
+
+
+def _kinds(skill, block):
+    by_id = {s["id"]: s for s in skill["steps"]}
+    return tuple(by_id[i]["kind"] for i in block if i in by_id)
+
+
+def _reshape_loop(skill, loop):
+    """
+    An undecided loop some of whose steps were left out keeps only the repetitions that still line up, kind by kind,
+    with the one most of them share (a shorter one with its tail, the way a first repetition that reached the form
+    another way does), so no position of the loop pairs a step with a step of another kind. What came between the
+    repetitions kept is worked out again from the loop's own steps; a repetition that no longer lines up stays in the
+    steps, between two kept ones or outside the loop. Fewer than two that line up, or none that types anything
+    different, and it is no loop: its steps are asked about like any others. Found live (2026-11-10): "leave out 13 and
+    16" of a repetition of four steps left a key press where the others typed, and the next question stopped the lesson
+    on an internal error.
+    """
+
+    shapes = [_kinds(skill, b) for b in loop["blocks"]]
+
+    def fits(shape, reference):
+        return shape == reference or (len(shape) < len(reference) and reference[len(reference) - len(shape):] == shape)
+
+    reference = max(set(shapes), key=lambda r: (sum(fits(s, r) for s in shapes), len(r)))
+    kept = [b for b, s in zip(loop["blocks"], shapes) if fits(s, reference)]
+
+    order = {s["id"]: k for k, s in enumerate(skill["steps"])}
+    of_loop = {i for b in loop["blocks"] + (loop.get("between") or []) for i in b}
+    loop["between"] = [[s["id"] for s in skill["steps"][order[a[-1]] + 1:order[b[0]]] if s["id"] in of_loop]
+                       for a, b in zip(kept, kept[1:])]
+    loop["blocks"], loop["length"], loop["reps"] = kept, len(reference), len(kept)
+
+    by_id = {s["id"]: s for s in skill["steps"]}
+    if len(kept) < 2 or not _loops_over_data([[by_id[i] for i in b] for b in kept], skill.get("demos") or 1):
+        loop["enabled"] = False
 
 
 def _accept_skips(skill, text):
@@ -3204,6 +3290,15 @@ def _answer_skips(skill, question, text):
         skill["skips_pending"] = pending
         skill["unclear"].pop("skips", None)
         return {"understood": True, "note": "", "decision": None}
+
+    # A correction in other words that names steps ("all four were the try that did not take: 13, 14, 15, 16") is read
+    # for them; any it adds go on the list, which is put back again - a yes to the old line never stands for it.
+    if _names_a_step(skill, text):
+        reading = _model_gates(question.get("text") or "", text) or {}
+        named = {s["id"] for name in reading.get("leave_out") or [] for s in _steps_named(skill, name)}
+        if named - set(pending["leave_out"]):
+            _propose_skips(skill, reading["leave_out"], said=text)
+            return {"understood": True, "note": "", "decision": None}
 
     choice, _ = _read_choice("skips", question, text)
     if choice == "skip":

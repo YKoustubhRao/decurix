@@ -363,7 +363,10 @@ func (f *fakeSandbox) CollectPractice(_ context.Context, id, caseID string, _ ma
 	}
 	return out, nil, nil, nil
 }
-func (f *fakeSandbox) RemovePractice(_ context.Context, ids ...string) error {
+func (f *fakeSandbox) RemovePractice(ctx context.Context, ids ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err // (as Docker's client does on a context already spent: nothing is removed)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, id := range ids {

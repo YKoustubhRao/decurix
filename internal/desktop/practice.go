@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/netip"
 	"os"
@@ -981,6 +982,9 @@ func (m *Manager) StartPracticeMock(ctx context.Context, image, runID string, so
 	if len(fixture) == 0 {
 		fixture = []byte("{}")
 	}
+	if err = m.removeRunMocks(ctx, runID); err != nil {
+		return "", err
+	}
 	config, host, net := practiceMockConfigs(image, runID, inherited)
 	created, err := m.client.ContainerCreate(ctx, config, host, net, nil, "")
 	if err != nil {
@@ -1089,6 +1093,30 @@ func (m *Manager) UnpausePractice(ctx context.Context, ids ...string) error {
 			continue
 		}
 		if err := m.client.ContainerUnpause(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeRunMocks removes every mock app this control plane started for runID that is still there, before the run's
+// next mock starts: they all answer to one name (PracticeMockHost), so a leftover one would take part of the next
+// case's requests. Found live (2026-11-10): a case's mock outlived it when its removal ran out of time, and the
+// run's later cases saved into and read from that stale app. A mock it cannot remove stops the case (an error),
+// never runs it beside a stale one.
+func (m *Manager) removeRunMocks(ctx context.Context, runID string) error {
+	list, err := m.client.ContainerList(ctx, container.ListOptions{All: true, Filters: filters.NewArgs(
+		filters.Arg("label", "decurix-practice-run="+runID), filters.Arg("label", "decurix-practice-mock=true"))})
+	if err != nil {
+		return err
+	}
+	for _, c := range list {
+		// (The labels are checked here too, not only by the daemon's filter; another plane's are never touched.)
+		if c.Labels["decurix-practice-run"] != runID || c.Labels["decurix-practice-mock"] != "true" || !OwnedHere(c.Labels) {
+			continue
+		}
+		log.Printf("practice: removing run %s's mock app %s left from an earlier case", runID, c.ID)
+		if err := m.RemovePractice(ctx, c.ID); err != nil {
 			return err
 		}
 	}

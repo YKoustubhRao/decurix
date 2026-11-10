@@ -905,6 +905,26 @@ own judgement:
 **Still owed:** a skill file is the worker's own to write. Holding the confirmed answer where only the control plane
 writes it (the person's judgement) would make it one a worker cannot edit.
 
+**A press at a point is the press of what is under it** (freeze 2.2, 2026-11-10). A replayed coordinate click on an
+OTP form's "Verify" sent the person's OTP with no yes: the look listed nothing at the point, so the commit checks
+(which need an element) never ran, and the approvals entry named only the step. Now:
+- **The point is resolved first.** `core.act` resolves a point to the control the page names there (`_gate_spot`)
+  before the commit checks, which run on it exactly as on a click: pre-save checks, the secret-carrying submit, the
+  safe default and the approvals holds. This covers the replay and an engine's `gui click x,y`; an Enter after a
+  point focus is the press of the focused control (`_pressed_by_key`).
+- **A step can be held by its place.** A replayed step named by the person's confirmed approvals (by number or id,
+  with or without a name), or approved while taught (consequential), is held whatever the press resolves to
+  (`core._step_hold`; the replay keeps the step's id in `audit.origin`).
+- **"Can't tell what's there" means ask.** A replayed press where nothing can be identified is held when the step is
+  one the person marked, when no approvals answer is confirmed, or when there is no element tree to ask (an
+  application drawn in pixels) (`core._unidentified_hold`). Only blank space in a plain step, with a confirmed answer,
+  on a page that says nothing is there, still goes.
+- **Lanes check before each curve.** A desktop runs the dry check `python3 -m decurix_agent.computer.holdcheck SKILL`,
+  which presses nothing. It reports, for every press the person said needs their OK, the rule that holds it (by the
+  same functions) or NOT HELD, and exits 1 when any is not held and 2 when no answer is confirmed.
+
+Tests: `agent/tests/test_point_press_held.py`, `agent/tests/test_holdcheck.py`.
+
 ## What this does not cover (said plainly)
 
 - **Direct input.** The gate decides whether a *yes* exists. It does not stand between the worker and the screen: a

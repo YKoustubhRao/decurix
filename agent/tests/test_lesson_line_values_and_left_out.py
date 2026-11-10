@@ -363,5 +363,211 @@ class StepsSaidToBeLeftOutAreTakenOut(unittest.TestCase):
         self.assertNotIn("skips_pending", skill)
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# 3. Steps left out of a repetition (freeze 2.2)
+#
+# Found live (2026-11-10, the same task taught again on desktop erpcurve2, task tf18e6dc0fe52f44b): the person said
+# "skip steps 13-16" (a first try at the due date that did not take); the lesson put back only 13 and 16 (the reading's
+# 14 and 15 were dropped as "not said", the reply saying them only as a range); the person answered "leave out 13, 14,
+# 15 and 16 - all four were ..." and the lesson stopped on an internal error, 'samples': 13-16 and 17-20 were two
+# repetitions of one block, and with 13 and 16 gone a key press stood where the others typed. Steps 1-44 as the lesson
+# listed them; 45-49 (not shown) are stand-ins.
+# ---------------------------------------------------------------------------------------------------------------------
+
+DATE_GOAL_REPLY = (
+    "Mostly right. Some fields lost their names in the recording: steps 8-9 type the bill number into 'Supplier "
+    "Invoice No'; steps 10-12 type the bill date into 'Supplier Invoice Date'. Steps 13-16 were my first try at the due "
+    "date, which did not take - skip steps 13-16; steps 17-20 enter the due date. Every value comes from the bill (the "
+    "attached PDF): supplier, bill number, bill date, due date, and one item row per line of the bill with that line's "
+    "quantity and rate - the number of lines and each line's quantity differ from bill to bill. Pick the supplier and "
+    "each item from the dropdown ERPNext offers; never create a new supplier or item - if one is missing, leave the "
+    "bill unsaved and tell me which. If an invoice with the same supplier bill number already exists, stop and ask me. "
+    "If the taxes or grand total don't match the bill, stop and ask; never adjust them yourself. Save as a draft only, "
+    "never submit.")
+DATE_SKIP_REPLY = "leave out 13, 14, 15 and 16 - all four were the due-date try that did not take"
+DATE_LINE = ('I will leave out step 13 click textbox "", 14 press ctrl+a on textbox "", 15 type {typed_text_4} into '
+             'textbox "" and 16 press Escape on textbox ""')
+
+EMPTY = ("textbox", "")
+DUE = ("textbox", "Due Date")
+DATE_STEPS = [
+    ("key", None, None, "press ctrl+l", None),
+    ("type", None, None, "type {typed_text} into the focused field", "host.docker.internal:8000/app/purchase-invoice/new"),
+    ("key", None, None, "press Delete", None),
+    ("key", None, None, "press Return", None),
+    ("click", "combobox", "Supplier", 'click combobox "Supplier"', None),
+    ("type", "combobox", "Supplier", 'type {supplier} into combobox "Supplier"', "TechCorp"),
+    ("click", "option", "TechCorp Cloud Solutions India Pvt Ltd TechCorp Cloud Solutions India Pvt Ltd, …",
+     'click option "TechCorp Cloud Solutions India Pvt Ltd TechCorp C…"', None),
+    ("click", None, None, "click 520,556", None),
+    ("type", None, None, "type {typed_text_2} into the focused field", "TC/2026/0401"),
+    ("click", *EMPTY, 'click textbox ""', None),
+    ("type", *EMPTY, 'type {typed_text_3} into textbox ""', "01-10-2026"),
+    ("key", *EMPTY, 'press Escape on textbox ""', None),
+    ("click", *EMPTY, 'click textbox ""', None),
+    ("key", *EMPTY, 'press ctrl+a on textbox ""', None),
+    ("type", *EMPTY, 'type {typed_text_4} into textbox ""', "15/10/2026"),
+    ("key", *EMPTY, 'press Escape on textbox ""', None),
+    ("click", *DUE, 'click textbox "Due Date"', None),
+    ("key", *DUE, 'press ctrl+a on textbox "Due Date"', None),
+    ("type", *DUE, 'type {due_date} into textbox "Due Date"', "15-10-2026"),
+    ("key", *DUE, 'press Escape on textbox "Due Date"', None),
+] + [("scroll", None, None, "scroll down on 760,450", None)] * 3 + [
+    ("click", "combobox", "Item", 'click combobox "Item"', None),
+    ("type", "combobox", "Item", 'type {item} into combobox "Item"', "Cloud Compute"),
+    ("click", "option", "Cloud Compute Instances Cloud Compute Instances, Services",
+     'click option "Cloud Compute Instances Cloud Compute Instances, …"', None),
+    ("click", *QTY, 'click textbox "Accepted Qty"', None),
+    ("key", *QTY, 'press ctrl+a on textbox "Accepted Qty"', None),
+    ("type", *QTY, 'type {accepted_qty} into textbox "Accepted Qty"', "1"),
+    ("click", *RATE, 'click textbox "Rate (INR)"', None),
+    ("key", *RATE, 'press ctrl+a on textbox "Rate (INR)"', None),
+    ("type", *RATE, 'type {rate_inr} into textbox "Rate (INR)"', "40000"),
+    ("click", "button", "Add row", 'click button "Add row"', None),
+    ("click", "combobox", "Item", 'click combobox "Item"', None),
+    ("type", "combobox", "Item", 'type {item_2} into combobox "Item"', "Managed Database"),
+    ("click", "option", "Managed Database Hosting Managed Database Hosting, Services",
+     'click option "Managed Database Hosting Managed Database Hosting…"', None),
+    ("click", *QTY, 'click textbox "Accepted Qty"', None),
+    ("key", *QTY, 'press ctrl+a on textbox "Accepted Qty"', None),
+    ("type", *QTY, 'type {accepted_qty_2} into textbox "Accepted Qty"', "1"),
+    ("click", *RATE, 'click textbox "Rate (INR)"', None),
+    ("key", *RATE, 'press ctrl+a on textbox "Rate (INR)"', None),
+    ("type", *RATE, 'type {rate_inr_2} into textbox "Rate (INR)"', "10000"),
+] + [("scroll", None, None, "scroll down on 760,450", None)] * 6 + [("key", None, None, "press ctrl+s", None)]
+
+
+def date_skill(first_block=False):
+    """The live draft at the first question: the date entries a loop (17-20 like 13-16, and with `first_block` the
+    shorter 10-12 before them), the bill's lines another (24-32 and 34-42, "Add row" between)."""
+
+    skill = live_skill()
+    steps, params = [], []
+    for n, (kind, role, label, summary, typed) in enumerate(DATE_STEPS, 1):
+        step = {"id": f"s{n}", "n": n, "kind": kind, "summary": summary, "consequential": False, "expect": []}
+        if role:
+            step["target"] = {"role": role, "name": label}
+        elif kind in ("click", "drag", "scroll"):
+            step["point"] = [520, 556] if kind == "click" else [760, 450]
+        if typed is not None:
+            step["samples"] = [typed]
+            step["param"] = summary.split("{")[1].split("}")[0]
+            params.append({"name": step["param"], "label": label or "the focused field", "example": typed,
+                           "default": typed, "varies": None, "step": n})
+        steps.append(step)
+    ids = [s["id"] for s in steps]
+    dates = {"id": "l1", "enabled": None, "length": 4, "reps": 2 + first_block,
+             "blocks": ([ids[9:12]] if first_block else []) + [ids[12:16], ids[16:20]],
+             "between": ([[]] if first_block else []) + [[]]}
+    lines = {"id": "l2", "enabled": None, "length": 9, "reps": 2, "blocks": [ids[23:32], ids[33:42]],
+             "between": [ids[32:33]]}
+    skill.update(steps=steps, params=params, loops=[dates, lines], answers={}, demos=1)
+    skill["understanding"]["questions"] = []
+    return skill
+
+
+def aligned_kinds_agree(skill, loop):
+    blocks, template = learning._template(skill, loop)
+    return all(len({s["kind"] for s in learning._aligned(blocks, position, loop["length"])}) == 1
+               for position in range(len(template)))
+
+
+class LeftOutOfARepetition(unittest.TestCase):
+
+    def told(self, reading, first_block=False):
+        skill = date_skill(first_block)
+        goal = learning.next_question(skill)
+        self.assertEqual(goal["kind"], "goal")
+        with Model(reading):
+            learning.answer(skill, goal, DATE_GOAL_REPLY)
+        return skill
+
+    def test_a_range_is_put_back_whole_however_the_reading_lists_it(self):
+        for leave_out in (["13", "14", "15", "16"], ["13-16"], ["steps 13-16"]):
+            with self.subTest(leave_out=leave_out):
+                skill = self.told({"ask": [], "no_ask": [], "leave_out": leave_out})
+                asked = learning.next_question(skill)
+                self.assertEqual(asked["kind"], "skips")
+                self.assertTrue(asked["text"].startswith(DATE_LINE + " - right?"), asked["text"])
+
+    def test_the_live_answers_end_with_the_four_out_and_a_lesson_that_goes_on(self):
+        for first_block in (False, True):
+            with self.subTest(first_block=first_block):
+                # (the reading as it reached the lesson live: the range's two ends)
+                skill = self.told({"ask": [], "no_ask": [], "leave_out": ["13", "16"]}, first_block)
+                with NO_MODEL:
+                    result = learning.answer(skill, learning.next_question(skill), DATE_SKIP_REPLY)
+                    self.assertTrue(result["understood"])
+                    asked = learning.next_question(skill)
+                    self.assertTrue(asked["text"].startswith(DATE_LINE + " - right?"), asked["text"])
+                    learning.answer(skill, asked, "yes")
+                    nxt = learning.next_question(skill)   # (raised KeyError 'samples' live)
+                self.assertIsNotNone(nxt)
+                self.assertEqual(len(skill["steps"]), 45)
+                self.assertEqual([s["summary"] for s in skill["steps"][12:16]],
+                                 ['click textbox "Due Date"', 'press ctrl+a on textbox "Due Date"',
+                                  'type {due_date} into textbox "Due Date"', 'press Escape on textbox "Due Date"'])
+                for loop in skill["loops"]:
+                    if loop["enabled"] is not False:
+                        self.assertTrue(aligned_kinds_agree(skill, loop), loop)
+                lines = next(l for l in skill["loops"] if l["id"] == "l2")
+                self.assertIsNone(lines["enabled"], "the bill's lines are still a loop to ask about")
+
+    def test_two_steps_out_of_one_repetition_never_mixes_kinds(self):
+        # The live crash itself: only 13 and 16 taken out, a key press and a typing left of that repetition.
+        skill = date_skill()
+        skill["answers"]["goal"] = DATE_GOAL_REPLY[:300]
+        skill["skips_pending"] = {"leave_out": ["s13", "s16"], "unmapped": [], "said": [DATE_GOAL_REPLY]}
+        with NO_MODEL:
+            learning.answer(skill, learning.next_question(skill), "yes")
+            learning.questions(skill)
+        dates = next(l for l in skill["loops"] if l["id"] == "l1")
+        self.assertIs(dates["enabled"], False, "one repetition left that lines up: no loop")
+        self.assertIn('press ctrl+a on textbox ""', [s["summary"] for s in skill["steps"]], "nothing else taken out")
+
+    def test_a_repetition_that_no_longer_lines_up_leaves_the_loop_and_the_rest_stay_one(self):
+        skill = date_skill(first_block=True)
+        # Three full repetitions of the date entry: 13-16, 17-20 and a copy of them; one step out of the middle one.
+        dates = next(l for l in skill["loops"] if l["id"] == "l1")
+        dates["blocks"], dates["between"] = [skill_ids(skill, 13, 16), skill_ids(skill, 17, 20),
+                                             skill_ids(skill, 24, 27)], [[], skill_ids(skill, 21, 23)]
+        for s in skill["steps"][23:27]:
+            s["kind"] = ["click", "key", "type", "key"][s["n"] - 24]
+            s["samples"] = ["01/11/2026"] if s["kind"] == "type" else s.get("samples")
+        skill["loops"] = [dates]
+        learning._drop_steps(skill, {"s18"})
+        self.assertEqual(dates["blocks"], [skill_ids_by_old(skill, 13, 16), skill_ids_by_old(skill, 24, 27)])
+        self.assertIsNone(dates["enabled"])
+        self.assertTrue(aligned_kinds_agree(skill, dates))
+        self.assertEqual(dates["between"], [["s17", "s19", "s20", "s21", "s22", "s23"]])
+        learning.questions(skill)
+
+    def test_the_loop_question_reads_only_steps_of_the_same_kind(self):
+        skill = date_skill()
+        dates = next(l for l in skill["loops"] if l["id"] == "l1")
+        dates["blocks"][0] = ["s14", "s15"]   # (a key press and a typing, as the live removal left them)
+        text = learning._loop(skill, dates)["text"]
+        self.assertIn("Steps 14-15", text)
+
+    def test_ranges_are_read_whole_and_never_from_a_date(self):
+        skill = date_skill()
+        for name, expected in {"13-16": [13, 14, 15, 16], "steps 13 to 16": [13, 14, 15, 16], "13": [13],
+                               "48-52": []}.items():
+            with self.subTest(name=name):
+                self.assertEqual([s["n"] for s in learning._steps_named(skill, name)], expected)
+        self.assertTrue(learning._said_in("14", "skip steps 13-16"))
+        self.assertTrue(learning._said_in("13-16", "skip steps 13-16"))
+        self.assertFalse(learning._said_in("5", "the bill date 01-10-2026"))
+        self.assertFalse(learning._said_in("17", "skip steps 13-16"))
+
+
+def skill_ids(skill, low, high):
+    return [s["id"] for s in skill["steps"] if low <= s["n"] <= high]
+
+
+def skill_ids_by_old(skill, low, high):
+    return [f"s{n}" for n in range(low, high + 1)]
+
+
 if __name__ == "__main__":
     unittest.main()

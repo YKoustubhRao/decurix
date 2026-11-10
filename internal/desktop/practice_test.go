@@ -172,7 +172,10 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode([]map[string]any{
 			{"Id": "left-behind", "Labels": map[string]string{OwnerLabel: ownerID()}},
 			{"Id": "another-planes", "Labels": map[string]string{OwnerLabel: "0123456789ab"}},
-			{"Id": "made-before-owners"}})
+			{"Id": "made-before-owners"},
+			{"Id": "stale-mock-x1", "Labels": map[string]string{OwnerLabel: ownerID(), PracticeLabel: "true", "decurix-practice-run": "x1", "decurix-practice-mock": "true"}},
+			{"Id": "other-planes-mock-x1", "Labels": map[string]string{OwnerLabel: "0123456789ab", PracticeLabel: "true", "decurix-practice-run": "x1", "decurix-practice-mock": "true"}},
+			{"Id": "other-runs-mock", "Labels": map[string]string{OwnerLabel: ownerID(), PracticeLabel: "true", "decurix-practice-run": "y2", "decurix-practice-mock": "true"}}})
 	case strings.HasSuffix(p, "/exec") && strings.HasPrefix(p, "/containers/"):
 		var body struct {
 			User string
@@ -404,6 +407,18 @@ func TestPracticeMockAndCollection(t *testing.T) {
 	if err != nil || mock != "mock" {
 		t.Fatal(err)
 	}
+	// A mock of the same run left from an earlier case is removed before the new one is made: they answer to one name, and a
+	// stale one took part of a later case's requests (found live 2026-11-10). Another run's or another plane's is left alone.
+	joined := strings.Join(d.calls, "\n")
+	removed, made := strings.Index(joined, "DELETE /containers/stale-mock-x1"), strings.Index(joined, "POST /containers/create")
+	if removed < 0 || made < 0 || removed > made {
+		t.Fatalf("the run's leftover mock was not removed before the new one: %s", joined)
+	}
+	for _, other := range []string{"other-planes-mock-x1", "other-runs-mock", "left-behind"} {
+		if strings.Contains(joined, "DELETE /containers/"+other) {
+			t.Fatalf("removed %s, which is not this run's mock on this plane: %s", other, joined)
+		}
+	}
 	// It is handed over only after it answered on its port: the wait runs in the mock, after its files are in
 	// (F-R3-1).
 	waited := false
@@ -603,7 +618,6 @@ func TestUnderFolderLeadsWithTheOwnedFolder(t *testing.T) {
 		}
 	}
 }
-
 
 // TestEachRunsMockHasItsOwnName: two runs on the one practice network never share the name a desktop's browser asks
 // for (found live 2026-11-09: two control planes' evals at once, one fixed name, Docker's DNS spread requests over both
