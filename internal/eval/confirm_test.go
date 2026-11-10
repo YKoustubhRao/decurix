@@ -97,3 +97,41 @@ func TestTheDateOrderWordsAreTheAgents(t *testing.T) {
 		}
 	}
 }
+
+// A question about entries picked from an application's lists is confirmed when every entry it lists is a value of a
+// record the case expects to be made, and is no confirmation (answered as any question) when one is not.
+func TestTheExpertConfirmsPicksTheExpectedRecordsHold(t *testing.T) {
+	c := Case{Expected: Expected{Graders: []Grader{
+		{Kind: "mock_records", Records: []byte(`[{"number": "1062", "party": "Udyavara Apartments"}, {"party": "Pai Textiles"}]`)},
+		{Kind: "absent", Records: []byte(`[{"party": "Suvarna Lifts & Escalators"}]`)},
+	}}}
+	ask := func(entries ...string) string {
+		q := "Before I report this, " + PicksQuestionMark + " - nothing the request, its files or you gave states these for their fields:"
+		for _, e := range entries {
+			q += "\n- Party A/c name: " + e + " (for 29ABEPP4410Q1Z5)\n  where the documents show it: \"" + e + "\" (1063.docx)"
+		}
+		return q + "\nReply yes if each is right for the record it is on, or say which entry each should be."
+	}
+	if reply, kind := confirmReply(c, ask("udyavara  apartments", "Pai Textiles")); reply != PicksYes || kind != "picks" {
+		t.Fatalf("expected entries: %q %q", reply, kind)
+	}
+	if reply, _ := confirmReply(c, ask("Pai Textiles", "Suvarna Lifts & Escalators")); reply != "" {
+		t.Fatalf("an entry only an absent grader names was confirmed: %q", reply)
+	}
+	if reply, _ := confirmReply(Case{}, ask("Pai Textiles")); reply != "" {
+		t.Fatalf("confirmed with no expected records: %q", reply)
+	}
+}
+
+// The picks question's words are the agent's own (final_gate._ask_about_picks).
+func TestThePicksQuestionWordsAreTheAgents(t *testing.T) {
+	b, err := os.ReadFile("../../agent/decurix_agent/final_gate.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{PicksQuestionMark, `lines.append(f"- {e['label']}: {e['value']}" + (f" (for `, `" (on a record that names no party`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("final_gate.py no longer holds %q", want)
+		}
+	}
+}

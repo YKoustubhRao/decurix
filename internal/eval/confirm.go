@@ -5,11 +5,79 @@
 package eval
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"regexp"
 	"strings"
 )
+
+// PicksQuestionMark is what the agent's question about entries picked from an application's lists says
+// (final_gate._ask_about_picks).
+const PicksQuestionMark = "please confirm the entries I chose from the application's own lists"
+
+// PicksYes is the expert's yes to picked entries that the case's expected records all hold.
+const PicksYes = "yes"
+
+// pickLineRe is one entry the picks question lists: "- <field>: <entry>" with an optional "(for ...)" or "(on a record
+// ...)" after it.
+var pickLineRe = regexp.MustCompile(`(?m)^- ([^:\n]+): (.+?)(?: \((?:for |on a record )[^\n]*\))?\s*$`)
+
+// picksReply is the answer of a person who knows their own records: "yes" when every entry the question lists is a
+// value of a record the case expects to be made (its mock_records graders); "" otherwise (the question is classified
+// as any other). A person knows their customers' ledgers and their places of supply; the graders still decide whether
+// the work is right. Found live (2026-11-10, books curve): every customer picked from the ledger list was put to the
+// person, and the expert's "I don't know" kept nothing for the next month.
+func picksReply(c Case, question string) string {
+	want := expectedValues(c)
+	lines := pickLineRe.FindAllStringSubmatch(question, -1)
+	if len(lines) == 0 || len(want) == 0 {
+		return ""
+	}
+	for _, m := range lines {
+		if !want[normValue(m[2])] {
+			return ""
+		}
+	}
+	return PicksYes
+}
+
+// expectedValues is every text value of the records the case's mock_records graders expect, normalized.
+func expectedValues(c Case) map[string]bool {
+	out := map[string]bool{}
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			if n := normValue(x); n != "" {
+				out[n] = true
+			}
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	for _, g := range c.Expected.Graders {
+		if g.Kind != "mock_records" || len(g.Records) == 0 {
+			continue
+		}
+		var recs any
+		if json.Unmarshal(g.Records, &recs) == nil {
+			walk(recs)
+		}
+	}
+	return out
+}
+
+// normValue is a value as compared: spaces collapsed, case folded.
+func normValue(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+}
 
 // PlanQuestionOpening is how a taught worker opens the plan it puts to the person before its first replays (the
 // agent's thebot_harness.PLAN_QUESTION; TestThePlanOpeningIsTheAgents keeps the two the same).
@@ -36,7 +104,7 @@ const DateOrderMark = "which can be read two ways. Reply 1 if it is"
 // dateOrderSides is how the date-order question names the side it asks about (task_context.date_question_text).
 var dateOrderSides = map[string]string{"the application writes the date": "app", "the document writes the date": "source"}
 
-// confirmReply is the expert's reply to a confirmation question, with its kind ("plan", "done" or "date"), or "" for
+// confirmReply is the expert's reply to a confirmation question, with its kind ("plan", "done", "date" or "picks"), or "" for
 // any other question. A plan is confirmed only when the suite says the person does (Case.ConfirmsPlans); a date-order
 // question is answered from the case's own fact of how that side writes dates (Case.DateOrders) - a person knows how
 // their own application writes dates (owner's ruling 2026-11-09: unanswered, every save of a month asked it again).
@@ -61,6 +129,11 @@ func confirmReply(c Case, question string) (string, string) {
 	}
 	if c.ConfirmsPlans && strings.HasPrefix(q, PlanQuestionOpening) {
 		return planReply(c, q), "plan"
+	}
+	if strings.Contains(q, PicksQuestionMark) {
+		if yes := picksReply(c, q); yes != "" {
+			return yes, "picks"
+		}
 	}
 	return "", ""
 }

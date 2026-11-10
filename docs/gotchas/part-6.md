@@ -533,3 +533,14 @@ backing read only the request's attached files, and these invoices sat in a fold
 `records.given_sources` also reads the files already in such a folder (`_request_folder_files`): never one the task
 made (`source_guard.made_by_task`), never the whole home or work folder, nothing while the task's start is unknown, and
 still only where the field's own label states the value (`option_beside_label`).
+
+### A replay that entered every bill right ended "Not done" over the customers it picked
+
+The books curve on 83f4a53d: a taught replay entered each month's bills right (every grader passed), then the final
+check held each customer picked from the ledger list as backed by nothing given - the bills write the customer under
+"Customer Name and Address", the form's field is "Party A/c name" - and the replay's gate ended in an error. The engine's
+route asks the person about such picks once (final_gate._ask_about_picks); the replay's did not, so no confirmation was
+ever kept for the next month. Now skill_task._succeed asks the same question when unbacked picks are its only finding.
+And the question asks for a plain yes, but the confirm reading's vague-yes guard took "yes" first and asked for `done`:
+the picks reading now comes first. The eval's scripted expert confirms picked entries that the case's expected records
+hold (confirm.go picksReply), as a person who knows their own customers would.

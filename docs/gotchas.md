@@ -1021,3 +1021,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A ledger saved with its state unset went out as done
 - [part-6.md](gotchas/part-6.md): A command's output went to the person as the question
 - [part-6.md](gotchas/part-6.md): A pick the client's invoices state was held as backed by nothing
+- [part-6.md](gotchas/part-6.md): A replay that entered every bill right ended "Not done" over the customers it picked

@@ -1752,7 +1752,16 @@ def _succeed(run, result, checked_by, seen="", helped=False):
         # What code holds against the saved records (review round 9, R9-B3: a run's read-back passed over a value no
         # source gives, and done stood).
         found_in_ledger = _ledger_faults(text)
-        file_problems = list(problems)
+        file_problems, file_not_made = list(problems), list(not_made)
+        if (found_in_ledger and not file_problems and not file_not_made and not run.get("picks_asked")
+                and all(getattr(f, "kind", "") == ledger_checks.UNBACKED_PICK for f in found_in_ledger)
+                and final_gate._ask_about_picks(run, text, SKILL_ENGINE, {"task": state.current_task or text})):
+            # Only entries picked from the application's lists that nothing given backs: whether each is right is the
+            # person's to say, once, with what the documents show - as the engine's report is (final_gate), never an
+            # error. Found live (2026-11-10, books curve on 83f4a53d): every bill entered right by the replay ended "Not
+            # done" over the customers picked from the ledger list, which the bills write under another label; the
+            # person was never asked, so no confirmation could be kept for the next month.
+            return
         problems = list(problems) + ledger_checks.faults(found_in_ledger)
         not_made = list(not_made) + ledger_checks.not_made(found_in_ledger)
         # Code found the request's sources in at least one file the run made (FileFacts.compared_clean), and it

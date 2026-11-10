@@ -1409,6 +1409,12 @@ def _confirm_reply(paused, reply):
                                  + "\n\nSend the new request again and I will start on it.",
                                  kind="error", engine=engine, checked=False, gated=True)
 
+    if paused.get("picks") and run is not None:
+        # The picked entries put to the person ask for a plain yes (_ask_about_picks: "Reply yes if each is right"), so
+        # a yes is their answer here, never a vague one. Found in review (2026-11-10): the vague-yes guard below took
+        # it first and asked for `done`, so a person who confirmed the entries as asked had nothing kept.
+        return _picks_reply(paused, reply, claim, engine)
+
     if approval._bare(reply) in VAGUE_YES:
         # Only a yes, which may have been meant for another question: the question stays open.
         state.paused_skill = paused
@@ -1418,9 +1424,6 @@ def _confirm_reply(paused, reply):
 
     # One reading of the reply decides (_done_reading). A reply it cannot settle (no model to read it) is taken as
     # what is wrong and tried again with their words - never as a confirmation.
-    if paused.get("picks") and run is not None:
-        return _picks_reply(paused, reply, claim, engine)
-
     said = _done_reading(reply, seen)
     choice, told = said["choice"], said["instruction"]
     if paused.get("series") and run is not None and choice != "done":
