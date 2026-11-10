@@ -1038,3 +1038,5 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A replayed coordinate click sent the person's OTP with no yes
 - [part-6.md](gotchas/part-6.md): A case's mock app outlived it and served the next cases
 - [part-6.md](gotchas/part-6.md): "Skip steps 13-16" put back only 13 and 16, and leaving out two steps of a repetition crashed the lesson - ranges read whole, a loop keeps only repetitions that line up by kind
+- [part-6.md](gotchas/part-6.md): A worker's question held every control whose name stood in it - only the control it asks to press is held, never a navigation-only link
+- [part-6.md](gotchas/part-6.md): The scripted expert answered a worded request for approval with "I don't know"

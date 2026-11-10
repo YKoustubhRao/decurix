@@ -1361,7 +1361,9 @@ def _person_hold(control, before):
     adding a question - nothing here makes a yes:
     - the person did not say yes when this control was put to them in this task (approval.declined_controls, kept by the
       gate);
-    - this task asked them about this control in words (the question names it whole) and their reply did not say yes;
+    - this task asked them in words to press this very control (approval.asks_to_press: it is the press's object, not
+      only a name standing in the question) and their reply did not say yes - except a control the page says only goes
+      to another page (_only_navigates), which such a question never holds;
     - they approved this control while teaching the task (_taught_approvals): it is asked in every run, not only when
       the plan of the work happens to list it.
     Found live (2026-11-10, a return-prep eval): "Save to portal" was held only in runs whose plan listed it; in others
@@ -1382,10 +1384,13 @@ def _person_hold(control, before):
 
     if any(same(c) for c in approval.declined_controls(tid)):
         return f'you did not say yes to "{label}" earlier in this task - it is put to you again, never pressed on its own'
-    for asked, reply in _task_exchanges(tid):
-        if approval.names_control(asked, control) and not approval.says_yes(reply, asked):
-            return (f'this task asked you about "{label}" and your reply did not say yes - it is put to you again, never '
-                    "pressed on its own")
+    # (Found live 2026-11-10: a question to press "Save to portal" for a client named the client whole, and the client's
+    # breadcrumb link was held; "Which company should I use?" held the company's link. Neither was asked to be pressed.)
+    asked_to = [(asked, reply) for asked, reply in _task_exchanges(tid) if approval.asks_to_press(asked, control)]
+    if asked_to and any(not approval.says_yes(reply, asked) for asked, reply in asked_to) \
+            and not _only_navigates("click", control):
+        return (f'this task asked you to press "{label}" and your reply did not say yes - it is put to you again, never '
+                "pressed on its own")
     if any(same(c) for c in _taught_approvals(before)):
         return f'you approved "{label}" yourself when you taught this task - it is made with your OK first, every time'
     return None

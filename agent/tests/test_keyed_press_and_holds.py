@@ -154,6 +154,47 @@ class WhatThePersonSaidHoldsAPress(unittest.TestCase):
         self.assertIsNone(self.hold(said=said, says_yes=True))
         self.assertIsNone(self.hold(said=[("Which month is this?", "December")]))
 
+    # Found live (2026-11-10): a question naming a client whole held the client's breadcrumb; "Which company should I
+    # use?" held the company's link. A worker's question holds only the control it asks to press.
+    QUESTION = ('I need approval before clicking "Save to portal" for Sahyadri Lift Services\' January 2027 GSTR-1. '
+                "May I proceed?")
+
+    def links_to(self, address):
+        return mock.patch.multiple(core.cdp, link_target=mock.Mock(return_value=address),
+                                   submit_form_fields=mock.Mock(return_value=None))
+
+    def test_the_press_a_question_asks_for_is_held_not_a_name_standing_in_it(self):
+        said = [(self.QUESTION, "I don't know - that's for you to decide")]
+        self.assertIn("asked you to press", self.hold(said=said))  # Save to portal: its object
+        breadcrumb = control("link", "Sahyadri Lift Services")
+        with self.links_to("http://fileprep.test/client/1"):
+            self.assertIsNone(self.hold(said=said, control_=breadcrumb))
+        # (a button of that name is not the press asked for either)
+        self.assertIsNone(self.hold(said=said, control_=control("button", "Sahyadri Lift Services")))
+
+    def test_a_company_asked_about_is_not_a_press_asked_for(self):
+        said = [("Which company should I use? Konkan Coast Interiors or Konkan Coast Traders?", "I don't know")]
+        company = control("link", "Konkan Coast Interiors")
+        with self.links_to("http://books.test/company/2"):
+            self.assertIsNone(self.hold(said=said, control_=company))
+
+    def test_a_link_the_page_says_only_navigates_is_never_held_by_a_worded_question(self):
+        said = [("May I click Konkan Coast Interiors?", "not sure")]
+        company = control("link", "Konkan Coast Interiors")
+        with self.links_to("http://books.test/company/2"):
+            self.assertIsNone(self.hold(said=said, control_=company))
+        with self.links_to(""):  # not one the page says only goes somewhere: the press asked for is held
+            self.assertIn("asked you to press", self.hold(said=said, control_=company))
+
+    def test_the_ways_a_question_asks_to_press(self):
+        save = {"name": "Save to portal"}
+        for asked in ("May I click Save to portal?", 'Before pressing "Save to portal", check?', "Should I press the "
+                      "Save to portal button?", "Can I tap on Save to portal", "approve 'Save to portal' now?"):
+            self.assertTrue(core.approval.asks_to_press(asked, save), asked)
+        for asked in ("Is Save to portal the right step?", "The page shows Save to portal and Import.",
+                      "Click Save to portal draft"[:0] + "Shall I click Save to portals?"):
+            self.assertFalse(core.approval.asks_to_press(asked, save), asked)
+
     def test_an_approval_taught_holds_it_in_every_run_on_its_site(self):
         skill = {"steps": [{"consequential": True, "url": "http://fileprep.test/gstr1/2026-10",
                             "target": {"role": "button", "name": "Save to portal"}}]}

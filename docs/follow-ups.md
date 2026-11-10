@@ -351,6 +351,23 @@ The curves run on one frozen build; these were seen on it or on the pilot build 
   read `names_partial`; the recorder reads again for a click on a nameless fillable field; a learned step on a nameless
   field is flagged, never generalised silently. Until then demonstrations are recorded only at low load.
 
+- **A goal answer's first sentence becomes the task's "done when" even when it is not one.** Freeze-2.2 relearn of
+  office-books case 1 (s2books): the person's goal answer opened with "Saving a ledger or a voucher needs my OK ..."
+  and the draft stored that sentence as done_when; the person had to throw the draft away and answer again with the
+  finishing condition first. The goal reading should pick the sentence that says when the work is finished (or ask),
+  not the first one. Seen again on the same relearn: done_when kept the whole first paragraph, approvals sentence
+  included.
+- **More lesson over-reading (freeze-2.2 books relearn).** A rules text naming a field ("Sales ledger") was read as
+  steps to leave out (47/72/97/122/147); the person had to answer "no". Naming a coordinate click as "the GSTIN/UIN
+  textbox" got "I did not catch that": the control-role words lack "textbox". The final save question still cannot
+  take a correction to a rule (rule 1 kept an unneeded "download the attachments").
+- **The leave-out reader takes a prohibition for a step to remove (third case, freeze 2.2, ERPNext relearn).** The
+  person corrected rules ("never create a new supplier or item yourself ... Save as a draft only, never submit"), and
+  the lesson proposed leaving out steps 5-6 (the supplier pick) and asked which step is "submit". Same family as the
+  "look for a password" and "Sales ledger" cases above. Fix: only an explicit leave-out / skip / glitch statement that
+  names a step (its number or its own action as done) removes steps; a "never X" about an action the demonstration did
+  not do, or a rule about how to do a step, is a rule and never a removal.
+
 ## Live checks after the next build
 
 The writers could not run these. Run them on the next build, before calling this review done.

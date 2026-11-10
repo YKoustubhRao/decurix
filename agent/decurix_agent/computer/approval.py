@@ -1196,6 +1196,29 @@ def names_control(question, element):
     return any(asked[i:i + len(label)] == label for i in range(len(asked) - len(label) + 1))
 
 
+# The verbs of pressing a control, as a question asks for one ("may I click X", "before pressing X", "approve X").
+_PRESS_VERB = r"(?:click|clicking|clicked|press|pressing|tap|tapping|hit|hitting|submit|submitting|approve|approving)"
+# What may stand between the verb and the control's label: "on", "the", the control's kind, and a quote mark.
+_PRESS_BRIDGE = r"(?:\s+(?:on|the|a|its|this|that))*(?:\s+(?:button|link|tab|option|control))?\s*[\"'“”‘’]?\s*"
+
+
+def asks_to_press(question, element):
+    """
+    Whether a question asks to press this control: its whole label is the object of a press ("may I click Save to
+    portal?", 'before clicking "Save to portal" for ...', "press the File with EVC button"). A label that only stands
+    somewhere in the question - a client's name after "for", a field's label, a company it asks which of - is not what
+    it asks to press. Found live (2026-11-10): a question to press "Save to portal" for a client named the client in
+    full, and the client's breadcrumb link was held for the rest of the run.
+    """
+
+    label = " ".join(str((element or {}).get("name") or "").split())
+    if not label:
+        return False
+    text = " ".join(str(question or "").split())
+    pattern = r"\b" + _PRESS_VERB + _PRESS_BRIDGE + re.escape(label) + r"(?!\w)"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
 def _reply_bound(prior, element):
     """Whether the person's latest reply could be this action's yes: fresh, unused, and answering a question that
     named this very control (names_control). Its reading decides the rest (_reply_grants)."""

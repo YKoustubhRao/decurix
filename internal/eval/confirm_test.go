@@ -135,3 +135,31 @@ func TestThePicksQuestionWordsAreTheAgents(t *testing.T) {
 		}
 	}
 }
+
+// A worker asking in words to press a control the case approves gets the yes the gate's card would get; a question that
+// asks to press anything the case does not approve, or asks to press nothing, is no confirmation (answered as any
+// question). Found live (2026-11-10, freeze 2.2): "I need approval before clicking "Save to portal" for Sahyadri Lift
+// Services' ..." got "I don't know", a non-yes the gate then held the client's own link on.
+func TestTheExpertApprovesAWordedAskToPressAnApprovedControl(t *testing.T) {
+	c := Case{Approves: []Approval{{Control: "Save to portal"}, {Control: "File with EVC"}, {Control: "Verify"}}}
+	live := `I need approval before clicking "Save to portal" for Sahyadri Lift Services' January 2027 GSTR-1 (the imported B2B, B2CS and HSN rows). May I go ahead?`
+	if reply, kind := confirmReply(c, live); reply != ApprovalYes || kind != "approval" {
+		t.Fatalf("the live question: %q %q", reply, kind)
+	}
+	if reply, _ := confirmReply(c, `May I click "File with EVC" and then press "Verify"?`); reply != ApprovalYes {
+		t.Fatalf("two approved presses: %q", reply)
+	}
+	for _, q := range []string{
+		`May I click "Save to portal" and then "Delete return"? I will press "Delete return" first.`,
+		`Should I click "Reset" before importing?`,
+		`Which company covers April 2027: "Suvarna Lift Systems 2025-26" or the 2027-28 one?`,
+		`Is "Save to portal" the right button?`,
+	} {
+		if reply, _ := confirmReply(c, q); reply != "" {
+			t.Fatalf("answered %q with %q", q, reply)
+		}
+	}
+	if reply, _ := confirmReply(Case{}, live); reply != "" {
+		t.Fatalf("a case that approves nothing answered: %q", reply)
+	}
+}

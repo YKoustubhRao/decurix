@@ -810,3 +810,23 @@ yet are added and put back again; a loop some of whose steps are left out keeps 
 up kind by kind with the one most share (no loop if fewer than two), and no reader of a loop's aligned steps reads a
 step of another kind. A structure edited by a person's answer must be checked for the invariants its readers assume.
 Tests: `agent/tests/test_lesson_line_values_and_left_out.py` (`LeftOutOfARepetition`, the live replies word for word).
+
+### A worker's question held every control whose name stood in it
+
+Found live (2026-11-10, freeze 2.2). The worker asked 'I need approval before clicking "Save to portal" for Sahyadri
+Lift Services' January 2027 GSTR-1' and the reply was "I don't know". The gate then asked properly and Save went
+through, but the client's breadcrumb link, the next taught step, was held for the rest of the run: the hold for a
+non-yes to the worker's own question (`core._person_hold`) took any control whose label stood whole in the question.
+"Which company should I use?" held the company's link the same way. Now a worded question holds only the control it
+asks to press, the object of a press verb (`approval.asks_to_press`: "click / press / tap / submit / approve [the]
+X"). A link the page says only goes to another page (`core._only_navigates`) is never held by such a question. The
+gate's own declines, taught approvals and secret-carrying submits are unchanged. Tests: `agent/tests/
+test_keyed_press_and_holds.py` (`WhatThePersonSaidHoldsAPress`).
+
+### The scripted expert answered a worded request for approval with "I don't know"
+
+Freeze 2.2, gstr curve og-5: the worker asked in words "I need approval before clicking "Save to portal" for <client>
+...". The expert answered only approval cards with a yes, so a query got "I don't know", a non-yes that armed a hold.
+A person who approves Save to portal on the card says yes when asked in words too: confirm.go approvalReply answers
+"Yes, go ahead." when the question asks to press only controls the case approves (the quoted label after a press verb),
+and nothing otherwise. Test: TestTheExpertApprovesAWordedAskToPressAnApprovedControl.

@@ -19,6 +19,35 @@ const PicksQuestionMark = "please confirm the entries I chose from the applicati
 // PicksYes is the expert's yes to picked entries that the case's expected records all hold.
 const PicksYes = "yes"
 
+// pressObjectRe is the control a question asks to press: the quoted label right after a press verb.
+var pressObjectRe = regexp.MustCompile(`(?i)\b(?:click(?:ing)?|press(?:ing)?|tap(?:ping)?|submit(?:ting)?|approv(?:e|al) (?:to|for|before)(?: clicking| pressing)?)\s+(?:on\s+)?(?:the\s+)?["“'‘]([^"”'’\n]{1,79})["”'’]`)
+
+// approvalReply is the answer of a person asked in words to OK a press: "Yes, go ahead." when the question asks to
+// press a control the case approves (Case.Approves) and asks to press no other; "" otherwise (classified as any
+// question). A person who approves "Save to portal" when the gate's card asks would say yes when the worker asks in
+// words too. Found live (2026-11-10, freeze 2.2): the worker asked "I need approval before clicking "Save to portal"
+// for <client> ...", the expert's "I don't know" was a non-yes, and the gate then held the client's own link named in
+// that question; the gate side is narrowed separately (core._person_hold), this answers the question as a person would.
+func approvalReply(c Case, question string) string {
+	if len(c.Approves) == 0 {
+		return ""
+	}
+	approved := map[string]bool{}
+	for _, a := range c.Approves {
+		approved[normValue(a.Control)] = true
+	}
+	asked := pressObjectRe.FindAllStringSubmatch(question, -1)
+	if len(asked) == 0 {
+		return ""
+	}
+	for _, m := range asked {
+		if !approved[normValue(m[1])] {
+			return ""
+		}
+	}
+	return ApprovalYes
+}
+
 // pickLineRe is one entry the picks question lists: "- <field>: <entry>" with an optional "(for ...)" or "(on a record
 // ...)" after it.
 var pickLineRe = regexp.MustCompile(`(?m)^- ([^:\n]+): (.+?)(?: \((?:for |on a record )[^\n]*\))?\s*$`)
@@ -104,7 +133,7 @@ const DateOrderMark = "which can be read two ways. Reply 1 if it is"
 // dateOrderSides is how the date-order question names the side it asks about (task_context.date_question_text).
 var dateOrderSides = map[string]string{"the application writes the date": "app", "the document writes the date": "source"}
 
-// confirmReply is the expert's reply to a confirmation question, with its kind ("plan", "done", "date" or "picks"), or "" for
+// confirmReply is the expert's reply to a confirmation question, with its kind ("plan", "done", "date", "picks" or "approval"), or "" for
 // any other question. A plan is confirmed only when the suite says the person does (Case.ConfirmsPlans); a date-order
 // question is answered from the case's own fact of how that side writes dates (Case.DateOrders) - a person knows how
 // their own application writes dates (owner's ruling 2026-11-09: unanswered, every save of a month asked it again).
@@ -134,6 +163,10 @@ func confirmReply(c Case, question string) (string, string) {
 		if yes := picksReply(c, q); yes != "" {
 			return yes, "picks"
 		}
+		return "", ""
+	}
+	if yes := approvalReply(c, q); yes != "" {
+		return yes, "approval"
 	}
 	return "", ""
 }
