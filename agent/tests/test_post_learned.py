@@ -74,6 +74,7 @@ class PostLearned(unittest.TestCase):
         self.post("correction", "enter-a-bill", 3, "", "the ledger is Purchases, not Expenses")
         path, body = _ControlPlane.posts[-1]
         self.assertEqual(path, "/api/desktops/learned")
+        self.assertRegex(body.pop("client_id"), r"^[0-9a-f]{32}$")
         self.assertEqual(body, {"task_id": TASK, "kind": "correction", "skill": "enter-a-bill", "skill_version": 3,
                                 "derived_from": "j_0123456789abcdef", "question": "",
                                 "text": "the ledger is Purchases, not Expenses"})
@@ -99,6 +100,31 @@ class PostLearned(unittest.TestCase):
         _ControlPlane.status = 201
         messaging.resend_learned()
         self.assertEqual(len(_ControlPlane.posts), 2)
+        self.assertEqual(self.queued(), [])
+        first, again = (body["client_id"] for _, body in _ControlPlane.posts)
+        self.assertEqual(first, again, "a line is sent again under its own id, for the control plane to keep once")
+
+    def test_two_resends_at_once_post_a_line_once(self):
+        task_context.set_reply_judgement(TASK, "j_0123456789abcdef")
+        _ControlPlane.status = 503
+        self.post("run_answer", "s", 1, "which?", "the first")
+        _ControlPlane.posts.clear()
+        _ControlPlane.status = 201
+        real, entered = messaging._post_learned, threading.Event()
+
+        def slow(body):
+            entered.set()
+            threading.Event().wait(0.3)  # (the second thread starts while this one is posting)
+            return real(body)
+        with mock.patch.object(messaging, "_post_learned", slow):
+            first = threading.Thread(target=messaging.resend_learned)
+            first.start()
+            entered.wait(5)
+            second = threading.Thread(target=messaging.resend_learned)
+            second.start()
+            first.join(10)
+            second.join(10)
+        self.assertEqual(len(_ControlPlane.posts), 1)
         self.assertEqual(self.queued(), [])
 
     def test_a_correction_during_a_skill_run_is_posted(self):

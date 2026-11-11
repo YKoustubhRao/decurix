@@ -280,7 +280,7 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	// rather than fall back to a store the worker can write (agenttoken.go's GateRequiredEnv).
 	env = append(env, GateRequiredEnv+"=1")
 
-	// Broker mode, only when the control plane runs with DECURIX_SCREEN_BROKER=1 (screenbroker.go).
+	// Broker mode, the default; not when the control plane runs with DECURIX_SCREEN_BROKER=0 (screenbroker.go).
 	env = append(env, screenBrokerEnv()...)
 
 	// The one folder of the person's computer this desktop may use, when they chose one (sharedfolder.go).
@@ -372,6 +372,8 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		// The control plane's own record that this desktop runs an approval gate (prepareGate refuses an image
 		// without one): what HasGate reads, never a file inside the desktop.
 		GateLabel: "1",
+		// Which control plane made it: only that one pauses, stops or sweeps it (owner.go).
+		OwnerLabel: ownerID(),
 	}
 	if len(shared) > 0 && shared[0] != nil {
 		labels[sharedLabel] = shared[0].Host

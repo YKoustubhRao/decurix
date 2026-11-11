@@ -341,6 +341,14 @@ def withheld(text):
     return _withheld(text)
 
 
+# Answers that say who is asking, where or when - not that this note is wrong - and can change: tried again like an
+# unreachable control plane (kept, then sent again for up to RESEND_FOR_SECONDS). Found live (2026-11-08): a guard
+# refused a desktop's callbacks with 403 for an address range it should have freed; the outcome was let go after its
+# least form was refused too, and the task stayed "running" until the desktop was deleted. A 400, 409, 413 or 422 is
+# the control plane's no to the note itself (409: the task is not open on this desktop) and is let go as before.
+NOT_YET_CODES = frozenset({401, 403, 404, 408, 425, 429})
+
+
 def _post_querytext(payload):
     """POST one note to the control plane: ("sent", ""), ("refused", why) for its own no, or ("unreachable", why)."""
 
@@ -356,9 +364,20 @@ def _post_querytext(payload):
                 return "sent", ""
             return "unreachable", f"control plane returned HTTP {response.status}"
     except urllib.error.HTTPError as exc:
-        return ("unreachable" if exc.code >= 500 else "refused"), str(exc)
+        return ("unreachable" if exc.code >= 500 or exc.code in NOT_YET_CODES else "refused"), str(exc)
     except Exception as exc:  # noqa: BLE001 - every way of not getting through is "not yet"
         return "unreachable", str(exc)
+
+
+def waiting_tasks():
+    """The tasks of this desktop the control plane shows waiting on a person (GET /api/agent/waiting), oldest first.
+    Raises when the control plane cannot be read: what is not known is never taken as "none"."""
+
+    url = (config.CONTROL_PLANE_URL.rstrip("/") + "/api/agent/waiting?desktop_id="
+           + urllib.parse.quote(str(config.DESKTOP_ID or "")))
+    with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=10) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return [str(t) for t in (data.get("tasks") or []) if t]
 
 
 def _unsent_dir():
@@ -1031,8 +1050,10 @@ def post_learned(kind, skill, version, question, text, task_id=None, derived_fro
         log(f"Kept on this desktop only: no reply to cite for the {kind}.")
         return None
     # Withheld whole, then cut (review round 2, B4): a secret across the cut leaves nothing of itself.
+    # client_id: this line's own id, the same on every try, so the control plane keeps it once however often it is
+    # sent (a post whose answer was lost, a restart before the line was settled).
     body = {"task_id": task_id, "kind": kind, "skill": str(skill or ""), "skill_version": int(version or 0),
-            "derived_from": derived_from,
+            "derived_from": derived_from, "client_id": uuid.uuid4().hex,
             "question": cut_text(_withheld(" ".join(str(question or "").split())), 2000),
             "text": cut_text(_withheld(" ".join(str(text or "").split())), 4000)}
     try:
@@ -1085,9 +1106,28 @@ def _post_learned(body):
         return "later"
 
 
-def resend_learned():
-    """Try every unposted line of every run folder once; keep what could not be posted yet. Never raises."""
+_resend_running = threading.Lock()
+_resend_wanted = threading.Event()
 
+
+def resend_learned():
+    """Try every unposted line of every run folder once; keep what could not be posted yet. Never raises. One at a
+    time: a call while another runs asks that one for one more pass and returns, so two threads never read and post
+    the same line (follow-ups, review round 2)."""
+
+    _resend_wanted.set()
+    while _resend_wanted.is_set():
+        if not _resend_running.acquire(blocking=False):
+            return  # (the one running sees the wish: it checks after each pass, and again after it lets go)
+        try:
+            while _resend_wanted.is_set():
+                _resend_wanted.clear()
+                _resend_once()
+        finally:
+            _resend_running.release()
+
+
+def _resend_once():
     try:
         root = config.DECURIX_DIR / "runs"
         paths = sorted(root.glob("*/" + LEARNED_FILE)) if root.is_dir() else []

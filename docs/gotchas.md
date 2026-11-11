@@ -980,3 +980,75 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): An untrusted X client gets nothing of the root window: no property write, no event
 - [part-6.md](gotchas/part-6.md): A plan's "with your OK first" lived only in the question's prose; a halted replay was not credited with what it typed
 - [part-6.md](gotchas/part-6.md): A widget on the worker's accessibility bus is the worker's word, box included
+- [part-6.md](gotchas/part-6.md): A command the gate held still did what came before the held press
+- [part-6.md](gotchas/part-6.md): A bare figure declared from a source that writes it with a unit settles the unit silently
+- [part-6.md](gotchas/part-6.md): A carry-state eval sent the next case's request into the earlier case's open question
+- [part-6.md](gotchas/part-6.md): A locked xfce4-panel still starts programs
+- [part-6.md](gotchas/part-6.md): Words in a record's number field were "backed" because the document printed them there
+- [part-6.md](gotchas/part-6.md): In broker mode the save path's question stayed with the screen user
+- [part-6.md](gotchas/part-6.md): A cut read was judged as the whole value
+- [part-6.md](gotchas/part-6.md): A rule the person taught backed nothing in the next task, and an eval expert's words backed nothing at all
+- [part-6.md](gotchas/part-6.md): A saved record declared again under its own number became a second record
+- [part-6.md](gotchas/part-6.md): The agent's start scripts ran the worker's own `python3` in the agent's place, and every program had the token
+- [part-6.md](gotchas/part-6.md): A reply carried without its question read as the person's standing word, and a sent-back job lost every reply
+- [part-6.md](gotchas/part-6.md): The final check imposed its own idea of the work over the person's taught rule, and the worker obeyed it: a false done
+- [part-6.md](gotchas/part-6.md): A host app's viewer count could reach its helper out of order
+- [part-6.md](gotchas/part-6.md): A learned method kept the plan's first idea of the output and only the plan question's answer
+- [part-6.md](gotchas/part-6.md): A formality the worker skipped cost the whole case
+- [part-6.md](gotchas/part-6.md): The offline oracle could not drive a mock that serves several apps by host name
+- [part-6.md](gotchas/part-6.md): A demonstration's corrections were learned as part of the procedure
+- [part-6.md](gotchas/part-6.md): A taught task could never be trusted, so it never got cheaper
+- [part-6.md](gotchas/part-6.md): A demonstration's empty row, added and deleted, would delete a real line
+- [part-6.md](gotchas/part-6.md): A save the person had to repeat was learned as two saves and a press on a notice
+- [part-6.md](gotchas/part-6.md): A bill's table lines were folded as a loop, and its dates were never the document's
+- [part-6.md](gotchas/part-6.md): A Word table cell's lines were read run together
+- [part-6.md](gotchas/part-6.md): A month's vouchers were learned as two blocks of two and a half
+- [part-6.md](gotchas/part-6.md): A replay halted at a party it had picked
+- [part-6.md](gotchas/part-6.md): An inter-state bill sent a month's books to the model
+- [part-6.md](gotchas/part-6.md): "The record is read back" was not true for ERPNext
+- [part-6.md](gotchas/part-6.md): Two eval runs answered for each other's app
+- [part-6.md](gotchas/part-6.md): The gate asked about every bill, and three times about one click
+- [part-6.md](gotchas/part-6.md): A portal's own "NA" was refused as made up
+- [part-6.md](gotchas/part-6.md): A month with a bill missing from its series was confirmed done
+- [part-6.md](gotchas/part-6.md): The guard stopped a data file pretty-printed through a named module
+- [part-6.md](gotchas/part-6.md): No gathered month could ever earn trust
+- [part-6.md](gotchas/part-6.md): Told to collect the bills, the model entered them
+- [part-6.md](gotchas/part-6.md): Bills read through a filtered loop were "never read"
+- [part-6.md](gotchas/part-6.md): "Waiting on you" over a question nobody held
+- [part-6.md](gotchas/part-6.md): A run was sent back over entries every invoice supported
+- [part-6.md](gotchas/part-6.md): A corrected rule stayed beside its correction
+- [part-6.md](gotchas/part-6.md): Every save of a month asked which day "04-11-2026" is
+- [part-6.md](gotchas/part-6.md): A ledger saved with its state unset went out as done
+- [part-6.md](gotchas/part-6.md): A command's output went to the person as the question
+- [part-6.md](gotchas/part-6.md): A pick the client's invoices state was held as backed by nothing
+- [part-6.md](gotchas/part-6.md): A replay that entered every bill right ended "Not done" over the customers it picked
+- [part-6.md](gotchas/part-6.md): A bulk action on a ticked row was learned as an empty row added and deleted
+- [part-6.md](gotchas/part-6.md): A date both sides said the order of waited on the person, who was never asked
+- [part-6.md](gotchas/part-6.md): A replay's takeover entered again the bill the replay had saved
+- [part-6.md](gotchas/part-6.md): A new customer's tax number was never resolved by the replay
+- [part-6.md](gotchas/part-6.md): The how-to called a missing list entry a question for the person, against the lesson
+- [part-6.md](gotchas/part-6.md): A key on a focused button skipped the pre-save checks, and a no did not hold the control
+- [part-6.md](gotchas/part-6.md): An element read (`gui read e700`) was a document to cover, and an unchanged review point went back round after round
+- [part-6.md](gotchas/part-6.md): The OTP every run asks for made every run "helped" (helped, asked_person), so the skill could never be trusted
+- [part-6.md](gotchas/part-6.md): A lesson that named the OTP was taught with holes ("OTP: ask me" took "ask"; a question naming a secret withheld every marked word of a reply; possessives, hyphenated words, ratios) - a reply is secret only by structure
+- [part-6.md](gotchas/part-6.md): A replayed "Save to portal" and the OTP "Verify" were pressed with no yes
+- [part-6.md](gotchas/part-6.md): Which steps need the person's OK, said in their own words, was kept as text and the recorder's guess was saved - the lesson asks it now, the model reads intent, code maps names to steps by label
+- [part-6.md](gotchas/part-6.md): A line's quantity, 1 on both lines of the one bill shown, became a constant nobody was asked about - a value alike on every line is asked "same for every line, or read from each line?" and stays per line until the person says same
+- [part-6.md](gotchas/part-6.md): "Step 20 and step 29 were glitches - skip them" became a rule, and the replay still clicked both - steps named to leave out are mapped by number or label, put back in one line, and taken out on a yes
+- [part-6.md](gotchas/part-6.md): A replayed coordinate click sent the person's OTP with no yes
+- [part-6.md](gotchas/part-6.md): A case's mock app outlived it and served the next cases
+- [part-6.md](gotchas/part-6.md): "Skip steps 13-16" put back only 13 and 16, and leaving out two steps of a repetition crashed the lesson - ranges read whole, a loop keeps only repetitions that line up by kind
+- [part-6.md](gotchas/part-6.md): A worker's question held every control whose name stood in it - only the control it asks to press is held, never a navigation-only link
+- [part-6.md](gotchas/part-6.md): The scripted expert answered a worded request for approval with "I don't know"
+- [part-6.md](gotchas/part-6.md): A save answered after its look was reported "declared but never saved" - a save press is watched until answered, and a later look of the tab reads it back
+- [part-6.md](gotchas/part-6.md): A bill with no due date sent the whole run to the model, and "leave it as the app fills it" counted as help - the one field is asked about alone, a leave is no help, left out of the replay and kept on the control plane for the skill
+- [part-6.md](gotchas/part-6.md): Every approval was asked twice, once in the worker's words and once on the gate's card - a worded ask to press a control the gate itself holds is answered locally; the person sees only the card
+- [part-6.md](gotchas/part-6.md): A worker piped its own JSON file into inline python3 to re-check it and the guard held it - the contract sends a re-read to office read, jq or cat/head/grep, and never to a pipe into an interpreter
+- [part-6.md](gotchas/part-6.md): An approval the eval case did not list ended the case - the expert now declines a gate-signed one through the gate (nothing granted, case goes on, q_declined, at most 40); unsigned ones and expected stops still end it
+- [part-6.md](gotchas/part-6.md): A Docker blip read as "this address is not a desktop's" and a desktop's model call got a final 403 - a caller Docker could not place is now 503 try-again (ErrCallersUnread); the last map names only desktops it held, under callerTTL, same desktop list
+- [part-6.md](gotchas/part-6.md): A link from an unsaved form to the list was read back as the bill's save - a control's label is no saved answer, only a save press may be judged by the page it left, a record's page is by path, and a page showing nothing of the record is no save
+- [part-6.md](gotchas/part-6.md): "Finish the quickest sure way" invited a worker to go around the boundary when time ran short - the note says own tools or report what is left, and a tripwire ends a task that tries another user, a process, a socket or the gate around its tools
+- [part-6.md](gotchas/part-6.md): A narrowing of a frozen rule let piped code run through a named module - check a narrowing against every way the named program can still read code from the pipe
+- [part-6.md](gotchas/part-6.md): Freeze 2's fixes for practice loosened what is withheld and what is asked - each exemption reversed or narrowed to what structure proves (secrets, gate, held-press questions, series holes, pick backing, no eval coupling)
+- [part-6.md](gotchas/part-6.md): A customer had to turn WSL and virtualization on by hand: the installer now does it (one prompt, a reboot offer), and PowerShell traps in it - 32-bit DISM, Write-Output in a function's return, ConvertFrom-Json arrays, firmware flags hidden by a running hypervisor
+- [part-6.md](gotchas/part-6.md): A party check read the "record only" stand-in as a party, so kept field answers stopped backing records with no party - a sentinel for "none" must be handled in every new truthiness check

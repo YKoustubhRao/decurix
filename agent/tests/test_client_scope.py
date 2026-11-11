@@ -68,6 +68,10 @@ class Scoped(unittest.TestCase):
         self.keep(1, "Lesson", "lesson", "Always ask before saving")
         self.assertIn("Always ask before saving", get_memory_context("anything for South Works"))
 
+    def test_an_all_capitals_request_sees_its_clients_facts(self):
+        self.keep(1, "About ABC Traders", "fact", "ABC Traders files quarterly")
+        self.assertIn("ABC Traders files quarterly", get_memory_context("PLEASE FILE GSTR1 FOR ABC TRADERS"))
+
 
 class NamedWhole(unittest.TestCase):
     def test_a_name_continued_by_a_capitalised_word_is_another_name(self):
@@ -78,6 +82,14 @@ class NamedWhole(unittest.TestCase):
     def test_a_capital_that_starts_the_sentence_does_not_continue_the_name(self):
         self.assertTrue(names_whole("Kappa", "File Kappa's return"))
         self.assertTrue(names_whole("Kappa", "Done. Kappa asked for it"))
+
+    def test_an_all_capitals_request_names_its_client(self):
+        # (follow-ups: every word of an all-capitals line is capitalised, so the capital said "a longer name" and the
+        # client's own facts were hidden)
+        self.assertTrue(names_whole("ABC Traders", "PLEASE FILE GSTR1 FOR ABC TRADERS BY FRIDAY"))
+        self.assertTrue(names_whole("Ram", "SEND THE PO TO RAM\nThanks, Asha"))
+        self.assertFalse(names_whole("Ram", "Send the PO to Ram Kumar"), "a line with case still reads its capitals")
+        self.assertFalse(names_whole("ABC", "Please file for ABC TRADERS PVT LTD"))
 
     def test_a_word_inside_another_word_is_not_the_name(self):
         self.assertFalse(names_whole("Ram", "Ramesh asked for it"))

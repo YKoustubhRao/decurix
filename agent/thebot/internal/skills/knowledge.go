@@ -150,6 +150,12 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 	o.readRecordLedger(rc, st) // the records declared and what their saves showed, for the reviewer (record_ledger.go)
 	// Folders this task named unlike the folders beside them: a fact for the reviewer (folder_names.go).
 	st.folderFacts = o.folderNameFacts(rc, st)
+	if action != "" {
+		// The window the action acts on, looked at now when no look of it is newer than the work's typing in it - before
+		// the review, which weighs the screen as it is (found live 2026-11-08: reviewed on the look from before the
+		// typing, a held Save's "Still open" lines said fields were empty that the screen showed filled).
+		o.lookBeforeCommit(rc, st, action)
+	}
 	issues, reviewed := o.review(rc, st, said, items, action)
 	issues = append(issues, pictured...)
 	if action == "" {
@@ -188,7 +194,7 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 		// the sources by a check that does not see them (evidence.go), and the records the action covers against every
 		// source read, each disagreement needing a source that explains it (case.go). Their findings are points like
 		// the review's.
-		o.lookBeforeCommit(rc, st, action)
+		// (The screen was looked at again before the review: lookBeforeCommit, above.)
 		issues = append(issues, o.verifyCommit(rc, st, action)...)
 		issues = append(issues, o.caseMatrix(rc, st, action)...)
 	}
@@ -202,13 +208,16 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 	// whole return, with three answers from the person in between; at its report the verifier found six wrong figures
 	// in one row, and they went straight to the person - the worker never saw them.
 	again := st.SentBackRound == st.JudgementRounds && st.changedSinceSentBack() && st.ExtraSendBacks < maxExtraSendBacks
-	if len(issues) > 0 && (st.SentBackRound != st.JudgementRounds || again) {
+	// A point sent back already, with nothing since that could settle it, is not sent again: it goes on as a point
+	// still open, to the person or with the result (unsentPoints).
+	if send := st.unsentPoints(issues); len(send) > 0 && (st.SentBackRound != st.JudgementRounds || again) {
 		if again {
 			st.ExtraSendBacks++
 		}
 		st.SentBackRound, st.SentBackWorked, st.LastIssues = st.JudgementRounds, len(st.Worked), texts
-		rc.Logf("operator", "the review raised %d point(s) - sent back to settle them:\n- %s", len(issues), issueLines(issues))
-		return weighing{nudge: settleNudge(issues)}
+		st.markSent(send)
+		rc.Logf("operator", "the review raised %d point(s) - sent back to settle them:\n- %s", len(send), issueLines(send))
+		return weighing{nudge: settleNudge(send)}
 	}
 	// An advisory point was in the send-back; it goes no further (reviewIssue.Advisory).
 	issues = notAdvisory(issues)
@@ -222,10 +231,19 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 	// (2026-10-26): four bills declared and never saved were put to the person as "choices I made", twice, two minutes
 	// apart, after they had said "enter them"; the worker did nothing in between.
 	if work := st.workPoints(issues); len(work) > 0 && action == "" && st.WorkSendBacks < maxWorkSendBacks {
-		st.WorkSendBacks++
-		st.SentBackRound, st.SentBackWorked = st.JudgementRounds, len(st.Worked)
-		rc.Logf("operator", "%d point(s) are the worker's to do, not the person's - sent back:\n- %s", len(work), issueLines(work))
-		return weighing{nudge: workNudge(work)}
+		if send := st.unsentPoints(work); len(send) > 0 {
+			st.WorkSendBacks++
+			st.SentBackRound, st.SentBackWorked = st.JudgementRounds, len(st.Worked)
+			st.markSent(send)
+			rc.Logf("operator", "%d point(s) are the worker's to do, not the person's - sent back:\n- %s", len(send), issueLines(send))
+			return weighing{nudge: workNudge(send)}
+		}
+		// Every one was sent back already and nothing that could settle it was done since: sending it again only loops.
+		// Found live (2026-11-10): the same point went back three times, the worker only looking between, then was
+		// carried anyway. It goes on as when the send-backs are used up: a point that is the worker's to do is carried
+		// with the result as open, one the worker was to recheck by looking goes to the person.
+		rc.Logf("operator", "%d point(s) sent back already, nothing done since that could settle them - not sent again", len(work))
+		st.workPointsOf(issues, false)
 	}
 	issues = st.notWorkPoints(issues)
 	texts = texts[:0]
@@ -278,6 +296,62 @@ func (st *operatorState) changedSinceSentBack() bool {
 		}
 	}
 	return false
+}
+
+// maxSentPoints bounds the points kept as sent back (SentPoints).
+const maxSentPoints = 200
+
+// sentKey is a review point as SentPoints knows it: its whole text and how it is to be settled, spacing aside - what
+// the worker is told of it. Only the same point told the same way is a repeat: a point reworded, about another
+// document or record, or now carrying the person's answer, is sent like any new one.
+func sentKey(i reviewIssue) string {
+	return strings.Join(strings.Fields(i.text()+" -> "+i.Settle), " ")
+}
+
+// unsentPoints are the points to send back to the worker: each one not sent before, or sent before something was done
+// that could settle it (Changes: a command that does more than look, a source read, a reply of the person). A point
+// left out only stops being sent again - it stays a point, carried on to the person or with the result. Found live
+// (2026-11-10): the same review point went back to the worker round after round with nothing done in between, and
+// the operator's turns rose 67 -> 110 over four cases, mostly in such rounds.
+func (st *operatorState) unsentPoints(issues []reviewIssue) []reviewIssue {
+	var out []reviewIssue
+	for _, i := range issues {
+		if at, sent := st.SentPoints[sentKey(i)]; sent && at == st.Changes {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+// markSent keeps the points sent back now, with Changes as it is (unsentPoints).
+func (st *operatorState) markSent(issues []reviewIssue) {
+	if st.SentPoints == nil {
+		st.SentPoints = map[string]int{}
+	}
+	for _, i := range issues {
+		if _, ok := st.SentPoints[sentKey(i)]; ok || len(st.SentPoints) < maxSentPoints {
+			st.SentPoints[sentKey(i)] = st.Changes
+		}
+	}
+}
+
+// lookOnlyRe is a command that only looks: lists or reads the screen, or reads a file.
+var lookOnlyRe = regexp.MustCompile(`^\s*(?:gui\s+(?:observe|look|read|screenshot)|office\s+read)\b`)
+
+// onlyLooks reports whether every part of a command only looks (lookOnlyRe): nothing it does can settle a review point
+// but the sources it reads, which count of themselves (addUnit).
+func onlyLooks(command string) bool {
+	segs := shellSegments(command)
+	if len(segs) == 0 {
+		return false
+	}
+	for _, seg := range segs {
+		if !lookOnlyRe.MatchString(seg.Text) {
+			return false
+		}
+	}
+	return true
 }
 
 // typedOnScreenRe is a gui command that types or chooses on the screen.
@@ -435,12 +509,17 @@ func pointKey(text string) string {
 // workPoints are the points that go back to the worker: marked Work, or answered by the person already (the answer is
 // put in the point's settle so the worker applies it). They are kept on st.lastWork for the carried-open list.
 func (st *operatorState) workPoints(issues []reviewIssue) []reviewIssue {
+	return st.workPointsOf(issues, st.WorkSendBacks < maxWorkSendBacks)
+}
+
+// workPointsOf is workPoints, a point to recheck by looking counted the worker's only when rechecks is set.
+func (st *operatorState) workPointsOf(issues []reviewIssue, rechecks bool) []reviewIssue {
 	var out []reviewIssue
 	for _, i := range issues {
 		// A point the worker settles by looking (open the record, the book, the file and read it) stays the worker's
 		// while send-backs remain: found live (2026-10-27), three such points went to the person, who answered each
 		// "open it and look". Past the bound it goes to the person like any other.
-		recheck := strings.EqualFold(strings.TrimSpace(i.Settle), "recheck") && st.WorkSendBacks < maxWorkSendBacks
+		recheck := strings.EqualFold(strings.TrimSpace(i.Settle), "recheck") && rechecks
 		if i.Work || recheck {
 			i.Work = true
 			out = append(out, i)

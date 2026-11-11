@@ -371,11 +371,11 @@ class TestANoAtAnApprovalEndsTheTask(unittest.TestCase):
             self.assertIsNone(guidance.refused())
 
     def test_the_final_check_reports_the_stop_and_does_not_try_again(self):
-        from decurix_agent import guidance, skill_task
+        from decurix_agent import final_gate, guidance, skill_task
 
         sent = []
         guidance.begin(skill=None, task="send it", text="", mode="engine", run=None)
-        with mock.patch.object(skill_task.guidance, "refused", return_value="no, do not send it"),                 mock.patch.object(skill_task, "write_final_reply", lambda text, **kw: sent.append((text, kw))),                 mock.patch.object(skill_task.verify, "judge", side_effect=AssertionError("the screen was judged")),                 mock.patch.object(skill_task, "_retry_engine", side_effect=AssertionError("it tried again")),                 mock.patch.object(skill_task.progress, "emit"):
+        with mock.patch.object(skill_task.guidance, "refused", return_value="no, do not send it"),                 mock.patch.object(skill_task, "write_final_reply", lambda text, **kw: sent.append((text, kw))),                 mock.patch.object(skill_task.verify, "judge", side_effect=AssertionError("the screen was judged")),                 mock.patch.object(final_gate, "_retry_engine", side_effect=AssertionError("it tried again")),                 mock.patch.object(skill_task.progress, "emit"):
             took_over = skill_task._gate("I did not send the message.", "final", "thebot")
 
         self.assertTrue(took_over)

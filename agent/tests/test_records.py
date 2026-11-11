@@ -203,8 +203,11 @@ class Declaring(unittest.TestCase):
         self.assertTrue(kept["saved_at"])
         self.assertEqual(kept["readback"]["absent"], [])
         self.assertIsNone(records.open_record(records.load()))
-        # A second record declared after it is the open one; its page misses a value.
-        rec2, _ = records.declare("1188-again", str(self.bill), FIELDS)
+        # A second record declared after it is the open one; its page misses a value. (From another file: the same
+        # file's same number is the saved record itself - records.saved_from_same_document, 2026-11-10.)
+        again = self.bill.with_name("again " + self.bill.name)
+        again.write_bytes(self.bill.read_bytes())
+        rec2, _ = records.declare("1188-again", str(again), FIELDS)
         lines = records.readback(rec2, "Day Book", "Day Book | 1-Oct-26 | Sales | 1188 | 76,700.00", "saved")
         self.assertIn("NOT shown: Party A/c name=Coastal Infra Projects", lines[0])
         self.assertIn("Party A/c name", records.load()[1]["readback"]["absent"])
@@ -235,8 +238,11 @@ class Declaring(unittest.TestCase):
             kept = records.open_record(records.load())
             lines = records.readback(kept, "Voucher 1188", "Sales Voucher No. 1188 | Malnad Agro Foods Pvt Ltd | 65,000.00 | 5,850.00 | 76,700.00 | 1-Oct-26 | Karnataka | Sales@18% | CGST@9% | SGST@9%", "saved")
             self.assertNotIn("NOT shown", lines[0], lines)
-        # Without the choice on record, the same form is stopped.
-        rec, _ = records.declare("1189", str(self.bill), FIELDS)
+        # Without the choice on record, the same form is stopped. (From another file: the same file's same number is the
+        # saved record itself - records.saved_from_same_document, 2026-11-10.)
+        again = self.bill.with_name("again " + self.bill.name)
+        again.write_bytes(self.bill.read_bytes())
+        rec, _ = records.declare("1189", str(again), FIELDS)
         blocking, _, _ = records.presave(rec, form)
         self.assertEqual(len(blocking), 1)
 

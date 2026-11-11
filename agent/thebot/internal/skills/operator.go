@@ -96,6 +96,8 @@ HELP:
 - Commands run in %s with no terminal attached: never open editors or pagers, and pass -y to installers.
 - For anything in a window (a web page in the browser, LibreOffice, a text editor) use the gui command: gui observe lists the screen's elements with refs like e12, then gui click e12, gui type e12 "text", gui key ctrl+s, gui select e12 "option", gui open <url|file|app>, gui scroll down 5 (or up; 5 is wheel notches, about 100 pixels each - over the part of the page to move, gui scroll x,y down 5). Every gui action prints what changed. gui read e12 prints the whole text of a field or document with line numbers - gui observe shows only its first 60 characters - so read a text before you change it and again after, and report a change as made only when gui read shows it: a change asked for everywhere is done when none is left, so use the app's own replace-all or bulk operation, not one edit at a time. gui type on a field that holds several lines is refused, because it would replace the whole document; change part of it through the app, or with --append where the cursor is. gui recordings <words> finds a recorded demonstration of a task, and gui replay <id> runs it again. gui skills <words> finds a task this desktop was taught: gui skill <name> says what it needs and gui do <name> --param name=value does it with no model - prefer it to working the task out yourself, but only in the app or site it works in (gui skill says where): the same kind of work in another system is done there with gui. A value gui skill calls a list takes every item of the document in one run, in the document's order, separated by \"; \" (--param product=\"Desk; Chair\" --param quantity=\"3; 1\") - never only the first item. gui ask chatgpt "QUESTION" (or google, duckduckgo, wikipedia, youtube) puts one question to that service in the browser and prints its answer - run it once per question. gui guide NAME prints the checked guide to an app this desktop has one for (how it is worked here, its dialogs, how to save; gui guide alone lists them) - when one is in your context, follow it. To learn how an app or a kind of work goes (where a setting is, which menu or keys do something, what a field means) run lookup "APP how to ..." - it reads the web without touching the screen; do that before asking the person how the app works. What it prints is the internet's: never a value to type into a record. An app this desktop has no guide for: once your work in it is right, write down what you found out for the next task - gui guide --learn NAME --applies-to "the words that name the app" --description "one line" with the guide on stdin (a heredoc): how the app is worked here (where things are, the keys and dialogs, what to check before saving, what went wrong and what fixed it), never this task's values. It is kept only if this task is checked done.
 - To read a document (PDF, scan, Word, Excel, PowerPoint, email, picture) run office read <file> [pages]; never guess at a file's contents.
+- To read or re-check a file you have (a CSV, JSON or text file, one you wrote included), use your read tools: office read <file>, jq '.key' <file>, or cat, head and grep on the file. Write interpreter code only for what they cannot do, and let the code open the file by its path: never pipe a file into an interpreter (cat <file> | python3 ...) - the person is asked to approve code piped into an interpreter before it runs.
+- Work only through your own tools and as your own user, however short the time. Never run a command as another user, attach to or read another process, drive a socket by hand, or reach the approval gate, the screen or the browser around gui: such a command is not run and the task ends there, failed. An app that hangs or a tool that refuses is reported (HELP), not worked around.
 - To change an existing spreadsheet, never rewrite it with a script (that drops its charts): run office update <file.xlsx> - with a JSON spec on stdin, e.g. office update model.xlsx - <<'EOF' then {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250}], "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}]} then EOF. replace_refs makes charts and totals take in rows you added. A new sheet in an existing workbook is "add_sheets": [{"name": "Summary", "rows": [["Name", "Value"], ["A", 50]]}] in the same spec - never a second workbook. office create <file.xlsx> - makes a new one from {"sheets": [{"name": "Sheet1", "rows": [["Item", "Amount"], ["A-1", 1200]], "cells": {"B3": "=SUM(B2:B2)"}}]} (rows fill from A1; cells set one address each). A chart is a sheet's "charts": [{"type": "column", "title": "Revenue by month", "data": "B1:B4", "categories": "A2:A4", "anchor": "E2"}] (data starts at its header cell); office read lists the charts a workbook has. A new Word document is office create <file.docx> - with {"blocks": [{"heading": "Title", "level": 1}, {"paragraph": "text"}, {"bullets": ["a", "b"]}, {"table": [["Header", "Header"], ["cell", "cell"]]}]} - never write a document's XML yourself. To fill a Word document or template, run office update DOC.docx - with {"replace": {"{{KEY}}": "value"}, "output_path": "new.docx"} (body, tables, headers; it lists any placeholder left) - never Find & Replace on the screen. A PDF document is office create <file.pdf> - with the same blocks: it has real text. Never make one by printing HTML with a browser or by wrapping pictures of pages in a PDF. A slide deck is office create <file.pptx> - with {"slides": [{"title": "Q3 review", "subtitle": "Finance"}, {"title": "Highlights", "bullets": ["a", {"text": "detail", "level": 1}], "notes": "speaker notes"}, {"title": "By region", "table": [["Region", "Revenue"], ["North", 1200]]}, {"title": "Trend", "chart": {"type": "column", "categories": ["Jul", "Aug"], "series": [{"name": "Revenue", "values": [10, 12]}]}}, {"title": "Site", "image": "photo.png"}]} (one table, chart or image a slide); change an existing deck with office update <file.pptx> - and {"edits": [{"slide": 2, "find": "Q2", "replace": "Q3"}, {"slide": 3, "table": 1, "row": 2, "column": 2, "value": "1,250"}, {"slide": 3, "table": 1, "add_rows": [["Central", "0"]], "before": 6} (rows go above row "before"; leave it out to add at the end), {"slide": 4, "chart": 1, "categories": [...], "series": [...]}, {"slide": 1, "title": "..."}, {"slide": 5, "notes": "..."}]} - it keeps the deck's layout; never rebuild a deck someone gave you. office read shows each slide's text, tables, chart figures and notes. A file you wrote that office read cannot open is broken: make it again, and never call it verified.
 - Change Office files only with office create/update, a library that writes the format whole (openpyxl, python-docx) or the app - never by editing their XML with a script; a file that no longer opens is not done.
 - To prepare an email, run office email --to <address> --subject "<subject>" [--attach <file>] with the body on stdin (a heredoc). It goes to the Outbox for the human to review and send - it is never sent, so drafting one needs no approval. There is no way for you to send email yourself. Drafting the same email again (same recipients and subject) in the same task replaces your earlier draft of it; to correct a draft under another subject, pass --replaces <its draft id>. Never leave two copies of one email.
@@ -343,7 +345,9 @@ func missingProgramHint(output, command string) string {
 		case "curl", "wget", "http", "lynx", "links", "w3m":
 			hint += " To fetch a page use python3, for example:\nCOMMAND:\npython3 -c \"import urllib.request; print(urllib.request.urlopen('https://example.com', timeout=20).read().decode('utf-8', 'replace')[:3000])\""
 		case "jq":
-			hint += " To read JSON use python3 -c \"import json,sys; ...\"."
+			// Never steer to piping a file into python3: the command guard holds code piped into an interpreter for the
+			// person (gotchas: freeze 2.4, a worker's re-check of its own JSON file ended the case).
+			hint += " To read JSON use office read <file.json>, or python3 -m json.tool <file.json> - never pipe the file into python3."
 		}
 		return hint
 	}
@@ -398,8 +402,22 @@ func parseControl(reply string) (action, value string) {
 		value = strings.TrimSpace(strings.Trim(value, "`"))
 		value = strings.TrimSpace(strings.TrimPrefix(value, "$ "))
 		value = withoutLeakedCall(value)
+		value = withoutThinkTag(value)
 	}
 	return action, value
+}
+
+// thinkTagRe is a reasoning model's closing tag left at the end of a command's text.
+var thinkTagRe = regexp.MustCompile(`\s*</think>\s*$`)
+
+// withoutThinkTag takes a reasoning model's closing tag off the end of a command: no shell command ends in one, and
+// left on, bash refuses the line. Found live (2026-11-08, Kimi-K2.6): `ls -la ~/work/</think>` and three more commands
+// in one eval case failed with "syntax error near unexpected token `newline'", a turn each.
+func withoutThinkTag(value string) string {
+	for thinkTagRe.MatchString(value) {
+		value = strings.TrimSpace(thinkTagRe.ReplaceAllString(value, ""))
+	}
+	return value
 }
 
 // leakedCallRe is the trace a hosted model leaves when part of its own
@@ -531,6 +549,9 @@ func unmarkedCommand(reply string) string {
 // on from exactly where it paused.
 type operatorState struct {
 	Messages []llm.Message
+	// readDocument is code's own read of a document file (office read), or nil: what a loop showed under a file's
+	// name is credited as that file's only when it stands in the file (creditLoopMarkers).
+	readDocument func(file string) (string, bool)
 	// approvedRun is the command the person's OK is letting through right now (already counted in CommitsRun), so
 	// execute does not count it a second time as a commit that needed no approval.
 	approvedRun string
@@ -672,6 +693,15 @@ type operatorState struct {
 	// was shown whole, and CycleAsk that one went round again after that (cycle.go).
 	RecentRuns  []ranCommand `json:",omitempty"`
 	CycleNudges int          `json:",omitempty"`
+	// SaveRefusal is the last refusal of the save check (its key), SaveRefusals how often it came back in a row, and
+	// SaveRefusalAsk the question the loop puts to the person once it came back maxSameSaveRefusals times
+	// (save_refusal.go).
+	SaveRefusal    string `json:",omitempty"`
+	SaveRefusals   int    `json:",omitempty"`
+	SaveRefusalAsk string `json:",omitempty"`
+	// RepeatAsked: the person was asked once in this goal about the model repeating one command
+	// (repeatedCommandQuestion); repeating again then ends the goal instead of asking again.
+	RepeatAsked bool `json:",omitempty"`
 	// OnScreenNudged: a question quoting what a listing shows was pushed back once, NamesNudged: one naming a list a
 	// listing shows (screen_answer.go); RecordLedger is
 	// the record ledger as gui records last printed it, read before a review (knowledge.go).
@@ -689,6 +719,11 @@ type operatorState struct {
 	// kept apart from the transcript so a compaction never loses it (context.go, reviewer.go).
 	LastAsked  string   `json:",omitempty"`
 	PersonSaid []string `json:",omitempty"`
+	// Picked is the taught task's fields filled by picking an application's entry (RunContext.PickedFields), for the
+	// review (seedPicked).
+	Picked []string `json:",omitempty"`
+	// CollectOnly: this goal collects documents and enters nothing (RunContext.CollectOnly).
+	CollectOnly bool `json:",omitempty"`
 	// Lookups are the web pages the goal read (knowledge.go): never a source until the person confirms one;
 	// PersonLinks are the links the person gave (the request, their replies), whose pages are sources; AskedSources are
 	// the lookups a question to the person asked them to confirm.
@@ -732,6 +767,16 @@ type operatorState struct {
 	// looked at (evidence.go unseenTyping).
 	TypedAt  map[string]int `json:",omitempty"`
 	ListedAt map[string]int `json:",omitempty"`
+	// Step is how many commands the goal has run, one the approval gate held included (at); ScreenStep the step of the
+	// last one that looked at or acted on the screen, and ShotStep the step whose screenshot is the newest in the
+	// transcript - a screenshot from before ScreenStep is not the screen now (reviewer.go lastPictures).
+	Step       int `json:",omitempty"`
+	ScreenStep int `json:",omitempty"`
+	ShotStep   int `json:",omitempty"`
+	// lookShot is the picture the look before a commit took (lookBeforeCommit), at lookShotStep: the screen as the
+	// review weighs it. Never in the transcript.
+	lookShot     []byte
+	lookShotStep int
 	// VerifyCache is the verifier's working of each blanked screen and its sources, by their hash (evidence.go).
 	VerifyCache map[string]map[string]string `json:",omitempty"`
 	// AskedPoints are the review's points in the question with the person now; AnsweredPoints are those already put
@@ -744,6 +789,11 @@ type operatorState struct {
 	AnsweredKeys  map[string]string `json:",omitempty"`
 	WorkSendBacks int               `json:",omitempty"`
 	lastWork      []reviewIssue
+	// Changes counts what could settle a review point: a command that does more than look, a source read, a reply of
+	// the person. SentPoints is each point sent back to the worker (sentKey) with Changes as it was then: one sent with
+	// nothing changed since is not sent again (knowledge.go unsentPoints).
+	Changes    int            `json:",omitempty"`
+	SentPoints map[string]int `json:",omitempty"`
 	// UnseenTold is each window the report was once told it typed into without looking again (evidence.go unseenTyping).
 	UnseenTold map[string]bool `json:",omitempty"`
 	// AnswerUnreviewed is set when the person answered a question about the calls and no round has weighed it since:
@@ -814,6 +864,44 @@ func (o *OperatorSkill) commandTimeout() time.Duration {
 	return time.Duration(llm.EnvInt("OPERATOR_COMMAND_TIMEOUT_SECONDS", int(defaultCommandTimeout/time.Second))) * time.Second
 }
 
+// defaultReplayTimeout bounds one command that replays a taught task or a recording (gui do, gui replay). A replay
+// is many screen steps, each already bounded by its own waits for its control and its result, so the whole needs
+// more than one command's three minutes. Found live (2026-11-08): a 52-step taught task on a busy 2-vCPU desktop was
+// killed at step 19 of 52, leaving a form half filled for the model to finish by hand.
+const defaultReplayTimeout = 20 * time.Minute
+
+// defaultSelectTimeout bounds a command that chooses an entry from an application's list (gui select): the choosing
+// is bounded by its own searches (selecting.MAX_SEARCHES, each waiting on the list as long as a look takes), so it
+// needs more than one command's three minutes on a loaded host. Found live (2026-11-08, load 13-24): a select of a
+// supplier was killed at three minutes mid-search, and the model typed the supplier by hand.
+const defaultSelectTimeout = 10 * time.Minute
+
+// selectCommandRe is a command that chooses from a list (also after `cd ... &&` or `;`).
+var selectCommandRe = regexp.MustCompile(`(?m)(?:^|&&|;|\|\|)\s*gui\s+select\s+\S`)
+
+// replayCommandRe is a command that replays a taught task or a recording (also after `cd ... &&` or `;`).
+var replayCommandRe = regexp.MustCompile(`(?m)(?:^|&&|;|\|\|)\s*gui\s+(?:do|replay)\s+\S`)
+
+// timeoutFor is how long command may run: commandTimeout, or for a replay (replayCommandRe) at least
+// OPERATOR_REPLAY_TIMEOUT_SECONDS (defaultReplayTimeout).
+func (o *OperatorSkill) timeoutFor(command string) time.Duration {
+	limit := o.commandTimeout()
+	if selectCommandRe.MatchString(command) && !replayCommandRe.MatchString(command) {
+		if limit < defaultSelectTimeout {
+			return defaultSelectTimeout
+		}
+		return limit
+	}
+	if !replayCommandRe.MatchString(command) {
+		return limit
+	}
+	replay := time.Duration(llm.EnvInt("OPERATOR_REPLAY_TIMEOUT_SECONDS", int(defaultReplayTimeout/time.Second))) * time.Second
+	if replay > limit {
+		return replay
+	}
+	return limit
+}
+
 func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	st, resumed := rc.Resume.(*operatorState)
 	if resumed && st != nil {
@@ -862,6 +950,11 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 		Turns:           caps.OperatorTurns(),
 		Hosted:          caps.Hosted,
 	}
+	// Code's own read of a document, for checking what a loop showed of it (creditLoopMarkers).
+	st.readDocument = func(file string) (string, bool) {
+		res := runShell(rc.Ctx, rc.Dir(), "office read "+shellPath(file), 90*time.Second, st.guiEnv()...)
+		return res.Output, res.ExitCode == 0
+	}
 	vision := ""
 	if caps.Hosted {
 		rules := rulesFor(sharedFolderHost())
@@ -881,6 +974,10 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 	st.PrefixLen = len(st.Messages)
 	st.Request = subtask.Step
 	st.PlanAgreed = rc.PlanAgreed
+	st.seedEarlierSaid(rc.EarlierSaid)
+	st.seedPicked(rc.PickedFields)
+	st.CollectOnly = rc.CollectOnly
+	st.seedEnteredEarlier(rc.EnteredEarlier)
 	st.notePersonLinks(subtask.Step)
 	// Only what earlier steps read or ran is a source a typed value may be traced to: a model's own reply (a chat
 	// answer, a summary of web pages) is shown above as context, never noted as seen (skills.go, MetaModelReply).
@@ -1142,7 +1239,11 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 			run = inside
 		}
 	}
-	res := runShell(rc.Ctx, rc.Dir(), run, o.commandTimeout(), st.guiEnv()...)
+	res := runShell(rc.Ctx, rc.Dir(), run, o.timeoutFor(run), st.guiEnv()...)
+	st.Step = st.at() + 1
+	if touchesScreen(run) {
+		st.ScreenStep = st.Step
+	}
 	st.traceCommand(rc, command, res, time.Since(started))
 	noteFilesRead(run)
 	// (The host's "recorded working" is what is noted here: never what the command printed back of its own text.)
@@ -1160,6 +1261,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		st.noteTaught("gui skill "+name, runShell(rc.Ctx, rc.Dir(), "gui skill '"+name+"'", 30*time.Second, st.guiEnv()...))
 	}
 	if reason := screenApprovalReason(run, res); reason != "" {
+		st.noteHeldScreen(run, res)
 		rc.Logf("operator", "approval needed on screen - %s", reason)
 		return reason
 	}
@@ -1167,6 +1269,9 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	// The task's trace carries the output, bounded, not its first line alone; withheld before it is bounded.
 	rc.Logf("operator", "%s", traceLine(shellResult{ExitCode: res.ExitCode, TimedOut: res.TimedOut, Output: clean(res.Output)}))
 	st.CommandsRun++
+	if !onlyLooks(command) {
+		st.Changes++ // (a failed command too: a chain can act before its last step fails)
+	}
 	if guiOpenRe.MatchString(command) {
 		st.Opens = append(st.Opens, strings.TrimSpace(command)+" -> "+headline(res))
 	}
@@ -1186,6 +1291,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	st.Commands = append(st.Commands, command)
 	st.LastCommand = command
 	st.LastResult = &res
+	st.noteSaveRefusal(command, res) // the same save refusal on an unchanged form, again and again (save_refusal.go)
 	// What a page on the internet says is a source of values only for a request that asks for it from the web: a
 	// web page is never where a record's or a document's figures come from (grounding.go).
 	if !isLookup(command) || researchRe.MatchString(st.Request) || st.fetchesPersonLink(command) {
@@ -1240,6 +1346,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		}
 		msg.Images, msg.ImageLabels = [][]byte{shot}, []string{"the screen as this command left it"}
 		msg.Content += screenshotNote
+		st.ShotStep = st.Step
 	}
 	st.Messages = append(st.Messages, msg)
 	if screen && (listsScreen(command) || len(msg.Content) > longScreenOutput) {
@@ -1659,7 +1766,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		if deadline, ok := rc.Ctx.Deadline(); ok && !st.TimeWarned {
 			if note := timeNoteFor(st, began, deadline, time.Now()); note != "" {
 				st.TimeWarned = true
-				rc.Logf("operator", "most of the task's time is used - told to finish the quickest sure way")
+				rc.Logf("operator", "most of the task's time is used - told to finish with its own tools or report what is left")
 				appendToLastUser(st, note)
 			}
 		}
@@ -2011,8 +2118,15 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// 5.10.124 before running anything; the real answer was 6.6.87.
 				rc.Logf("operator", "still repeating the same command - ending with what it printed")
 				if st.LastResult.ExitCode == 0 {
-					return unchecked("`"+value+"` printed:\n\n"+answerFromCommand(value, *st.LastResult, st.outputChars()),
-						"the model kept repeating this command instead of reporting a result, so no check of the answer ran")
+					printed := answerFromCommand(value, *st.LastResult, st.outputChars())
+					if st.RepeatAsked {
+						// Asked once in this goal already: a second loop ends it, never a second identical question.
+						return finish("I kept running `"+value+"` again instead of moving the work on, after you were "+
+							"asked about it once, so I have stopped. It last printed:\n\n"+printed, false,
+							map[string]any{"needsUserInput": true, "failureReasoning": "the same command keeps repeating"})
+					}
+					st.RepeatAsked = true
+					return ask(repeatedCommandQuestion(value, printed))
 				}
 				return finish(fmt.Sprintf("I kept retrying `%s`, and it keeps failing with exit code %d:\n\n%s",
 					value, st.LastResult.ExitCode, truncateText(st.LastResult.Output, 1000)), false,
@@ -2072,6 +2186,15 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			st.noteTracedTyping(value)
 			st.Messages = append(st.Messages, reply)
 
+			if what := boundaryAttempt(value); what != "" {
+				// The tripwire (boundary.go): not run, not asked about, and the task ends here, failed.
+				shown := st.withholdFor(value)(value)
+				rc.Logf("operator", "boundary attempt - tried to %s; not run, task ended: $ %s", what, shown)
+				trace.From(rc.Ctx).CommandRun(rc.Ctx, value, trace.GuardRefused, nil, 0, "", st.withholdFor(value))
+				stop := boundaryStop(what, shown)
+				return finish(stop, false, map[string]any{"error": stop, "fatal": true, "boundaryAttempt": what,
+					"failureReasoning": stop})
+			}
 			if concern := safety.AssessCommand(value, rc.Dir()); concern != nil && !rc.IsApproved(value) {
 				rc.Logf("operator", "approval needed before `%s` - %s", st.withholdFor(value)(value), concern.Reason)
 				trace.From(rc.Ctx).CommandRun(rc.Ctx, value, trace.GuardAsked, nil, 0, "", st.withholdFor(value))
@@ -2098,6 +2221,12 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			if q := st.CycleAsk; q != "" {
 				st.CycleAsk = ""
 				rc.Logf("operator", "still going round the same commands after seeing them together - asking the person")
+				return ask(q)
+			}
+			if q := st.SaveRefusalAsk; q != "" {
+				st.SaveRefusalAsk = ""
+				// (Or at once, for a refusal that waits on the agent's own question to the person: save_refusal.go.)
+				rc.Logf("operator", "the save check refused the form and only the person can clear it - asking them")
 				return ask(q)
 			}
 
@@ -2200,7 +2329,8 @@ var guiActionRe = regexp.MustCompile(`(?m)(?:^|[;&|(]\s*|\bdo\s+)gui\s+(?:click|
 // timeNoteFor is what the operator is told once, when less than timeNoteShare of its goal's time (from began to
 // deadline) is left, or "". Found live (2026-10-19): a five-row sheet typed into a spreadsheet one cell per action,
 // at about ten seconds an action, ran the whole 25 minutes out with nothing saved; nothing in the loop said the time
-// was going. The note says how the time went, and to finish the quickest sure way and save before it runs out.
+// was going. The note says how the time went, and to finish with its own tools and save, or stop and say what is
+// left; never to go around the boundary (another user, another process's socket, an app behind its screen).
 func timeNoteFor(st *operatorState, began, deadline, now time.Time) string {
 	total := deadline.Sub(began)
 	left := deadline.Sub(now)
@@ -2219,9 +2349,10 @@ func timeNoteFor(st *operatorState, began, deadline, now time.Time) string {
 	}
 	return fmt.Sprintf("\n\n(Time: about %d of this task's %d minutes are left, then it is stopped and nothing unsaved "+
 		"is kept.%s Do not spend what is left on one value per action: rows of values go into a sheet with one gui "+
-		"type (a Tab between cells, \\n between rows), a form's fields one after another in one command. Finish the "+
-		"quickest way the request allows that you can still check, save it, read it back and reply DONE - or reply "+
-		"HELP saying what is saved and what is missing.)", int(left.Minutes()+0.5), int(total.Minutes()+0.5), how)
+		"type (a Tab between cells, \\n between rows), a form's fields one after another in one command. Time is "+
+		"short: finish what you can with your own tools - save it, read it back and reply DONE - or stop and reply "+
+		"HELP saying what is saved and what is left. Never act as another user, drive another process's socket, or "+
+		"reach an application around its screen to save time.)", int(left.Minutes()+0.5), int(total.Minutes()+0.5), how)
 }
 
 // outOfTurnsNote asks for the state of the work when the turns are used up.
@@ -2276,6 +2407,25 @@ func shownOutput(r shellResult) string {
 		return out
 	}
 	return "(no output)"
+}
+
+// repeatedCommandQuestion is what the person is asked when the model keeps running one command instead of moving the
+// work on: the worker's own question first, the command's output only quoted under it as what it showed. Found live
+// (2026-11-09): the output itself went out as the question ("`gui scroll down 5` printed: Scrolled the focused
+// window ...") five times in one goal.
+func repeatedCommandQuestion(command, printed string) string {
+	return "I kept running the same command, `" + command + "`, instead of moving the work on, so I have stopped to " +
+		"ask you: is what it shows the answer to the request, or how should I go on?\n\nWhat it last showed (quoted, " +
+		"not checked):\n\n" + quoteLines(printed)
+}
+
+// quoteLines marks each line of a text as quoted ("> ").
+func quoteLines(text string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "> " + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 func repeatedCommandNudge(command string, r shellResult, limit int) string {

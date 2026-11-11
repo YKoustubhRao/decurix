@@ -519,18 +519,18 @@ class ChoosingInADrawnDropdown(unittest.TestCase):
         return {"role": role, "name": name, "source": "cdp", "box": [0, 0, 10, 10], "path": f"list > {name}"}
 
     def _run(self, options, want, role="combobox", page=()):
-        from decurix_agent.computer import core
+        from decurix_agent.computer import core, selecting
         clicked, typed = [], []
         looks = iter([{"elements": list(page)}] + [{"elements": list(page) + options}] * 50)
         with patch.object(core.cdp, "click", side_effect=lambda e, **k: clicked.append(e.get("name"))), \
              patch.object(core.cdp, "type_text", side_effect=lambda e, t: typed.append(t)), \
              patch.object(core, "observe", side_effect=lambda: next(looks)), \
-             patch.object(core, "CUSTOM_OPTIONS_SECONDS", 0), patch.object(core, "CUSTOM_OPEN_SECONDS", 0):
+             patch.object(selecting, "CUSTOM_OPTIONS_SECONDS", 0), patch.object(selecting, "CUSTOM_OPEN_SECONDS", 0):
             core._select_custom({"role": role, "name": "Nationality"}, want)
         return clicked, typed
 
     def test_search_uses_the_dropdown_handle_after_redraw(self):
-        from decurix_agent.computer import core
+        from decurix_agent.computer import core, selecting
         old = element("combobox", "Item", handle={"backend_id": 1})
         fresh = dict(old, handle={"backend_id": 2})
         option = self._opt("Managed Database Hosting")
@@ -539,7 +539,7 @@ class ChoosingInADrawnDropdown(unittest.TestCase):
         typed = []
         with patch.object(core, "observe", side_effect=lambda: next(looks)), \
              patch.object(core.cdp, "click"), patch.object(core.cdp, "type_text", side_effect=lambda e, t: typed.append(e)), \
-             patch.object(core, "CUSTOM_OPEN_SECONDS", -1):
+             patch.object(selecting, "CUSTOM_OPEN_SECONDS", -1):
             core._select_custom(old, "Managed Database Hosting")
         self.assertEqual(typed[0]["handle"]["backend_id"], 2)
 

@@ -472,6 +472,9 @@ func TestAnUnchangedScreenCostsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The fake counts an update after writing it, so the first may be painted before it is counted: counted first, or
+	// the whole screen is taken for a cost of the unchanged ones (CI flake, 2026-11-09).
+	waitUpdates(t, m, rfb, 1)
 	sent, updates, before := rfb.sent.Load(), rfb.updates.Load(), saves.Load()
 	for i := 0; i < 5; i++ {
 		ageShots(m, "box", time.Hour)

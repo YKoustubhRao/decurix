@@ -47,15 +47,31 @@ const (
 const maxReviewPictures = 3
 
 // lastPictures are the last n pictures still in the transcript (screenshots, scanned pages), oldest first, with their
-// labels; none for a model that cannot see.
+// labels; none for a model that cannot see. Of the screenshots, only the screen as it is: the look before a commit's
+// picture when it is the newest, else the newest screenshot when no command touched the screen after it - never an
+// older one (found live 2026-11-08: a hosted goal keeps old screenshots until its next maintenance pass, and the review
+// read a form's fields as empty off one taken before the typing).
 func (st *operatorState) lastPictures(n int) ([][]byte, []string) {
 	if !st.Vision {
 		return nil, nil
 	}
 	var imgs [][]byte
 	var labels []string
+	screen := false // a screenshot of the screen as it is was taken (or none is current)
+	if st.lookShot != nil && st.lookShotStep >= st.ScreenStep {
+		imgs, labels = [][]byte{st.lookShot}, []string{"the screen now, looked at before this review"}
+		screen = true
+	}
 	for i := len(st.Messages) - 1; i >= 0 && len(imgs) < n; i-- {
 		m := st.Messages[i]
+		if len(m.Images) > 0 && strings.HasSuffix(m.Content, screenshotNote) {
+			if !screen && st.ShotStep >= st.ScreenStep {
+				imgs = append([][]byte{m.Images[len(m.Images)-1]}, imgs...)
+				labels = append([]string{m.ImageLabel(len(m.Images) - 1)}, labels...)
+			}
+			screen = true
+			continue
+		}
 		for j := len(m.Images) - 1; j >= 0 && len(imgs) < n; j-- {
 			imgs = append([][]byte{m.Images[j]}, imgs...)
 			labels = append([]string{m.ImageLabel(j)}, labels...)
@@ -71,6 +87,61 @@ func (st *operatorState) personWords() []string {
 		return st.PersonSaid
 	}
 	return personSaid(st.Messages)
+}
+
+// seedEnteredEarlier counts what earlier jobs of this task typed into forms the application saved as entered by this
+// goal (Written), bounded: a later job of the task is the same work, and its review asked a correct second attempt -
+// which rightly entered nothing twice - to "enter what" documents the first attempt had entered (found live 2026-11-08,
+// eight send-backs until the case timed out).
+func (st *operatorState) seedEnteredEarlier(values []string) {
+	for i, v := range values {
+		if i == MaxEnteredEarlier {
+			break
+		}
+		if v = strings.TrimSpace(truncateText(v, MaxEnteredEarlierText)); v != "" {
+			st.Written = append(st.Written, v)
+		}
+	}
+}
+
+// seedPicked keeps the taught task's fields that are filled by picking an existing entry from the application's own
+// list (RunContext.PickedFields), bounded, for the review: the record holds the entry's own name, which may differ from
+// the document's words that searched for it. Found live (2026-11-08): told only the run's values, the review sent a
+// saved bill back twice to put a line's description from the document where the application's item belonged, and the
+// worker typed both into the field.
+func (st *operatorState) seedPicked(picked []string) {
+	for i, p := range picked {
+		if i == MaxPickedFields {
+			break
+		}
+		if p = strings.TrimSpace(truncateText(p, MaxPickedFieldText)); p != "" {
+			st.Picked = append(st.Picked, p)
+		}
+	}
+}
+
+// seedEarlierSaid starts a goal with the person's replies on this task from before its job (RunContext.EarlierSaid),
+// kept as a reply in the goal is: with what it answered (PersonSaid, the review's "what the person said"), and its
+// words a source a typed value may come from (the reply alone, never the question, which is the worker's). Found live
+// (2026-11-08): a bill the final check sent back started a new goal, and its review, shown no reply of the person's,
+// judged a value they gave as backed by nothing.
+func (st *operatorState) seedEarlierSaid(said []Said) {
+	for i, s := range said {
+		if i == MaxEarlierSaid {
+			break
+		}
+		reply := strings.TrimSpace(truncateText(s.Said, MaxEarlierSaidText))
+		if reply == "" {
+			continue
+		}
+		line := reply
+		if asked := strings.TrimSpace(s.Asked); asked != "" {
+			line = "Asked: " + truncateText(asked, 600) + "\n  They said: " + reply
+		}
+		st.PersonSaid = append(st.PersonSaid, line)
+		st.noteSeen(reply)
+		st.addUnit("person", "the person's reply", reply)
+	}
 }
 
 // tailText is the last n bytes of s (from a whole character), marked as cut.
@@ -164,6 +235,12 @@ func (st *operatorState) reviewFacts(report string, items []string, action strin
 		b.WriteString("\nWHAT THE PERSON SAID IN THIS GOAL (with what each reply answered):\n- " +
 			tailText(strings.Join(said, "\n- "), maxReviewMemoryChars) + "\n")
 	}
+	if len(st.Picked) > 0 {
+		b.WriteString("\nFIELDS FILLED BY PICKING AN EXISTING ENTRY FROM THE APPLICATION'S OWN LIST (from how the person " +
+			"taught it - a fact, set by code): the document's words only searched for the entry, and the record holds the " +
+			"entry's own name, which may differ from them. A different name in such a field is no point when the entry " +
+			"is plainly the same thing; raise it only when it is another thing:\n- " + strings.Join(st.Picked, "\n- ") + "\n")
+	}
 	if prefix := st.Messages[:st.prefixEnd()]; len(prefix) > 0 && prefix[0].Role == "system" {
 		// The worker's memory of the person's rules and earlier answers lives in its system frame, after the standing
 		// persona every call shares: the persona is left out, and a long frame keeps its end, where the lessons are.
@@ -194,7 +271,14 @@ func (st *operatorState) reviewFacts(report string, items []string, action strin
 		// revised bill sat in a second message from the client, listed on the inbox page and never opened).
 		var shown []string
 		for i := n - 1; i >= 0 && len(shown) < maxReviewListings; i-- {
-			shown = append([]string{truncateText(st.Listings[i], maxReviewListingChars)}, shown...)
+			listing := truncateText(st.Listings[i], maxReviewListingChars)
+			if w := listingWindow(st.Listings[i]); w != "" && st.typedSinceLook(w) {
+				// Never a look from before the work typed into the window: its fields were empty then, and the review
+				// read them as empty now (found live 2026-11-08, a held Save).
+				listing = fmt.Sprintf("Window %q: NOT READ since the work typed into it - what its fields hold now is "+
+					"not shown here; do not raise a field of it as empty or unfilled from an earlier look.", w)
+			}
+			shown = append([]string{listing}, shown...)
 		}
 		b.WriteString("\nTHE NEWEST LISTING OF EACH WINDOW THE WORK LOOKED AT (what the screens showed; a message, row or " +
 			"document listed here that the work never opened or the report never accounts for is a point):\n" +

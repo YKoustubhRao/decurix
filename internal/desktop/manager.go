@@ -104,6 +104,10 @@ type Manager struct {
 
 	// startedMu/startedCache cache Docker's StartedAt timestamp for running
 	// containers, eliminating redundant ContainerInspect RPCs during List.
+	// legacyOwned caches, per container ID, whether a container made before OwnerLabel is this control plane's
+	// (ownedLegacy): read once, never again.
+	legacyOwned sync.Map
+
 	startedMu    sync.Mutex
 	startedCache map[string]string
 
@@ -688,6 +692,14 @@ func (m *Manager) listUncached(
 	if err != nil {
 		return nil, err
 	}
+	// Another control plane's desktops are not this one's to show or act on (owner.go).
+	mine := containers[:0]
+	for _, c := range containers {
+		if !ForeignOwner(c.Labels) {
+			mine = append(mine, c)
+		}
+	}
+	containers = mine
 
 	// Each container's own Desktop lands at its own index, written by its
 	// own goroutine only - no shared state, so no lock is needed alongside
@@ -965,6 +977,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		SharedNetwork:  c.NetworkSettings != nil && onSharedNetwork(id, c.NetworkSettings.Networks),
 		ParentID:       parentID,
 		MissingApps:    m.MissingApps(id),
+		Owned:          m.owned(ctx, c, id),
 	}
 	m.withRest(&d)
 	return d

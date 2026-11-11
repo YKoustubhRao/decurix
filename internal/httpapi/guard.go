@@ -111,7 +111,14 @@ func (s *Server) GuardPrimary(next http.Handler) http.Handler {
 				jsonStatusError(w, http.StatusForbidden, "not available from inside a desktop")
 				return
 			}
-			id, ok := s.callerDesktop(r)
+			id, ok, err := s.callerDesktop(r)
+			if err != nil {
+				// Docker could not say who this is (a blip under load): not a stranger, and not let in either. A desktop's
+				// client asks again (a 503 is transient to it); a 403 here would end its task for good.
+				w.Header().Set("Retry-After", callerRetryAfter)
+				jsonStatusError(w, http.StatusServiceUnavailable, "the desktop list could not be read; try again")
+				return
+			}
 			if !ok {
 				jsonStatusError(w, http.StatusForbidden, "this address is not a desktop's")
 				return
@@ -214,19 +221,24 @@ func knownHost(host string) bool {
 	return false
 }
 
-// callerDesktop is the desktop r came from, by its address on the Docker network.
-func (s *Server) callerDesktop(r *http.Request) (string, bool) {
+// callerRetryAfter is the Retry-After (seconds) of the answer to a caller Docker could not place: about two of the
+// address map's refresh intervals.
+const callerRetryAfter = "5"
+
+// callerDesktop is the desktop r came from, by its address on the Docker network: false with a nil error when the
+// address is no desktop's, an error (desktop.ErrCallersUnread) when that could not be checked.
+func (s *Server) callerDesktop(r *http.Request) (string, bool, error) {
 	if s.callerAt != nil {
 		return s.callerAt(r)
 	}
 	if s.Desktops == nil {
-		return "", false
+		return "", false, nil
 	}
 	addr := remoteAddr(r)
 	if !addr.IsValid() {
-		return "", false
+		return "", false, nil
 	}
-	return s.Desktops.DesktopAt(r.Context(), addr)
+	return s.Desktops.CallerAt(r.Context(), addr)
 }
 
 // requestDesktop is the desktop GuardPrimary found r came from, and false for a request from the host.

@@ -16,7 +16,7 @@ var ErrUnscoped = errors.New("l1: not stored - it carries a value only seen in t
 
 var (
 	// secretNamedRe is a credential word, an optional separator and the word after it: "password Northwind#2026",
-	// "PIN: 4821", "the OTP is 552910", "api key = abc...", "passwd hunter2", "login is Tally@123". Whether the word
+	// "PIN: 4821", "the OTP is 552910", "api key = abc...", "passwd hunter2", "login is Ledger@123". Whether the word
 	// after it is a secret VALUE depends on the kind of credential (secretValue): the bare words are not secrets
 	// ("unexpected token: foo", "pin numpy<2", "the API key is stored in the vault"). Longer names come first in the
 	// alternation so "login code" is read as a code, not as a login.
@@ -101,7 +101,7 @@ func secretValue(kind credentialKind, separated bool, value string) bool {
 		// "password manager" is not a value; "password: hunter" and "passwd hunter2" are.
 		return separated || hasDigitOrSymbol(value)
 	case kindLogin:
-		// "login is Tally@123" is; "login: admin", "login page", "login: a@b.example" are not.
+		// "login is Ledger@123" is; "login: admin", "login page", "login: a@b.example" are not.
 		return separated && hasDigitOrSymbol(value) && !emailOrLinkRe.MatchString(value)
 	case kindCode:
 		// "PIN: 4821", "otp 552910"; never "pin numpy<2" or "PIN code".
@@ -120,6 +120,19 @@ func secretValue(kind credentialKind, separated bool, value string) bool {
 	}
 }
 
+// namedSecret is the value a secretNamedRe match m in text gives after a credential's name, and whether it is that
+// credential's value (secretValue). A plain word after "password:" is withheld even where it reads as the person's
+// instruction ("password: ask the client"): a word too many withheld is harmless, and "password: letmein then press
+// login" is a password running on into its sentence (review of freeze 2, A1: a running-word exemption let it through).
+func namedSecret(text string, m []int) (string, bool) {
+	if m[8] < 0 {
+		return "", false
+	}
+	separated := m[4] >= 0 || m[6] >= 0
+	value := strings.TrimRight(text[m[8]:m[9]], ".!?:")
+	return value, secretValue(kindOf(text[m[2]:m[3]]), separated, value)
+}
+
 // LooksSecret reports whether text holds a secret VALUE: a password, PIN,
 // OTP, login or key given after its name (secretValue decides, by the kind
 // of credential, whether the word after the name is one), a token or key
@@ -131,10 +144,8 @@ func LooksSecret(text string) bool {
 	if tokenShapeRe.MatchString(text) {
 		return true
 	}
-	for _, m := range secretNamedRe.FindAllStringSubmatch(text, -1) {
-		separated := m[2] != "" || m[3] != ""
-		value := strings.TrimRight(m[4], ".!?:")
-		if secretValue(kindOf(m[1]), separated, value) {
+	for _, m := range secretNamedRe.FindAllStringSubmatchIndex(text, -1) {
+		if _, ok := namedSecret(text, m); ok {
 			return true
 		}
 	}
@@ -165,19 +176,19 @@ const Withheld = "[withheld]"
 // random-looking run. It uses LooksSecret's own rules, so what is withheld and what is judged a secret never drift.
 func RedactSecrets(text string) string {
 	text = tokenShapeRe.ReplaceAllString(text, Withheld)
-	text = secretNamedRe.ReplaceAllStringFunc(text, func(match string) string {
-		m := secretNamedRe.FindStringSubmatchIndex(match)
-		if m == nil || m[8] < 0 {
-			return match
+	var b strings.Builder
+	last := 0
+	for _, m := range secretNamedRe.FindAllStringSubmatchIndex(text, -1) {
+		value, ok := namedSecret(text, m)
+		if !ok {
+			continue
 		}
-		separated := m[4] >= 0 || m[6] >= 0
-		raw := match[m[8]:m[9]]
-		value := strings.TrimRight(raw, ".!?:")
-		if !secretValue(kindOf(match[m[2]:m[3]]), separated, value) {
-			return match
-		}
-		return match[:m[8]] + Withheld + raw[len(value):] + match[m[9]:]
-	})
+		b.WriteString(text[last:m[8]])
+		b.WriteString(Withheld)
+		last = m[8] + len(value)
+	}
+	b.WriteString(text[last:])
+	text = b.String()
 	return longRunRe.ReplaceAllStringFunc(text, func(run string) string {
 		var upper, lower, digit bool
 		for _, r := range run {

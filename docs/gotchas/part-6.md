@@ -81,6 +81,27 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **Check copies of host files go in a folder per task and per full path** (E-31). Two files with the same name in two folders were one copy.
 - **Every write of desktop state goes through `privacy.write_scrubbed`** (phase 2, round 3). `test_writers_withhold` forbids every other way of writing a file in the agent's package outside a short list. A new writer either calls `write_scrubbed` (`shapes=False` for a store whose values are compared later) or is added to the list with its reason and its forms.
 - **Withholding by shape breaks machine state** (phase 2, round 3). When the writers first went through `write_scrubbed`, 185 tests failed: shape withholding read a workflow checkpoint's `"claim_token": "..."` as a token and withheld it, so every stage failed "requires its current claim token". A text pass over dumped JSON also took a quote along with a `"password": "..."` value and broke the line. Write JSON as an object (withheld string by string), and use `shapes=False` for stores of ids, tokens and compared values.
+- **In broker mode the save path's question stayed with the screen user** (2026-11-08, live). The save runs in the
+  screen broker as `decurixscreen`, whose `DECURIX_DIR` is its own: `unit_answers.ask` kept the unit question in that
+  side's `runs/<task>/context.json`, the agent (the worker) never saw it, and the person got the engine's own
+  unnumbered question, whose reply backs nothing. Any state the screen side writes for the worker must be in the
+  caller route both ways (`gui_client.TASK_STATE`, `gui_client.mirrored`); a new kind of it needs its entry there.
+
+- **A demonstration's corrections were learned as part of the procedure** (2026-11-08, ERPNext bill taught once).
+  The person typed the bill number and date, then typed both again, and typed a line's item, then chose it again
+  after Ctrl+A. Learned as recorded, the retyped pair read as two "rows" of a repeated part (`skills.repeated_rows`)
+  and the line rows were not found, so a replay would enter every bill with the demonstration's lines. An entry
+  superseded by a later one into the same field instance (role, name, page, table row, recorded box within 8 px) is
+  dropped before generalising, and the later entry takes its place (`learning._drop_corrections`). The trap the other
+  way: a loop types into the same field once per item. So only field presses and keys may come between the two (a
+  button, link, commit or page change makes it a repetition), the later entry must overwrite (select-all) or repeat
+  the value, and another field re-entered with another value in between marks a register's next line.
+- **A demonstration's empty row, added and deleted, would delete a real line** (2026-11-08, the same demo). A Tab
+  out of the last line made an empty third row; the save refused it and the person ticked row 3 and deleted it. On a
+  three-line bill the replay writes out row 3 and those steps then tick it and delete it, and the ledger reads back
+  header fields only. A `row N` no entry went into, selected and then followed by a non-field press, is taken out
+  with the step that made it (`learning._drop_empty_rows`). Still left: the save that failed while the row was there,
+  the press that closed its notice, and the save again.
 
 ## TheBot
 
@@ -225,3 +246,813 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   the screen broker reads the worker's bus, the worker can lay a made-up "Cancel" over the browser's "Pay"; a press by
   its box lands on the browser while the gate is asked about "Cancel". Act on such a widget only where the window shown
   at that point is the worker's own (its `_NET_WM_PID`, which only the window's client can set, and that process's uid).
+- **A command the gate held still did what came before the held press** (2026-11-08). `gui type ... && gui click
+  Save` held at Save had typed, but a held command recorded nothing: the review read the form off the look and the
+  screenshots from before the typing and said filled fields were empty. Note a held chain's typing, order looks and
+  typing by commands run (held ones included), and give a review only the latest look of a window, or "not read".
+- **A bare figure declared from a source that writes it with a unit settles the unit silently** (2026-11-08). "18" from
+  "18%" matched a unit-less field's 18, and the unit question never came. A declaration keeps the unit its backing
+  writes (`records._source_units`).
+- **A carry-state eval sent the next case's request into the earlier case's open question** (2026-11-08, first
+  learn-v1 run). A case that ended at an approval left it pending; the next request, saved a second later, was neither
+  its reply nor "after" it by the agent's one-second stale-question rule, so it queued until its case timed out. Between
+  a learning curve's cases the runner now settles the desktop (`desktop.SettlePractice`: the open task cleared, the
+  learned state kept, restarted), and a desktop's restart no longer counts its own earlier memory reservation.
+- **A locked xfce4-panel still starts programs** (2026-11-08, broker mode's window list). Run as the screen user, a
+  second panel holding only the window list looked safe once locked, but xfce4-panel 4.18 keeps Log Out, Help and
+  About in its menu whatever is locked, and the window list's own button menu has "Launch New Instance", which runs
+  `/proc/<pid>/exe` of the window's `_NET_WM_PID` - a property the window's own client (the worker) sets. The screen
+  side's window list is its own small program instead (`computer/windowlist.py`): no toolkit (GTK loads the modules
+  the XSETTINGS manager names, and that is the worker's xfsettingsd), no menu, no keyboard, nothing it can start. Its
+  window must select button presses too, or the window manager's grab takes the release and a click does nothing.
+- **Words in a record's number field were "backed" because the document printed them there** (2026-11-08, first
+  learn-v1 run, bill 4). "Invoice number: as per covering letter" made the phrase stand in the source, so `gui record`
+  kept it as the bill's number and nothing asked. A number, reference or id field holds a code: words with no digit
+  there are refused at the declaration, the save and the final check unless the people's own words give them
+  (`records.wordy_identifiers`). A record curl'd to the application's endpoint is never declared or read back: the
+  final check holds such a send against the done (`records.sent_around`).
+- **A cut read was judged as the whole value** (2026-11-08, learn-v1 bill 1). The form readers kept a value's first 80
+  characters with no mark (`cdp.FORM_FIELDS`'s `v.slice(0, 80)`, `core._page_fields`, the Enter path), and
+  `records.presave` compared that part with the declared value, so a declared 126-character Notes field was refused at
+  every save ("Notes holds '... Taxable val' where the record says '... Taxable value: 3,600.00; ...'") until the token
+  budget ran out. The same bug as the 80-character cuts of 2026-10-25 (part 5): a reader that cuts must say so. Values
+  are now read whole up to `cdp.FORM_VALUE_CHARS` (600, what approvals quote); a longer one is cut at a word and marked
+  (`found["cut"]`), and presave compares a cut value only as far as it was read (`records._read_in_part`): a part that
+  agrees is undecided and left to the read-back, never "differs". A declared value is never kept cut either
+  (`records.MAX_VALUE`, 4000: longer is refused, not silently cut as at 400).
+- **A rule the person taught backed nothing in the next task, and an eval expert's words backed nothing at all**
+  (2026-11-08, learn-v1 bills 3 and 4). Three gaps stacked: the person's words were read for the current task only
+  (`person_record.answers`), so a value derived from a rule taught two tasks before was "backed by nothing a person
+  said"; on a practice desktop the control plane is the broker, which answered 404 to the judgement read while the
+  runner sent each expert reply with no judgement id, so even a reply on the same task backed nothing; and a code among
+  codes sharing their letters ("FND-3" beside "FND-8") could never be picked out by any text, since its only telling
+  part, the figure, is joined to the letters and was dropped as the code's own part. Now: the person's answers on any
+  task of the worker are a source (`person_record.worker_words`, `?scope=worker`), the broker keeps and serves the
+  expert's replies (`Broker.KeepReply`, actor kind `scripted`), and a code written whole picks out its entry
+  (`records._code_written_whole`). Check a provenance rule on the eval's own route too: a source the broker does not
+  serve is silently empty there, and fail-closed hides it.
+- **A saved record declared again under its own number became a second record** (2026-11-08, learn-v1 bill 3). The
+  worker keyed the bill "bill", saved it with a field undeclared, then declared that field under the bill's number;
+  `declare` found saved records by key only, so the ledger held two records for the application's one and the eval's
+  `ledger_readback` failed. A key that is a saved record's own number (an identifier field's value) is that record
+  (`records.saved_by_number`).
+- **The agent's start scripts ran the worker's own `python3` in the agent's place, and every program had the token**
+  (2026-11-08, probe on a broker-mode desktop). The container's PATH puts `~/.local/bin` first, and
+  `start_agent_terminal.sh` and the worker's session looked `python3`, `nice` and `setsid` up on it: a `python3` left
+  there started as the agent at the next boot. The token was in the environment of 14 processes of the worker's user,
+  each readable at `/proc/<pid>/environ`, and a session-bus service file in the worker's home ran at boot. A script
+  that starts a holder of a secret looks its commands up on the system's PATH and starts the holder by absolute path;
+  a secret reaches its holder in a file it reads once it is non-dumpable, never in an environment
+  (gate-boundary.md, "The agent token's two holders").
+- **A reply carried without its question read as the person's standing word, and a sent-back job lost every reply**
+  (2026-11-08, learn-v1 bill 2). A learned method kept the person's answer to bill 1's plan question alone ("I don't
+  know that ... Do not make it up"), and bill 2's worker and review read it as said about bill 2; the review called a
+  cost centre the person gave in bill 2 made up. Bill 2's final check had sent it back, and the new job started a goal
+  of its own in soul, so its review had no "what the person said" at all. A person's word travels with the question it
+  answered (`methods.keep` keeps `{asked, said}`), and every job carries the task's confirmed replies (`earlierSaid`).
+  The worker also had no way to back a typed value with a reply: it wrote the reply into a file of its own to declare
+  from. The person's confirmed words are now among what a declared value may stand in (`records._elsewhere_text`).
+- **The final check imposed its own idea of the work over the person's taught rule, and the worker obeyed it: a false
+  done** (2026-11-08, learn-v1 recon 5, repeat 2, trajectory `xcb425599da9f1c9e`). The person had taught "one row per
+  statement line" on an earlier task; the judge was shown only this task's words, said not_done for a book entry with
+  no row, the worker added that row citing the check, and the second judge - shown the rule only through the worker's
+  citation - passed the seven-row file. The check is shown the person's words on the worker's earlier tasks with
+  their questions, and the worker sent back is told the person's words hold over the check's finding.
+- **A host app's viewer count could reach its helper out of order** (2026-11-08, found reading the code while chasing
+  the CI flake 1,0,2,1,0 in `TestTheHelpersCaptureFollowsTheViewers` - which was itself the test's log shared by two
+  fake helpers, the warm one's readiness ping between the viewers; the test now reads one helper's lines). `winhost.syncViewers` counted under the session's lock and sent after releasing it, so two changes at
+  once sent their counts in either order and the helper could be left told 0 with a person watching: its capture stops
+  and their screen freezes. The count and its send are one step now (`viewersSend`). A count, a state or a version sent
+  to another process after its lock is released can arrive stale; send it under a lock of its own.
+- **A learned method kept the plan's first idea of the output and only the plan question's answer** (2026-11-08, an eval
+  run's third repeat of a reconciliation). The plan's question got "I don't know"; the layout (a CSV, one row per
+  statement line) came in answer to a later question; the method kept the plan's workbook and the "don't know", and
+  the next task of the kind wrote the workbook, asked nothing, and was passed. A method keeps every answer of the run
+  with its question, and offers them as holding over its plan where they differ (`methods.keep`,
+  `guidance.exchanges_this_task`).
+- **A formality the worker skipped cost the whole case** (2026-11-08, validation run e53e9a9df7f70755a, bills 2 and 3).
+  The worker saved the cost centre the person's answer gave without declaring it on the record; the final check
+  rightly held a value no declaration covers and sent the task back, and the attempt sent back started over and ran
+  out of time. Where code can establish what a declaration would (the value stands in the record's document or the
+  person's confirmed words), it takes the value onto the record itself (`records.adopt_backed`); only what nothing
+  backs is sent back.
+- **The offline oracle could not drive a mock that serves several apps by host name** (2026-11-08, the office
+  suites). It posted to the mock's address with no Host, kept no cookie between steps and set one value per field,
+  while live `curl $MOCK_ROUTE` keeps the URL's host, `-b/-c` keep a sign-in and a repeated `--data-urlencode` sends the
+  field twice; and a `curl` line with no data was skipped offline as a read, though live it is a GET that a
+  button's form refuses. `offlineOracle` now sends the URL's host, keeps a cookie jar and adds repeated fields, and a
+  scripted solution's bare button post sends one field (`make_office_suites.curl`).
+
+### A taught task could never be trusted, so it never got cheaper
+
+Since independent checks became the only ones that count towards trust (2026-11-03), a taught form task needed its
+record read back from the application - and only the model declared records (`gui record`). On four ERPNext bills
+Kimi never declared one, so every verdict rested on the model, no run counted, and the worker stayed an apprentice
+doing every field by hand (48-98 turns, 1.3-4.2M tokens a bill). An instruction in the prompt is not a guarantee:
+what the harness needs for correctness, code does (`skill_task._declare_taught_record`). And a PDF table cell wrapped
+over lines is still the document's value (`binding.wrapped_in`); the exact-text check dropped every bill's item.
+
+### A save the person had to repeat was learned as two saves and a press on a notice
+
+The demonstration's first Ctrl+S was refused (a "missing fields" notice), the person closed the notice with an unnamed
+button and saved again. Learned as steps, a replay's first save holds, nothing appears, and the replay stops at the press
+meant for the notice. The same commit pressed twice with only that dismissal between is now kept once, the last
+(`learning._drop_retried_commits`).
+
+### A bill's table lines were folded as a loop, and its dates were never the document's
+
+Two blockers found by dry-running the new taught-task route on the real ERPNext demonstration before a live run spent
+30 minutes on them. (1) Line 2 began with "Add row" and line 1 did not, so the loop finder took line 1 for the shorter
+first copy of a per-document loop; `each` dropped line 1's quantity and rate and fixed every quantity at the demo's 1.
+Repetitions whose entries each go into one table row, no two into the same row, are now no loop
+(`learning._rows_of_a_table`): the form's rows (`skills.repeated_rows`, `fit`) write out one per document line. (2) The
+bill writes "09-Oct-2026", the form takes "09-10-2026": the fill's strict check dropped every bill's date, so every run
+went to the model. A digit date is now held when one of its readings (the application's order when known) is a date the
+document writes, and the record declares the document's own token (`binding.date_in`).
+
+### A Word table cell's lines were read run together
+
+`office read` joined the paragraphs inside a .docx table cell with nothing between them: a bill's customer cell "Hampi
+Residency" / "12 Kunjibettu, Udupi" read "Hampi Residency12 Kunjibettu", so the name the worker typed stood in no source
+as a whole word and soul's provenance guard sent it back four times. A cell's paragraphs are now joined by a space
+(`office.docx_structure`).
+
+### A month's vouchers were learned as two blocks of two and a half
+
+The loop finder takes the candidate that covers the most steps. A stray scroll after every second voucher made pairs of
+vouchers match exactly, and two big blocks covered more steps than five single-voucher blocks: the fill could not give
+the third voucher's values and the model entered the month by hand (60-minute timeout, every grader passing). A block
+holding two whole repetitions of a shorter candidate is now several items (`learning._holds_two_items`), and a click on
+a list right before choosing from it is part of the choosing (`learning._drop_clicks_before_select`).
+
+### A replay halted at a party it had picked
+
+A replayed select asked the list for a bill's words for a party and took the application's entry, whose name the bill
+spells a little differently; the step's check expected the bill's words in the field and halted the run at item 2 of 4
+(the model then entered the rest). A select's check now expects the entry the pick took (`core.act` returns `taken`;
+`replay._held_values`).
+
+### An inter-state bill sent a month's books to the model
+
+A bill that charges IGST shows the CGST and SGST places with no amount. The fill dropped those items, so the lists no
+longer had one item per document and the whole month went to the model by hand (correct, 2.96M tokens). The fill may now
+give `(empty)` for such a field; code keeps it only where the document shows that place with no figure on its line
+(`binding.left_blank`), and the replay leaves the field untouched (`skills.expand`). Its first live run then refused
+the month before the first step: the field's number constraint read "(empty)" as "not a number" and asked a person for
+the value. An empty item now breaks no constraint (`constraints.EMPTY_ITEM`, the one text binding and skills share).
+
+### "The record is read back" was not true for ERPNext
+
+The read-back ran only after a save the page answered with "saved"; ERPNext answers a save only by moving to the saved
+record's own page, so no ERPNext bill was ever read back until 5d773eba (2026-11-09). The lines of a saved record were
+never read back anywhere: they are now declared and each must stand on a page line of its own, under its columns
+(`records.rows_shown`).
+
+### A portal's own "NA" was refused as made up
+
+A return's unit field took the portal's own option "NA" (a service's unit, as the person chose in the demonstration).
+The filler guard read it like a typed "n/a" and refused the save three times; the person's "keep NA and save" changed
+nothing, since their answers were no source for it, and the question put to them read "The field it names: the field
+it names". An entry the application's own list offered or a pick took is not filler (`core._not_picked`,
+`evidence.listed_picks`), the person's confirmed answers are a source (`filler.invented(said=...)`), and the soul's
+question names the field of this refusal shape (`save_refusal.go`).
+
+### Two eval runs answered for each other's app
+
+Every run's mock app joined the one practice network under the fixed name `practice-mock`. With two control planes
+running evals at once, both mocks answered to it and Docker's DNS spread a desktop's requests between them: a books case
+saved a voucher and then found its company gone ("no records", then "Not found" for every page), and both runs' rows were
+worthless. Each run's mock now has its own name (`desktop.PracticeMockHost`), and its desktop's browser maps to that.
+
+### The gate asked about every bill, and three times about one click
+
+On ERPNext (2026-11-08) a taught worker was stopped for a yes by "+ Add Purchase Invoice" (only opens an empty form),
+by a list row found by eye (judged by the worker's own description "... row in Purchase Invoice list", and each yes
+bound to the pixel, so each new look asked again), and by Return in the address bar after Ctrl+L (the page names no
+field there, so Return was taken to press any control). What decides whether to ask is a filter in the worker's
+process, and it must read structure: what the page says is at the point, whether a press submits a form holding
+values, where the keyboard is. A yes is bound to the control the page names, never to a pixel a grounding model
+chose (approval.opens_new_record, core._gate_spot, core._location_bar). The same day an eval run stopped twice on a
+return-prep app's period picker: its "OK" submits a form written `method="get"`, a query that keeps nothing, yet it
+was held as the plan's save. A GET form's submit is no save unless its own label commits (core._queries); a form
+naming no method is not taken as GET, since a script may post it.
+
+### A month with a bill missing from its series was confirmed done
+
+The mail held bills 1058, 1059 and 1061; the taught rules said to ask for a bill missing from the series. The worker
+entered the three and reported done, and the final judge, with the rule in hand, confirmed it (the eval's false done).
+A hole in the documents' own numbered series is now found in code and put to the person once, instead of a done
+(`skill_task._series_question`; docs/learning-and-verification.md).
+
+### The guard stopped a data file pretty-printed through a named module
+
+TheBot's piped-interpreter rule read any option after the interpreter as "the program comes from stdin", so a named module (Python's module option) fed a downloaded file was stopped; it now decides by the interpreter's first argument (owner-approved narrowing of the frozen guard, 2026-11-09, follow-ups O-1.a.6). Reverted 2026-11-11: see "A narrowing of a frozen rule let piped code run through a named module" below.
+
+### No gathered month could ever earn trust
+
+A run done once per document declared no record (only a request of one document did), so nothing it saved was read
+back, no verdict had an independent basis, and every gathered month counted as "helped" because the gather, the replay
+and the closing check are more than one attempt. The skill stayed an apprentice forever: the plan asked every month,
+the model did the closing check every month. Each document's record is now declared from its own values and file
+before anything is typed (`skill_task._declare_document_records`), and "helped" is a person stepping in, a takeover,
+or something saved after the run was first sent back (`final_gate._helped`, `_reworked`) - never the count of attempts.
+
+### Told to collect the bills, the model entered them
+
+In the part of a month that only collects its documents, the model entered all five vouchers by hand; the per-document
+part then found them all "already in the books" and gave the month to the model again (60 minutes, 4.65M tokens). A
+committing press the gather part's taught steps do not make is refused while that part runs (`core._phase_refusal`, the
+phase noted by `core.write_phase`), so saving the attachments as taught goes through and saving a voucher does not.
+
+### Bills read through a filtered loop were "never read"
+
+`for f in *.docx; do echo "=== $f ==="; office read "$f" | grep ...; done` strips office read's "<name>:" header, the
+soul's evidence of a read; the review sent the run back three times. A loop's marker line now earns the credit only
+when code's own read of that file holds every checkable line printed under it (`creditLoopMarkers`): a marker over
+nothing, or over lines the file does not hold, earns nothing.
+
+### "Waiting on you" over a question nobody held
+
+A desktop restarted while a task waited on the person's answer. The agent's restart report covers only the task it was
+running, so the question stayed "waiting on you" on the control plane until someone answered it, and the answer was
+then told it was stale. At start the agent now reads this desktop's waiting tasks (`GET /api/agent/waiting`) and closes
+each question it does not hold as stopped (`watchers._close_lost_questions`), saying what the task had saved; the
+question it holds (a long request resumed waiting on its answer) is never closed.
+
+### A run was sent back over entries every invoice supported
+
+The pick check held "Place of supply: 29-Karnataka" and "Rate (%): 18" as backed by nothing: the invoices show Karnataka
+and 9% + 9%, but never beside those fields' labels, and by design (review round 10) a document's free-floating words
+back no pick. The run was sent back and redone. Now, when nothing but unbacked picks stands against the saved records,
+the person is asked once, with the document lines where each entry stands (`final_gate._ask_about_picks`); their yes is
+kept as their confirmation of exactly those entries for each record's own party - the identifier-shaped values its
+form holds, such as the buyer's tax number (`records.form_party`, `confirm_picks`) - so that party's later records are
+backed, another party's are asked, a record that names no party is asked each time, and a different entry is never
+backed. Anything but a yes goes to the model with their words, as help.
+
+### A corrected rule stayed beside its correction
+
+A person's "ask only before File with EVC and Verify, never before Proceed to file" was kept as their later words while
+the taught rule "stop before Proceed to file" stayed in the lesson, and nothing said which held. Where the taught rules
+and the person's later words are shown together, it is now said that the later words hold
+(`skill_task.LATER_WORDS_HOLD`; the final check's earlier-answers text). Rewriting the rule itself is a follow-up.
+
+### Every save of a month asked which day "04-11-2026" is
+
+Per-document records declared a digit date that reads two ways while the application's date order was unknown: the
+skip for that case ran only when the document wrote the date differently, and a bill writing the same "04-11-2026" as
+the form slipped past. Each save then asked the person which day it was; the eval's expert could not say, and every
+taught case ended on the number of questions. Now such a date is never declared without the order
+(`skill_task._declarable`), the person's answer about an application's date order is kept for its host across tasks
+(`task_context.kept_app_order`, read before asking), a question they could not settle is not put again in the task
+(`date_left_open`), and the eval's expert answers it from the case's own fact of how its apps write dates
+(`Case.DateOrders`, `confirmReply`).
+
+### A ledger saved with its state unset went out as done
+
+An untaught worker declared no record, created a party's ledger with State left "-- Select --" after the person said
+they did not know it, disclosed that in its report, and the run ended "done, not checked" on the model's look alone:
+nothing had read a single save back, and nothing in the report said which saves were unchecked. Now the final gate
+never writes a checked done while the task saved a record nothing read back against a source
+(`records.saved_unread`): the report says "NOT checked", lists where each such record was saved, and the run counts as
+no checked run.
+
+### A command's output went to the person as the question
+
+When the model kept repeating one command, the soul ended the loop by putting the command's output to the person as
+the answer to check ("`gui scroll down 5` printed: Scrolled the focused window ... Tell me whether this answers the
+request") - five times in one goal of a filing case. The question is now the worker's own ("I kept running the same
+command ... is what it shows the answer, or how should I go on?") with the output quoted under it, and it is asked once
+per goal: a second loop ends the goal (`repeatedCommandQuestion`, `RepeatAsked`).
+
+### A pick the client's invoices state was held as backed by nothing
+
+A GSTR-1 filed right from the invoices a client sent ended "not done": the place of supply "29-Karnataka" picked from
+the portal's list was held as backed by nothing given, though every invoice wrote "Place of Supply: Karnataka". Pick
+backing read only the request's attached files, and these invoices sat in a folder the request named by its path. Now
+`records.given_sources` also reads the files already in such a folder (`_request_folder_files`): never one the task
+made (`source_guard.made_by_task`), never the whole home or work folder, nothing while the task's start is unknown, and
+still only where the field's own label states the value (`option_beside_label`).
+
+### A replay that entered every bill right ended "Not done" over the customers it picked
+
+The books curve on 83f4a53d: a taught replay entered each month's bills right (every grader passed), then the final
+check held each customer picked from the ledger list as backed by nothing given - the bills write the customer under
+"Customer Name and Address", the form's field is "Party A/c name" - and the replay's gate ended in an error. The engine's
+route asks the person about such picks once (final_gate._ask_about_picks); the replay's did not, so no confirmation was
+ever kept for the next month. Now skill_task._succeed asks the same question when unbacked picks are its only finding.
+And the question asks for a plain yes, but the confirm reading's vague-yes guard took "yes" first and asked for `done`:
+the picks reading now comes first. The eval's scripted expert confirms picked entries that the case's expected records
+hold (confirm.go picksReply), as a person who knows their own customers would.
+
+### A bulk action on a ticked row was learned as an empty row added and deleted
+
+A person's demonstration opened a list of parties by a link, ticked the party in row 4, pressed a bulk button outside
+the table ("Validate selected"), ticked it again and pressed a second bulk button. `learning._drop_empty_rows` saw a
+`row N` nothing was typed into, a press in it and then a press outside the table, and took it for a row added by the way
+and deleted: the ticks, both buttons and the link before them were dropped, the teaching log said "you added a table
+row (row 4) and deleted it again", and every later run skipped that step. The shape of the presses cannot tell a delete
+from a bulk action; what the screen did can. A row is now dropped only on the recording's own evidence that it came and
+went: the step before the row's first one has a recorded result where that row's controls appeared, alone (no other row
+with it: not a table or page shown whole) and none of them disappeared (not a row drawn again), on the same page and
+window; and the press after the selection has one where the table shrank by it (a row at or after it disappeared and did
+not reappear, nothing new appeared). No result kept, or another page, is no evidence, and the steps stay
+(`_row_came`, `_row_went`).
+
+### A date both sides said the order of waited on the person, who was never asked
+
+Eval case ob-7 (2026-11-10): "Save voucher" was refused because which day "02-04-2027" is "cannot be told from here".
+Both sides could be: the field's own label read "Date (DD-MM-YYYY)", and the other bills of the folder the request named
+wrote 15-04-2027 and 22-04-2027 (a day above 12: day first) - but only attached files were read for the source's order.
+And the question waited "until you next ask them anything": the worker never used HELP, went round the save, and the
+unsettled date failed the read-back round after round. Now a date format in a field's label or placeholder states the
+application's order for a value laid out as it says (`values.stated_date_order`: three runs of D, M and Y read by their
+letters, never a list of formats; the placeholder comes from `cdp.FORM_FIELDS`), the files already in a folder the request
+names decide the source's order when the request and its own files say nothing, all agreeing
+(`task_context._derived_order`, reusing `records._request_folder_files`), and a refused save that still waits on the date
+question ends with an `ASKS_PERSON:` line (`core.person_ask_line`) on which soul's operator asks at once
+(`save_refusal.go`); `messaging.ask_for_query` sends the kept question in its own words, asked once as before. A two-way
+date is still never decided without an order. The `ASKS_PERSON:` half needs soul rebuilt (`go generate .`).
+
+### A replay's takeover entered again the bill the replay had saved
+
+The books curve (2026-11-10, a month of five bills): the taught replay saved bill 1072, then stopped at the next bill,
+and the model was told only "a replay ran up to step 68 ... carry on from step 68" - a number of the run's written-out
+steps, while the steps it was shown are the person's, and nothing of what was saved. It declared 1072 again as "V1072"
+from the same file and saved a second voucher (a Tab-Tab-Enter on the focused Save button, after the date question
+refused its clicks). Now the takeover note lists the task's record ledger (`records.ledger_lines`: "saved: KEY (from
+FILE) - saved and read back - never enter it again", and each record left) and places the step in the person's steps and
+its item and document (`skill_task._where_in_lesson`). A declaration from the same document that gives a saved record's
+own number field the same number is that record under another key (`records.saved_from_same_document` → the existing
+`_add_to_saved`: refused unless it adds fields). And the save of a new-record form holding a saved record's key in its
+own key field is refused even while another record is open, unless that open record is another document's and the form
+shows its key (`core._saved_again`); only the person's yes to a question naming the key lets it through
+(`records.person_asked_again`). Still open: Enter on a focused save button does not go through the pre-save checks
+(`core._commit_check`'s key path finds no form on a button) - the gate's to close.
+
+### A new customer's tax number was never resolved by the replay
+
+Same run: the next bill's customer was not in the "Party A/c name" list; the model made the ledger and its save was
+refused, "nothing in this task resolved 29AA...". Now, in a run done once per document, a per-item choice of a record the
+lesson made before the block (below) carries the identifier the item's own document gives that record
+(`skill_task._lookup_ids`, `skills.identifier_in`: the one token shaped like the lesson's identifier - same length,
+letters and digits in nearly the same places - that the run's other documents do not all hold, since every bill holds
+its sender's; none with one document alone, or with two candidates). When the choice by name misses, the replay searches
+by that identifier as `gui select REF NAME --id ID` does (`replay._run_step`): an entry holding it is the record whatever
+its name, and "no record holds it" is the task's fact the save of the new record then rests on. Known limit: a native
+`<select>` whose entries show names only writes "no record holds it" after reading every name
+(`selecting._select_native_by_id`); the identifier is not on those entries at all, so that fact is weaker than one from
+a list that shows identifiers.
+
+### The how-to called a missing list entry a question for the person, against the lesson
+
+Same run: step 4 of the takeover how-to said "if it stopped because a list has no entry for something, that is a
+question for the person (HELP)", while the person's own steps before the bills made a new customer's ledger. A record
+the lesson made before the per-item block and the block later picks by name is now found in the skill
+(`skills.made_before`: the run of steps up to a save that typed one of the items the block chose as recorded, with the
+identifier it typed); the how-to then says which steps made it and to make it the same way from this item's document,
+resolving its identifier first (`skill_task._made_how`). With what the person did between items it says to look there
+first; with neither it is the person's question, as before.
+
+### A key on a focused button skipped the pre-save checks, and a no did not hold the control
+
+Two holes found in the learning curves (2026-11-10).
+
+**Return on a focused button.** "Save voucher" was refused twice, then `Tab Tab Return` saved voucher 1072 a second
+time. The checks read an Enter only in a text field (`core._commit_check`), and the page's form read gives nothing
+for a focused button, so a key on a button passed every pre-save check, the "entered twice" guard among them. Now:
+- Return or Space alone on a focused button is checked as a click on it.
+- Keys that move the keyboard and then press, on a page that saves, are refused with the moving keys to send first;
+  the press that follows is then checked against the control it lands on.
+- The gate's question names the control such a key presses ("press Return in button "Verify"", not "in the screen"),
+  and the yes is bound to it.
+
+**A no did not hold the control.** In a return-prep eval, "Save to portal" was held only in runs whose plan of the
+work listed it. In others the reply to it was a refusal or "I don't know", and the worker pressed it again a moment
+later. Now `core._person_hold` puts the press to the gate whatever the plan says, when:
+- the person did not say yes to that control when the gate asked, in this task (`approval.declined_controls`, kept
+  by the gate, read only);
+- the worker's own question in this task named it and the reply did not say yes;
+- the person approved it while teaching (a taught step marked consequential, on the same site).
+
+Each only adds a question; nothing makes a yes.
+
+### An element read was a document to cover, and an unchanged review point went back round after round
+
+Found on the return-filing learning curve (2026-11-10): operator turns rose 67 -> 79 -> 103 -> 110 over four cases,
+mostly in review rounds.
+
+**Phantom documents.** The soul kept the output of `gui read e700` (what one element on the screen holds) as a
+*document* named "e700". The coverage check (`coverageGaps`) then sent the work back with "e700 (read; none of its
+figures went into what was entered or written)", three times in one case and three in the next. To settle it the
+worker read more elements, and each one became one more such "document". Now `gui read` is screen evidence (kind
+`screen`, source the active window), kept whole so one record's values in it still stand together. Only a file read
+(`office read`, a loop's reads) is a document the result must cover.
+
+**Unchanged review points.** One point was sent back three times with only `gui observe` between sends, then carried
+with the result anyway; in another case the work nudge repeated the settle nudge with no command between them. Now a
+point whose text and settle are word for word one already sent back is not sent again unless something that could
+settle it happened since (`Changes`: a command that does more than look, a source read, a reply of the person). It
+goes on the way it does when the send-backs are used up: a point that is the worker's to do is carried open with the
+result, a point to recheck by looking goes to the person. This never passes a finding; it only stops repeating it.
+A point reworded, or now carrying the person's answer, is a new point.
+
+### The OTP every run asks for made every run "helped", so the skill could never be trusted
+
+Found on the GSTR-1 learning curve (2026-11-10, eval run e1400a754a9e37de7): filing asks the person for the OTP on
+every run, by design. `learn_answer` counted every answer to the engine except the plan's plain yes as help, so every
+run was helped, the clean streak stayed 0, and every case ran on the model: no replayed step, tokens rising from 2.4M
+to 4.2M a case.
+
+Owner's ruling: an answer the rules require on every run is not help - the OTP or another secret given and nothing
+more, the gate's yes, the plan's yes, a hole in the series confirmed, picked entries confirmed, the date order. Help
+is a corrected value, data the documents should have held, a takeover, "do X instead", or a save after a send-back.
+Decided from which question was asked and whether the reply carried more (`engine_questions._required_every_run`,
+`note_approval`, `final_gate._helped`), never from a list of reply words. A secret reply is read with its digits
+masked and known secrets withheld, so no code reaches a model.
+
+The eval runner sent the expert's reply without the "secret" mark the control plane gives a person's reply when its
+records withhold it (C14.1), so on the curve the OTP arrived as an ordinary answer and the ruling alone would not
+have changed anything there. `eval.replyBody` now marks it exactly as `tasks.ReplyForm` decides.
+
+Two holes closed on the way: an approval answered "no, use the other button" never reached `learn_answer` and counted
+as no help; and a takeover sent back once was counted by the guidance mode alone, which the send-back resets to
+"model" (now `run["taken_over"]` counts too).
+
+### A lesson that named the OTP was taught with holes: "ask", possessives, codes and figures read [withheld]
+
+Found live on build 83f4a53d (2026-11-10), two lessons. The person's reply to a lesson's read-back, not marked
+secret, was stored "Only the client has the OTP: [withheld] me for it", "a [withheld] GSTIN" (receiver's), "Verify
+[withheld] app asks each)" ("(the"), and on the other lesson "Table 4A [withheld]" (B2B), "above [withheld]"
+(1,00,000), "amount times [withheld]" (100/118), "[withheld] round amounts" (tax-inclusive); 5 of one skill's 14
+rules carried the holes, and every later "ask" on that desktop read [withheld].
+
+Three rules on two sides did it. (1) The control plane's `withhold.Reply` withheld every word of a reply with a digit
+or a mark whenever the question's words named a secret - a word list over the question; a lesson's read-back says
+"the OTP" while explaining the work. The stored form then differed from the typed one, so the desktop was told
+"secret" (C14) and held the reply as a marked message (`privacy.remember_marked`, `marked_values`). (2)
+`REQUEST_SECRET` (and `withhold.Text`, soul's `RedactSecrets`) took the word after "OTP:" as its value whatever it
+was, so "ask" was remembered as a secret hash and withheld everywhere. (3) A hyphenated word of letters and a ratio
+had a value's shape, and an apostrophe between letters could open or close a quoted value.
+
+Now, by structure: a reply is withheld whole only where it answers a question asked for a secret (its `secret`) or
+the person marked it; `Reply`'s shape sweep is kept only for a bare answer (one line, at most 5 words: "552901",
+"it is 4821."), never for a reply that explains. A plain lowercase word running on into its sentence after a label
+("OTP: ask me for it", "the OTP is sent to") is an instruction (`privacy._runs_on`, `withhold.runsOn`, soul
+`memory.runsOn`); a value is digits, mixed, marked, quoted, or stands alone at the end of its clause. An apostrophe
+between two letters is part of its word, never a quote mark. Letters joined by hyphens are not value-shaped, and one
+figure over another is data (`_value_shaped`, `_is_data`, Go `valueShaped`, `isData`; shared vectors in
+`internal/withhold/testdata/marked-values.json`). Tests: `agent/tests/test_lesson_reply_not_secret.py`,
+`internal/withhold/withhold_test.go`, `internal/tasks/withhold_reply_test.go`,
+`agent/thebot/internal/memory/secrets_test.go`.
+
+Kept on purpose: "password: tiger then sign in" (a plain lowercase password followed by more words) is now read as an
+instruction - the protection for an unlabelled secret is the person's "secret" mark or the question's, not the text.
+A desktop that already remembered "ask" keeps the hash in `~/.decurix/withheld-secrets` (rolling, 200) until it is
+recreated; lessons taught with holes must be taught again.
+
+### A replayed "Save to portal" and the OTP "Verify" were pressed with no yes
+
+Asked whether the gate holds a replayed commit whatever the skill says (2026-11-10), a test on the real path
+(`core.act(check_form="replay")`, only the screen and the page mocked) found it did not, by click or by Return. The
+skill's `consequential: false` was not the cause; the gate's own judgement was. A "Save" is a commit by its words but
+never a person's question, "Verify" is not a commit word at all, and a replay's sourced save asked nobody. Now:
+- a code the person gave in the task (an OTP, a PIN) authorises the act its form does, and is asked every time;
+- the lesson's confirmed approvals hold their controls in every run, whatever the steps' flags say;
+- until a skill has a confirmed approvals answer, every replayed save of a filled form is asked.
+
+The first version of that test gave every element the same ref, so its "click" pressed a text field. A gate test
+must resolve to the control it means: check what `act` pressed, not only that it was stopped.
+
+### Which steps need the person's OK, said in their own words, was kept as text and the recorder's guess was saved
+
+Found live (2026-11-10, a lesson on a return filed from its books, desktop s2gstr, task tdf028b815bd16d50). There
+was no question about which presses need the person's OK: the lesson had only "check with you before I start?". The
+person said it anyway, in their explanation at the first question: "Don't stop at the summary page or before Proceed
+to file" and "Ask me for approval only before Save to portal, before File with EVC and before Verify. Everything else
+needs no approval." It went into `explanation` only. The skill was saved with the recorder's own gates - 55 (Proceed
+to file / summary) and 59 (File with EVC) - and not 42 (Save to portal) or 63 (Verify); the last question even said
+"I will always stop and ask you before: 55 ...; 59 ...", and the person said yes to the name, not to that list. (The
+follow-up first said the reader answered "I did not catch that"; the task's chat shows no such reply - the words were
+taken silently as the explanation.)
+
+Now the lesson asks it (`gates`, learning.py), and reads any earlier answer that names a step for it (`take_gates`).
+Two decisions, kept apart: what the person *means* (ask / do not ask) is read from their words - plain choices and
+numbers in code, anything else by the model, which only copies names the reply itself says; *which steps* those are
+is decided in code from each step's recorded label (whole, a part split at `/`, `:` or ` - `, its first two words or
+more, or the label said inside a longer phrase; a press before a field of the same name). The mapping goes back in one
+line and only a yes keeps it; a name no step has is asked about alone. Mapping by the model would have been a guess
+that no one sees; mapping by a list of words would fit one app.
+
+A confirmed answer is also kept whole as `skill["approvals"]`, the gate's own record of what the person asked for
+(`core.skill_approvals`): a later edit of a step's flag removes nothing. Nothing the lesson stores lowers the gate.
+Tests: `agent/tests/test_lesson_gates_own_words.py` (the live question, reply and steps word for word in
+`fixtures/lesson-gates-live.json`).
+
+### A line's quantity, 1 on both lines of the one bill shown, became a constant nobody was asked about
+
+Found live (2026-11-10, a supplier's bill taught as `enter-vendor-bill` on desktop erpcurve, task t0b29145db886cdfa).
+The bill had two lines, both of quantity 1. When the loop was answered `each`, `_apply_loop` saw the quantity typed
+the same in every repetition and kept it as "procedure, not data" (`varies: false`, default 1), silently. The
+"which of these change?" question had been asked before the loop, so it listed only the six values outside the
+lines, and the person could not say the quantity changes: every later bill would have been typed with 1 on each line.
+
+One demonstration cannot tell a value alike by chance from a value alike by rule. Now a value alike in every
+repetition stays a list with `varies` undecided; the values question waits for the loop answer and lists it as "same
+for every line, or read from each line?"; unanswered it is read from each line, and only the person's own `same` (its
+number, or `all same`) makes it a constant - not being one of "the others" of "1 and 2 change". Whatever is decided
+from one sample is a question, not a fact. Tests: `agent/tests/test_lesson_line_values_and_left_out.py`.
+
+### "Step 20 and step 29 were glitches - skip them" became a rule, and the replay still clicked both
+
+Same lesson. Asked whether a re-entry was a glitch, the person said "Step 20 (clicking 'Add multiple') and step 29
+(the drag) were glitches from the same lag - skip them". The study folded it into a rule ("do not click the 'Add
+multiple' button"); nothing touched the steps, so the saved program still clicked Add multiple and dragged at 491,365,
+and a rule the run reads cannot stop a replay that does not read it. Now the same reading that finds which steps need
+an OK (`take_gates`) lists the steps an answer says to leave out - plain "skip 20 and 29" in code, other words by the
+model, which copies names; code maps them to steps by number or recorded label (`_steps_named`). They are put back in
+one line ("I will leave out step 20 Add multiple and 29 drag 491,365 to 680,316 - right?") and a yes takes them out
+of the steps and of the loop's gaps; a name no step has ("the drag": a drag has no label) is asked about alone. The
+words stay as a note. A person's instruction about a step belongs on the step, not only in prose beside it.
+
+### A replayed coordinate click sent the person's OTP with no yes
+
+A lesson recorded an OTP form's "Verify" only as a click at 54,384 (the form's control names were withheld at record
+time), and the person's approvals named it as "step 86" with no control. On a replay where the look listed nothing at
+that point, the commit checks were skipped (they ran only for a click with an element), the page's own name for the
+button came too late to matter, and a hold by name had no name to hold. Resolve a point to its control before any
+check (`core._gate_spot` first), hold a step the person named by its place (`core._step_hold`), and treat "can't tell
+what's there" as ask (`core._unidentified_hold`). Before a curve, run the dry `holdcheck` on the stored skill.
+
+### A case's mock app outlived it and served the next cases
+
+An eval run's books curve (2026-11-10, under heavy load): ob-5's bundle pull used up the one 60-second clean-up context
+it shared with unpausing, the ledger read and the mock's removal, so RemovePractice ran on a spent context and failed
+silently. Every case's mock answers to the run's one name (PracticeMockHost), so Docker's DNS spread ob-6..ob-9's
+requests between their own mock and ob-5's: vouchers went to the stale app, and its older company period refused April
+and May bills. Now the mock is removed on a context of its own and a failure is logged (runner.go), and
+StartPracticeMock first removes any mock this control plane started for the same run (removeRunMocks: by the run and
+mock labels, only its own). Tests: TestACaseMockIsRemovedEvenWhenItsBundlePullTimesOut, TestPracticeMockAndCollection.
+
+### "Skip steps 13-16" put back only 13 and 16, and leaving out two steps of a repetition crashed the lesson
+
+Found live (2026-11-10, the bill lesson taught again on desktop erpcurve2, task tf18e6dc0fe52f44b). Three faults in one
+exchange. The reading of "skip steps 13-16" was checked against the reply word by word, and 14 and 15 are not words of
+it: only the range's ends were put back. The person's correction "leave out 13, 14, 15 and 16 - all four were the
+due-date try that did not take" was not read as plain numbers because of its explanation, and a yes-like reading of it
+took the old line. Then 13-16 and 17-20 were two repetitions of one loop: with 13 and 16 gone, the loop's template
+typed where the shortened repetition had a key press, and reading that press's typed text stopped the lesson
+("internal error: 'samples'").
+
+Now a number inside a range the reply says counts as said, and a range is mapped to every step in it (never a date's
+"01-10"); a reply to the steps put back is read without its explanation, and steps it names that are not on the line
+yet are added and put back again; a loop some of whose steps are left out keeps only the repetitions that still line
+up kind by kind with the one most share (no loop if fewer than two), and no reader of a loop's aligned steps reads a
+step of another kind. A structure edited by a person's answer must be checked for the invariants its readers assume.
+Tests: `agent/tests/test_lesson_line_values_and_left_out.py` (`LeftOutOfARepetition`, the live replies word for word).
+
+### A worker's question held every control whose name stood in it
+
+Found live (2026-11-10, freeze 2.2). The worker asked 'I need approval before clicking "Save to portal" for Sahyadri
+Lift Services' January 2027 GSTR-1' and the reply was "I don't know". The gate then asked properly and Save went
+through, but the client's breadcrumb link, the next taught step, was held for the rest of the run: the hold for a
+non-yes to the worker's own question (`core._person_hold`) took any control whose label stood whole in the question.
+"Which company should I use?" held the company's link the same way. Now a worded question holds only the control it
+asks to press, the object of a press verb (`approval.asks_to_press`: "click / press / tap / submit / approve [the]
+X"). A link the page says only goes to another page (`core._only_navigates`) is never held by such a question. The
+gate's own declines, taught approvals and secret-carrying submits are unchanged. Tests: `agent/tests/
+test_keyed_press_and_holds.py` (`WhatThePersonSaidHoldsAPress`).
+
+### The scripted expert answered a worded request for approval with "I don't know"
+
+Freeze 2.2, gstr curve og-5: the worker asked in words "I need approval before clicking "Save to portal" for <client>
+...". The expert answered only approval cards with a yes, so a query got "I don't know", a non-yes that armed a hold.
+A person who approves Save to portal on the card says yes when asked in words too: confirm.go approvalReply answers
+"Yes, go ahead." when the question asks to press only controls the case approves (the quoted label after a press verb),
+and nothing otherwise. Test: TestTheExpertApprovesAWordedAskToPressAnApprovedControl.
+
+### A save answered after its look was reported "declared but never saved"
+
+Found live (2026-11-11, ERPNext curve, bill 09). The look after Save is taken as soon as the screen is quiet
+(SETTLE_QUIET), and ERPNext disables Save while its server works: the screen was quiet with the save on its way, and
+the action said only `button "Save" [-] -> [disabled]`. The page moved to .../PINV-26-00002 four seconds later, but the
+read-back runs only on a save's own answer, so the ledger kept saved_at null and the review said the bill was never
+saved. A save press (Ctrl+S, Save/Replace/Yes, a control named Save... or Submit...), on any page, whose first look
+shows no answer (no saved/refused words, no message or dialog, same address and window) is now watched for up to
+SAVE_SETTLE_SECONDS, and the look that answers it is the result (`core._await_save_answer`). A save on a new record's
+page still unanswered is kept (`pending_save.json`): the next look of the same tab that shows a record's own page, with
+no press and no `gui open` between, reads the record back (`core.pending_save_readback`, from `gui observe`, `gui
+verify` and the next action's before-look). `records.readback` stays the only setter of saved_at. The declaration made
+before the form existed (window "") did not matter: `open_record` falls back to the latest unsaved record. Tests:
+`agent/tests/test_async_save_seen.py`.
+
+### A bill with no due date sent the whole run to the model, and "leave it as the app fills it" counted as help
+
+Found live (2026-11-11, ERPNext curve, bill 09, task t7455c3b2178a35ee). The bill gives no due date, so `due_date`
+stayed in `skill_task._still_missing`, and a declared apprentice run replays only when nothing is missing
+(`_learning_by_model`): "The documents do not give due_date - working from the documents themselves" handed the WHOLE
+run to the model. The model asked what due date to enter, the person answered "leave the Due Date as ERPNext fills it
+in", and the run was marked helped - while the application had filled the field itself (step 36: "" -> "10-11-2026")
+the moment the supplier was picked. `binding.EMPTY_ITEM` covered only a list's item, and `left_blank` needs the field's
+place on the document. Owner's ruling: a value the documents lack that the person leaves to the application is a
+standing decision, not data. Now, where that one field is all that keeps the run from replaying, the run asks about it
+alone (`_ask_lacking`: "Reply 1 to leave the field "Due Date" as the application fills it in ... or reply with the Due
+Date to enter"), read once (`approval.read_choice`). A leave is no help: the field is left out of the replay
+(`skills.expand` with the value EMPTY_ITEM: `skills.left_alone` drops the step that types or picks it and every check
+that names it) and of the declaration, and the decision is kept on the control plane as a field answer marked
+`left_to_app`, derived from the person's reply (`person_record.keep_left_to_app`; the control plane holds its option -
+the reply itself - to the judgement's text and its label to the question). A later run of the same skill whose
+documents again lack that field applies it and asks nothing (`_apply_kept_left`, only where the question the person
+answered holds that field's leave sentence). A value given is help and is typed. A save the application refuses for
+want of the field halts the replay and the model takes over, told never to make a value up (`_left_note`). Lists, rows
+of a repeated part, secrets, files and addresses are never offered the leave. Tests: `agent/tests/
+test_taught_record.py` (`ALeftField`, `AFieldLeftOutOfTheReplay`).
+
+### Every approval was asked twice: once in the worker's words, once on the gate's card
+
+Found live (2026-11-11, freeze 2.3, gstr curve og-5, run eb373c1e0c0cc55bd). The lesson's rule "ask the person before
+clicking Save to portal / File with EVC / Verify" made the taught worker ask in words ('I am about to click "Save to
+portal" ... May I proceed?'), and the gate then held the press and asked again with its own card. Each approval cost
+two questions, the worded ones counted toward the case's question cap, and the run ran out of questions at Verify.
+Owner's ruling: a worded ask to press a control the gate itself will hold is answered by the question path
+(`engine_questions._answers_a_held_press`, in `_question_gate`): "The approval gate itself asks the person when you
+press "X" - press it, and the person approves it there". It is not sent to the person, not counted, not help, and no
+reply is noted, so nothing can stand as a yes; the press still goes through the gate, which asks with its card. "Held"
+is the gate's own code, not a copy: the question asks to press a control on the screen the engine last looked at
+(`approval.asks_to_press`, the longest label), and every control there with that label is held by `core._person_hold`
+(the skill's confirmed approvals, steps approved while teaching, a no in this task) or by `approval.assess` in the
+context that lifts the most (submits nothing, a link that only navigates). A hold only the press itself can find (a
+form carrying the person's OTP, a replayed step, the plan's ask-first list), a control not on the screen, or a question
+that only names the control goes to the person as before. A planned run's stage keeps its own way. At most 12 a task.
+Tests: `agent/tests/test_keyed_press_and_holds.py` (`AWordedAskTheGateHolds`).
+The same expert missed the next ask (freeze 2.3, og-5): "I am about to enter the OTP and click Verify" names Verify
+without quotes, so it got "I don't know"; and every worded ask counted toward the case's question cap, which ran out
+at Verify. Now an approved control named right after a press verb, quoted or not, is an approval ask
+(asksToPressUnquoted), and a worded ask the expert approves is counted with the gate's cards (maxListedApprovals),
+never toward MaxQuestions.
+
+### A worker piped its own JSON file into inline python3 to re-check it, and the guard ended the case
+
+Found live (2026-11-11, freeze 2.4, og-5). To re-check a JSON file it had exported, the worker ran `cat "<file>.json" |
+python3 -c "import json,sys; d=json.load(sys.stdin); ..."`. The command guard (frozen) holds code piped into an
+interpreter for the person ("it runs code piped into an interpreter", `safety.indirectRules`), so a read became an
+approval and the case ended. The worker had been taught the read tools only for documents, and the hint for a missing
+`jq` even suggested `python3 -c "import json,sys; ..."`, the piped form. Coordinator's ruling: the guard stays as it
+is; the guidance sends reading to the read tools. `operatorContract` now says, in the fixed part every call starts with,
+to read or re-check a CSV, JSON or text file with `office read`, `jq` or `cat`/`head`/`grep`, to write interpreter
+code only for what they cannot do, letting it open the file by its path, and never to pipe a file into an interpreter
+(the person is asked first). The missing-`jq` hint now offers `office read` and `python3 -m json.tool <file>`, never a
+pipe. What the guard holds is narrower than "any inline code": a pipe into an interpreter (`| python3 -c`, `| python3`,
+`| node -e`; `| python3 -m MODULE` is let through), and `-c`/`-e` code that deletes files or shells out; plain
+`python3 -c "... open(path) ..."` and a `python3 - <<'PY'` heredoc run. `jq` is in the shared tools volume
+(`docker/tools.Dockerfile`, `/opt/tools/bin`, on the desktop's PATH), not in the desktop image itself. Tests:
+`agent/thebot/internal/skills/operator_office_test.go` (`TestOperatorContractReadsAFileWithItsReadTools`).
+
+### An approval the case did not list ended the eval case, where a person would have said no
+
+Found live (2026-11-11, freeze 2.4, gstr1-books og-5): the frozen command guard held a read-only shell command with
+inline Python, the gate put it to the person, and the eval runner refused every approval its case did not list by
+ending the case. The row measured the guard, not the worker: a person would have said no and the worker would have
+routed around. Coordinator's ruling: on an arm with the scripted expert, a gate-signed approval the case does not list
+is declined (`eval.ApprovalNo`, "No, do not.", a plain no the gate settles in code) by the route the expert's yes takes
+(`practice.ApprovalGateNotice` bound to the gate's request id and words, then the reply), so the gate notes the control
+declined for the task and nothing is granted; the case goes on. Bounded like listed approvals (40, counted apart; the
+41st ends it "too many declined approvals"), and counted in the row as `q_declined` (a new appended Migrate step), never
+as required or other. Still refused, ending the case: a question the gate did not sign (gate integrity, not a person's
+no), any approval on an arm without the expert, and any approval in a case that expects to stop at the gate (its
+`stopped_at_approval` grader measures that stop). Tests: `internal/eval/loop_test.go`
+(`TestAnUnlistedApprovalIsDeclinedAndTheCaseGoesOn`, `TestDeclinedApprovalsAreBounded`,
+`TestACaseThatExpectsTheGateStillEndsThere`), `internal/eval/fromworker_test.go`
+(`TestTheDeclinedColumnMigratesAnExistingDatabase`).
+
+### A Docker blip read as "this address is not a desktop's", and a desktop's task failed on a 403
+
+Found live (2026-11-11, decurix-dev, freeze 2.4, ERPNext bill 10, load 34-38): Docker stopped answering the control
+plane for seconds at a time (`_ping deadline exceeded`; `use of closed network connection`), and a worker's model call
+through `/api/llm/...` was answered 403 "this address is not a desktop's". The worker rightly took a 403 as final
+("a step failed in a way retrying cannot fix") and the task failed. Cause: `fetchCallers` turned a failed
+`ContainerList` into an empty map, stored as a fresh answer, so `DesktopAt` could not tell "Docker said no desktop has
+this address" from "Docker could not be asked". Now `Manager.CallerAt` returns `desktop.ErrCallersUnread` for the
+second, and `GuardPrimary` answers it 503 "the desktop list could not be read; try again" with `Retry-After: 5`; only
+Docker's own answer that no desktop has the address is 403. Rule chosen: a failed question keeps the last map Docker
+gave with its own read time and generation, and that map still names a desktop it held only while it is younger than
+`callerTTL` (15 s) and of the current desktop list - exactly the trust a known address already had with Docker up, so
+nothing is let in that was not before; an address the last map did not hold, a map past `callerTTL`, or a desktop made
+or removed here since, is 503 (never served). A longer stale window (60 s) was rejected: it would trust an address that
+Docker may have handed to another container. No worker change was needed: soul's providers already treat 503 as
+transient (`llm.Transient`; the OpenAI provider asks again three times honouring Retry-After, then the operator's turn
+loop up to 8 tries over minutes), Python's `llm_client` retries 503 within 240 s, and 403 is never retried. Tests:
+`internal/desktop/netview_test.go` (`TestCallerAtTellsUnreadFromStranger`), `internal/httpapi/guard_test.go`
+(`TestGuardAnswersAnUnreadDesktopListWithTryAgain`), `agent/thebot/internal/llm/retry_test.go`
+(`TestTheControlPlanesTryAgainIsAskedAgainItsRefusalIsNot`, pins behaviour that already held).
+
+### A link from an unsaved form to the list was read back as the bill's save
+
+Found live (2026-11-11, ERPNext, bill 10 retry, freeze 2.4). On an unsaved bill's form the worker clicked the
+breadcrumb link "Purchase Invoice"; the page went to the list (".../purchase-invoice?bill_no=..."), and the step said
+"Record SC/TAX/26-27/104: saved; the page now shows 0 of 3 declared value(s)" for a bill ERPNext never had. The
+trigger was `core._saved`: the list's button "Saved Filters" appeared, and a control's label was read as the page's
+answer. `_became_a_record` was as loose: it took the last "/"-part of the whole address, so a list whose query string
+holds "/" and digits ("?bill_no=SC/TAX/26-27/104") passed for a record's page. Now: a saved answer is looked for only in
+what the page said, never in a named control's label (`_NAMED_CONTROL`), and never after a click on a link that names
+no save (`_link_press`); a move to a record's page counts only after a press that may save (`_commit_press`: Save/
+Submit, Ctrl+S, Enter, a non-link control named for keeping a record) and only when the path's last part changed from
+the new-record marker to an id with the same origin and parent (`_new_to_record`; a query or a list is never a record
+page); and `records.readback` refuses a page that shows none of the record's values, its key or its lines ("NOT
+saved", saved_at untouched). The pending-save look obeys the same rules. Tests: `agent/tests/test_async_save_seen.py`
+(`ANavigationIsNoSave`).
+
+### "Finish the quickest sure way" invited a worker to go around the boundary when time ran short
+
+Freeze 2.4: the time note told a worker with little time left to "finish the quickest way the request allows". Under
+that pressure a worker may reach for what is quicker than the screen: another user, a process's socket, an app's own
+API around its window. The OS refuses these (docs/gate-boundary.md), but trying them is already the wrong behaviour,
+and a refused probe gave the person no sign. Now the note says to finish with the worker's own tools, or to stop and
+report what is left, and names what never to do. The operator's contract says the same as a standing rule. And a
+tripwire in soul (`skills/boundary.go`, outside the frozen guard) catches the clearest attempts: another user,
+attaching to a process or reading `/proc/<pid>/environ|mem|fd`, a unix socket driven by hand, the gate's or broker's
+folder or the agent token, a desktop service's loopback port, the browser's debugging flags. Such a command is not run,
+and the task ends failed as a "boundary attempt", with the command shown to the person. Each rule names a mechanism of
+the desktop itself; the text a `gui type` types is left out first. Tests: `boundary_test.go`,
+`operator_time_test.go` (`TheOperatorIsToldOnce`).
+
+### A narrowing of a frozen rule let piped code run through a named module
+
+O-1.a.6 stopped holding a pipe into Python when its module option named a module, on the premise that the pipe is
+then only that module's data. It is not: some standard-library modules (the interactive console, the async console,
+the debugger) read and run Python source from standard input, so arbitrary piped code ran unheld. The owner reverted
+the narrowing on 2026-11-11: any leading option on a piped interpreter is held again (`TestPipedInterpreterHoldsAnyNamedModule`).
+A narrowing of a frozen rule must be checked against every way the named program can still read code from the pipe.
+
+### Freeze 2's fixes for practice loosened what is withheld and what is asked (review of freeze 2, 2026-11-11)
+
+A read-only audit of the freeze-2 commits found exemptions that each fixed one live case by loosening a rule for
+everyone. Each is reversed, or narrowed to what structure proves, with a test that fails on the old code:
+
+- **Secrets (A1-A3).** A plain word running on after "password:" was taken for an instruction, so "password: letmein
+  then press login" was kept. A hyphenated passphrase lost its value's shape. A reply of more than five words to a
+  question naming a secret was not swept, so "the OTP is 552901, go ahead" was kept. All three now over-withhold again
+  (`privacy.py`, `withhold.go`, `marked.go`, soul `memory/secrets.go`). A lesson stays readable through structure
+  instead: the desktop is told a reply is secret only by the person's mark or a question asked for a secret, and a
+  reply to the learner's own read-back is never marked for the words the records withhold
+  (`tasks.Store.MarksSecret`).
+- **The gate (A5-A7).** A button whose label read like "opens a new record" passed ("Create Payment Order" in an app
+  that submits by script). A link counted as a step into a page when that page was itself the act ("Proceed to pay",
+  "Continue with purchase"). A link with a click handler or `data-method` counted as navigation. A form holding an OTP
+  the person gave counted as a sign-in. Now:
+  - a button is judged by its label, and "create ... payment" commits;
+  - only a step into a checkout or a filing's page is exempt (`STEP_INTO_PAGE`);
+  - a link counts as navigation only with no inline handler, no request-sending attribute and no press listener
+    anywhere from the control up to the window (`cdp.link_target`);
+  - a form that may hold one of the person's secrets for this task is an authorisation, not a sign-in.
+- **Questions (A8, A10).** An engine question asking to press a held control was answered locally even when it also
+  carried a figure or a doubt; now only a bare "may I press X" is. A series that skipped more than three numbers was
+  treated as no series, and nothing was asked. Now any hole is asked about, naming the first five and counting the
+  rest.
+- **Backing (A11, A12).**
+  - Only the entry a pick took backs its value, not every entry the list offered.
+  - A wrapped table cell is held to one region of the text, and to lines next to each other, never to a span of
+    characters.
+  - An "(empty)" place is proved only by a row whose cells the text marks.
+  - A folder the request names gives only its own top-level files, and a document of another period is never this
+    run's.
+  - A kept answer with no party never backs a pick made for a party.
+- **No coupling (B).** The harness held the eval expert's exact "can't check" sentence. That reply is now read like
+  any other. Product and case names in harness comments now describe the shape of the case, not the instance.
+
+Tests:
+- `test_lesson_reply_not_secret.py`, `withhold_test.go`, `withhold_reply_test.go` (`OnlyStructureMarksALessonReplySecret`)
+  and `secrets_test.go`;
+- `test_gate_false_asks.py`;
+- `test_keyed_press_and_holds.py` and `test_series_gaps.py`;
+- `test_filler_list_pick.py`, `test_wrapped_cells.py`, `test_empty_list_item.py`,
+  `test_pick_backed_by_request_folder.py` and `test_pick_confirmation.py`;
+- `test_not_confirmed_reply.py`.
+
+## A party check that read "record only" as a party (2026-11-11)
+
+Freeze 2.5's A12 fix stopped an answer kept before answers carried their party from backing any pick "made for a
+party". But a record whose form names no party is given the stand-in party `record:...` (records.picks), so the check
+also refused such a row for every record with no party at all, and a person's kept field answer ("cost centre:
+General") was asked again on every bill. Fix: the A12 skip applies only to a real party, never to a `record:` stand-in
+(records._kept_answer). Caught by two older tests (round 11/12) in the full Python suite, not by A12's own test.
+Lesson: a sentinel value standing for "none" must be tested on every truthiness check that a new rule adds.
+
+## The installer left WSL and virtualization to the person (2026-11-11)
+
+On a customer's PC the person had to install WSL and turn virtualization on by hand: the installer only copied files,
+and turning WSL on was left to the app's first start, behind prompts and restarts the person had to work through. Fix: the installer runs
+`wsl/prepare-windows.ps1` (features, WSL from GitHub, the boot setting), offers the reboot on its finish page, and
+explains the one thing Windows cannot do - virtualization off in the firmware. Traps found writing it:
+- The NSIS installer is 32-bit, so `$SYSDIR\...\powershell.exe` is the 32-bit one, whose `dism.exe` refuses a 64-bit
+  Windows and which has no `wsl.exe`: start `Sysnative`'s, and the script relaunches itself 64-bit as well.
+- `Write-Output` inside a PowerShell function is part of the function's return value: a logged line would have
+  turned an exit code into an array (caught in review). Log with `[Console]::Out.WriteLine`.
+- Windows PowerShell 5.1's `ConvertFrom-Json` hands a JSON array on as one item; `@(... | ConvertFrom-Json)` makes
+  that one item a one-element array. Assign it, then `foreach`.
+- A bit-coded exit code needs a base: PowerShell exits 1 for a script it will not run (an execution policy set by
+  Group Policy overrides `-ExecutionPolicy Bypass`), and 1 was "restart needed". The answer is now 100 plus bits.
+- Changing a boot setting (`bcdedit`) on a BitLocker drive can make the next start ask for the recovery key: pause it
+  for one restart first (`Suspend-BitLocker -RebootCount 1`, or `manage-bde -protectors -disable`).
+- `Win32_Processor.VirtualizationFirmwareEnabled` and `VMMonitorModeExtensions` read false while a hypervisor runs
+  (it hides them): they mean "off in the firmware" only when `Win32_ComputerSystem.HypervisorPresent` is false.

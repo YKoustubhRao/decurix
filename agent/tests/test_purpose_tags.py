@@ -52,6 +52,7 @@ PURPOSES = {
     "py.kept_facts",          # kept facts: what a request's answers teach
     "py.playbook",            # playbooks: a proven way of doing a kind of task
     "py.study",               # study: what a demonstration teaches
+    "py.lesson.gates",        # learning: which steps a lesson reply says need the person's OK
     "py.tool.args",           # tool_task: a learned tool's arguments
 }
 

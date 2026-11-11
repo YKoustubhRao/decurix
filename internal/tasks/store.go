@@ -247,6 +247,9 @@ type Outcome struct {
 	// Secret: a query raised for a secret (the agent knows where its question came from); the person's reply to it
 	// is kept as withhold.Secret in every record, and reaches the desktop as typed.
 	Secret bool
+	// Interrupted: the desktop restarted under the task and its agent reports it, after the fact - the task stopped
+	// part way, which is no failure of the work: it is recorded as stopped (StatusAbandoned), never as failed.
+	Interrupted bool
 }
 
 // Route is where a human request goes: a new task, the reply to a task's open
@@ -685,6 +688,25 @@ func (s *Store) IsOpen(workerID, taskID string) (bool, error) {
 	return true, nil
 }
 
+// Waiting returns the tasks whose execution on a worker waits on a human (a question or an approval it asked), oldest
+// first. A desktop that comes back from a restart is asked whether it still holds each: a question its agent no
+// longer has is closed by the agent's own report (found live 2026-11-09: a task read "waiting on you" for good over a
+// question the restarted agent had forgotten).
+func (s *Store) Waiting(workerID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ids, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (string, error) {
+		var id string
+		err := r.Scan(&id)
+		return id, err
+	}, `SELECT task_id FROM executions WHERE worker_id = ? AND status = ? ORDER BY started_ns`, workerID, StatusWaiting)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: listing waiting tasks: %w", err)
+	}
+	return ids, nil
+}
+
 // LastActivity returns when a worker's task records were last touched - a
 // task created, started, finished, or reopened by a human's reply - or
 // ok=false when the worker has no task records at all yet. Used by
@@ -805,6 +827,47 @@ func (s *Store) StoredForm(route Route, text string, marked bool) (string, bool)
 		}
 	}
 	return stored, stored != text
+}
+
+// LearnEngine is the engine a desktop names while it is being taught (the agent's LEARN_ENGINE): its questions are
+// the lesson's read-back, whose replies are what the worker is taught.
+const LearnEngine = "learn"
+
+// MarksSecret reports whether content sent along route goes to the desktop marked "secret", so the desktop holds it
+// and its value-shaped words as secrets (C14.1). The records may withhold more than this (StoredForm): the mark rests
+// on structure. It is set by:
+//   - the person's own mark;
+//   - a question asked for a secret;
+//   - for anything else, whatever the records withhold - except a reply to a question the learner asked that was not
+//     asked for a secret, which is never marked by the words withhold finds in it.
+//
+// A lesson's reply that names the OTP while explaining the work had every code, amount, ratio and hyphenated word of
+// it held as a secret, and the lesson read "[withheld]" (found live 2026-11-10; review of freeze 2). Its labelled
+// secrets ("password: x") are still withheld on the desktop by the desktop's own privacy rules.
+func (s *Store) MarksSecret(route Route, content string, marked bool) bool {
+	if marked {
+		return true
+	}
+	_, withheld := s.StoredForm(route, content, false)
+	if !withheld {
+		return false
+	}
+	if route.Kind != RouteReply {
+		return true
+	}
+	var askedSecret bool
+	var engine string
+	err := s.db.QueryRow(`SELECT i.secret, e.engine FROM interventions i JOIN executions e ON e.id = i.execution_id
+		WHERE i.execution_id = ? AND i.replied_ns = 0 ORDER BY i.requested_ns DESC LIMIT 1`, route.ExecutionID).
+		Scan(&askedSecret, &engine)
+	if err != nil && route.InterventionID != "" {
+		err = s.db.QueryRow(`SELECT i.secret, e.engine FROM interventions i JOIN executions e ON e.id = i.execution_id
+			WHERE i.id = ?`, route.InterventionID).Scan(&askedSecret, &engine)
+	}
+	if err != nil {
+		return true // the question is unknown: marked, as the records withhold it (fails closed)
+	}
+	return askedSecret || engine != LearnEngine
 }
 
 // commit is Commit's body. It may withhold *stored further (a reply to a question asked for a secret), and leaves in
@@ -1291,6 +1354,10 @@ func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (str
 		status := StatusDone
 		if outcome.Kind == OutcomeError {
 			status = StatusError
+		}
+		if outcome.Interrupted {
+			// Found live (2026-11-08): two bills saved correctly before a restart read "Failed" in their records.
+			status = StatusAbandoned
 		}
 
 		if _, err := tx.Exec(

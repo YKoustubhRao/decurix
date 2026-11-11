@@ -30,6 +30,12 @@ type Asked struct {
 	Fact     string   `json:"fact"`
 	Required bool     `json:"required"`
 	Reply    string   `json:"reply,omitempty"`
+	// Confirm is "plan" or "done" when the question only asked the person to confirm the worker's own reading and the
+	// scripted expert answered it as confirm.go says (never a person: plan rule 5).
+	Confirm string `json:"confirm,omitempty"`
+	// Declined is a gate-signed approval the case does not list, which the expert answered no (ApprovalNo) and the case
+	// went on: counted apart (q_declined), never as required or other.
+	Declined bool `json:"declined,omitempty"`
 }
 
 // Evidence is what the runner collected for one case, never the worker's claim alone.
@@ -71,10 +77,12 @@ type Check struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// QuestionCount splits a case's questions by whether the chosen fact was required.
+// QuestionCount splits a case's questions by whether the chosen fact was required; approvals the expert declined are
+// counted apart.
 type QuestionCount struct {
 	Required int `json:"required"`
 	Other    int `json:"other"`
+	Declined int `json:"declined"`
 }
 
 // Result is the grader library's decision on one case.
@@ -188,7 +196,9 @@ func Grade(c Case, ev Evidence, mode Mode) Result {
 		r.Problems = append(r.Problems, fmt.Sprintf("Saved besides what the case grades: %s.", name))
 	}
 	for _, q := range ev.Questions {
-		if q.Required || q.Kind == ObservedApproval || q.Secret {
+		if q.Declined {
+			r.Questions.Declined++
+		} else if q.Required || q.Kind == ObservedApproval || q.Secret {
 			r.Questions.Required++
 		} else {
 			r.Questions.Other++

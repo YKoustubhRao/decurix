@@ -14,7 +14,9 @@ calls it directly; remote() is False).
 
 What goes over: one JSON line with the call's arguments to the child's stdin, then JSON lines back on its stdout -
 {"result": ...} or {"error": {...}} at the end, and on the way, for a replay, {"report": line} and {"ask": {...}} (the
-escalation ladder asking this desktop's engine, which the caller answers with {"answer": text} on the child's stdin).
+escalation ladder asking this desktop's engine, which the caller answers with {"answer": text} on the child's stdin;
+an ask that carries its question's "evidence", from a ladder whose caller lets soul word and read it
+(escalation.soul_escalates), may be answered with soul's "decision" beside the text).
 Values that JSON has no form for are tagged ({"__dx__": kind, ...}): a screenshot Frame, bytes, a set, a tuple, a dict
 whose keys are not all text.
 
@@ -288,10 +290,11 @@ def call(name, *args, **kwargs):
     return exchange(name, {"args": list(args), "kwargs": kwargs}, files=named_files(name, args, kwargs))["result"]
 
 
-def exchange(name, request, on_ask=None, on_report=None, files=()):
+def exchange(name, request, on_ask=None, on_report=None, files=(), on_decide=None):
     """
-    One call: `request` to the broker's child, the messages it sends answered (on_ask) or passed on (on_report),
-    and the last message returned: {"result": ...} and, for a replay, the ladder's state.
+    One call: `request` to the broker's child, the messages it sends answered (on_ask, or on_decide for an ask with
+    its evidence) or passed on (on_report), and the last message returned: {"result": ...} and, for a replay, the
+    ladder's state.
     """
 
     try:
@@ -312,7 +315,7 @@ def exchange(name, request, on_ask=None, on_report=None, files=()):
         for line in process.stdout:
             message = loads(line)
             if "ask" in message:
-                _answer(process, message["ask"], on_ask)
+                _answer(process, message["ask"], on_ask, on_decide)
             elif "report" in message:
                 if on_report is not None:
                     on_report(message["report"])
@@ -349,13 +352,17 @@ def _drain(stream, into):
             kept -= len(into.pop(0))
 
 
-def _answer(process, ask, on_ask):
+def _answer(process, ask, on_ask, on_decide=None):
     if on_ask is None:
         reply = {"error": "this caller has no engine to ask"}
     else:
         try:
-            reply = {"answer": on_ask(ask.get("system", ""), ask.get("prompt", ""),
-                                      ask.get("purpose") or "py.skill.ask")}
+            system, prompt, purpose = ask.get("system", ""), ask.get("prompt", ""), ask.get("purpose") or "py.skill.ask"
+            if on_decide is not None and isinstance(ask.get("evidence"), dict):
+                text, decision = on_decide(system, prompt, ask["evidence"], purpose=purpose)
+                reply = {"answer": text} if decision is None else {"answer": text, "decision": decision}
+            else:
+                reply = {"answer": on_ask(system, prompt, purpose)}
         except Exception as exc:  # noqa: BLE001 - the ladder reads a failed ask as "the engine could not be asked"
             reply = {"error": str(exc)[:500] or type(exc).__name__}
     process.stdin.write(dumps(reply))
@@ -393,8 +400,9 @@ def rebuilt(error):
 def ladder_state(ladder):
     """What a ladder holds (no callables): what the screen side's ladder starts from, and what comes back."""
 
-    state = {k: v for k, v in vars(ladder).items() if not callable(v)}
+    state = {k: v for k, v in vars(ladder).items() if not callable(v) and k != "ask_decided"}
     state["ask"] = ladder.ask_model is not None
+    state["decided"] = getattr(ladder, "ask_decided", None) is not None
     return state
 
 
@@ -402,17 +410,19 @@ def apply_state(ladder, state):
     """Set what the screen side's ladder came back holding onto the caller's (only fields a ladder has)."""
 
     for key, value in (state or {}).items():
-        if key != "ask" and key in vars(ladder) and not callable(getattr(ladder, key)):
+        if key not in ("ask", "decided", "ask_decided") and key in vars(ladder) and not callable(getattr(ladder, key)):
             setattr(ladder, key, value)
 
 
-def new_ladder(state, ask_model):
-    """The screen side's ladder for a replay: a fresh one with the caller's fields."""
+def new_ladder(state, ask_model, ask_decided=None):
+    """The screen side's ladder for a replay: a fresh one with the caller's fields (and its questions handed to soul
+    only when the caller's ladder hands them, "decided")."""
 
     from decurix_agent.computer import escalation
     ladder = escalation.Ladder()
     apply_state(ladder, state)
     ladder.ask_model = ask_model if (state or {}).get("ask") else None
+    ladder.ask_decided = ask_decided if (state or {}).get("ask") and (state or {}).get("decided") is True else None
     return ladder
 
 
@@ -455,8 +465,9 @@ def run_replay(program, params=None, start=1, report=None, ladder=None):
     request = {"args": [program], "kwargs": {"params": params, "start": start}, "report": report is not None,
                "ladder": ladder_state(ladder) if ladder is not None else None}
     ask = ladder.ask_model if ladder is not None else None
+    decide = getattr(ladder, "ask_decided", None) if ladder is not None else None
     final = exchange("replay.run", request, on_ask=ask, on_report=report,
-                     files=program_files(program, params, start))
+                     files=program_files(program, params, start), on_decide=decide)
     if ladder is not None:
         apply_state(ladder, final.get("ladder"))
     return final.get("result")
@@ -543,10 +554,17 @@ def _serve_replay(channel, request):
             raise RuntimeError(reply.get("error") or "the engine could not be asked")
         return reply["answer"]
 
+    def ask_decided(system, prompt, evidence, *, purpose):
+        channel.send({"ask": {"system": system, "prompt": prompt, "purpose": purpose, "evidence": evidence}})
+        reply = channel.receive()
+        if "answer" not in reply:
+            raise RuntimeError(reply.get("error") or "the engine could not be asked")
+        return reply["answer"], reply.get("decision")
+
     if request.get("report"):
         arguments["report"] = lambda line: channel.send({"report": str(line)})
     ladder = None
     if state is not None:
-        ladder = arguments["ladder"] = new_ladder(state, ask_model)
+        ladder = arguments["ladder"] = new_ladder(state, ask_model, ask_decided)
     result = fn(**arguments)
     return result, ({"ladder": ladder_state(ladder)} if ladder is not None else {})

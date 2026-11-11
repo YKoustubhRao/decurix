@@ -52,8 +52,10 @@ func TestWhatTheReviewRaisesIsSentBackThenAskedThenCarriedNeverDropped(t *testin
 	if w := o.weighJudgements(rc, st, nil, "Filed.", ""); w.question == "" || !strings.Contains(w.question, "nothing you gave me or taught me settles") {
 		t.Fatalf("not asked once sent back: %+v", w)
 	}
-	// A later round, the person already asked as often as they may be.
+	// A later round, with work done since (an unchanged point is not sent again), the person already asked as often as
+	// they may be.
 	st.JudgementRounds, st.PersonAsks = 2, maxReviewQuestions
+	st.Changes++
 	if w := o.weighJudgements(rc, st, nil, "Filed.", ""); w.nudge == "" {
 		t.Fatalf("a new round's points were not sent back: %+v", w)
 	}
@@ -172,6 +174,7 @@ func TestAPointThatIsTheWorkersToDoIsNeverPutToThePerson(t *testing.T) {
 		t.Fatalf("not sent back first: %+v", w)
 	}
 	for n := 0; n < maxWorkSendBacks; n++ {
+		st.Changes++ // the worker did something since (a point sent with nothing done since is not sent again)
 		w := o.weighJudgements(rc, st, nil, "Entered.", "")
 		if w.question != "" || !strings.Contains(w.nudge, "yours to settle, not the person's") || !strings.Contains(w.nudge, "record 1190 was declared from its document but never saved") {
 			t.Fatalf("send-back %d: %+v", n+1, w)
@@ -225,10 +228,61 @@ func TestAPointSettledByLookingStaysTheWorkersWhileSendBacksRemain(t *testing.T)
 		if w.nudge == "" {
 			t.Fatalf("not sent back at round %d: %+v", n, w)
 		}
+		st.Changes++ // the worker did something since (a point sent with nothing done since is not sent again)
 	}
 	w := o.weighJudgements(rc, st, nil, "Entered.", "")
 	if w.question == "" || !strings.Contains(w.question, "Day Book") {
 		t.Fatalf("past the bound the point was not put to the person: %+v", w)
+	}
+}
+
+// Found live (2026-11-10): the same review point went back to the worker round after round with nothing done in
+// between, and was carried with the result anyway; the operator's turns rose 67 -> 110 over four cases.
+func TestAPointSentBackWithNothingDoneSinceIsNotSentAgainAndStaysOpen(t *testing.T) {
+	o := &OperatorSkill{}
+	// A point decided in code that is the worker's to do: a document read and never entered.
+	st := &operatorState{Hosted: true, Request: "enter the bills", JudgementRounds: 1}
+	st.addUnit("document", "Invoice_455.pdf", "Invoice 455 taxable 8,000.00")
+	none := `{"issues": []}`
+	rc := weighRC(&scriptedChat{replies: []string{none, none, none, none}})
+	if w := o.weighJudgements(rc, st, nil, "Entered.", ""); !strings.Contains(w.nudge, "Invoice_455.pdf") {
+		t.Fatalf("not sent back first: %+v", w)
+	}
+	// The worker only looked: the same point is not sent again, and is carried open - never dropped, never a pass.
+	for _, c := range []string{"gui observe", "gui read e700", "office read /w/Invoice_455.pdf && gui observe"} {
+		if !onlyLooks(c) {
+			t.Fatalf("%q does more than look", c)
+		}
+	}
+	w := o.weighJudgements(rc, st, nil, "Entered.", "")
+	if w.nudge != "" || w.question != "" || !strings.Contains(strings.Join(w.open, "\n"), "Invoice_455.pdf") {
+		t.Fatalf("an unchanged point was sent again, or not kept open: %+v", w)
+	}
+	// Something done since that could settle it: it is the worker's again.
+	for _, c := range []string{`gui type e4 "8000"`, "gui click e9", "gui key ctrl+s", "python3 sum.py", "gui observe && gui click e3"} {
+		if onlyLooks(c) {
+			t.Fatalf("%q only looks", c)
+		}
+	}
+	st.Changes++
+	if w := o.weighJudgements(rc, st, nil, "Entered.", ""); !strings.Contains(w.nudge, "Invoice_455.pdf") {
+		t.Fatalf("a point with work done since was not sent back: %+v", w)
+	}
+
+	// A point to recheck by looking, sent back and unchanged since, goes to the person - as past the send-backs.
+	raised := `{"issues": [{"what": "The report says the Day Book shows six vouchers, but no look this goal showed it", "why": "nothing on screen", "settle": "recheck"}]}`
+	st2 := &operatorState{Hosted: true, Request: "enter the bills", JudgementRounds: 1}
+	rc2 := weighRC(&scriptedChat{replies: []string{raised, raised, raised}})
+	if w := o.weighJudgements(rc2, st2, nil, "Entered.", ""); w.nudge == "" {
+		t.Fatalf("not sent back first: %+v", w)
+	}
+	if w := o.weighJudgements(rc2, st2, nil, "Entered.", ""); w.nudge != "" || !strings.Contains(w.question, "Day Book") {
+		t.Fatalf("an unchanged point to recheck was sent again, or not put to the person: %+v", w)
+	}
+	// A new round whose review raises it again, word for word, with nothing done since: not sent again either.
+	st2.JudgementRounds, st2.PersonAsks = 2, maxReviewQuestions
+	if w := o.weighJudgements(rc2, st2, nil, "Entered.", ""); w.nudge != "" || !strings.Contains(strings.Join(w.open, "\n"), "Day Book") {
+		t.Fatalf("a new round sent an unchanged point again, or dropped it: %+v", w)
 	}
 }
 

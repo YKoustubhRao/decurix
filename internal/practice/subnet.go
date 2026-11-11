@@ -51,7 +51,9 @@ func RefuseSubnets(subnets func() []netip.Prefix, next http.Handler) http.Handle
 // asked for again in the background, one question at a time (review 2026-11-02: the guard asked Docker under its lock
 // every second while no practice network existed, and every request on both listeners waited behind it).
 type SubnetCache struct {
-	Lookup func(ctx context.Context) []netip.Prefix
+	// Lookup answers the practice network's ranges: none and no error when there is no practice network, an error
+	// when Docker could not say.
+	Lookup func(ctx context.Context) ([]netip.Prefix, error)
 	TTL    time.Duration
 
 	mu      sync.Mutex
@@ -97,11 +99,14 @@ func (c *SubnetCache) startLocked() chan struct{} {
 	c.running = done
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		list := c.Lookup(ctx)
+		list, err := c.Lookup(ctx)
 		cancel()
 		c.mu.Lock()
-		// A Docker hiccup returns nothing: the last ranges known stay refused rather than none.
-		if len(list) > 0 {
+		// A Docker hiccup (an error) keeps the last ranges known refused rather than none; a practice network that is
+		// gone frees its ranges. Found live (2026-11-08): kept after the network was removed, a range Docker then gave
+		// a new ordinary desktop stayed refused, and every callback of that desktop (its final reply, its questions)
+		// was answered 403 until the control plane restarted.
+		if err == nil {
 			c.list = list
 		}
 		c.at, c.running = time.Now(), nil

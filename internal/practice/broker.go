@@ -2,13 +2,16 @@ package practice
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +19,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/llmrec"
 	"github.com/YKoustubhRao/decurix/internal/qualification"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 // Chatter is the hosted-model hub (*llm.Hub): the broker forwards a practice
@@ -66,10 +70,12 @@ const ObservationBuffer = 16
 const maxBrokerBody = 24 << 20
 
 // Broker stands in for the control plane for the one practice desktop of the
-// active run. It serves five paths and answers 404 to everything else: model
+// active run. It serves six paths and answers 404 to everything else: model
 // calls (counted against the run's token cap), the agent's end-of-turn report
 // (recorded as the case's observation, never answered), its step events, its
-// drafts (kept as practice drafts, never sendable) and its memory notes (dropped).
+// drafts (kept as practice drafts, never sendable), its memory notes (dropped)
+// and the read of the person's words: the scripted expert's replies the runner
+// kept (KeepReply), never anything the desktop sent.
 type Broker struct {
 	LLM Chatter
 	// Steps, when set, records a step event on the case's task.
@@ -120,7 +126,19 @@ type brokerRun struct {
 	caseClosed bool
 	// seen is what Caller said about each address that called, for callerTTL (the desktop's) or callerNotTTL (any other).
 	seen map[netip.Addr]callerSeen
+	// replies are the scripted expert's replies of this run (KeepReply), oldest first: the person's words the desktop
+	// reads back as the control plane's judgements, since its control plane is this broker.
+	replies []brokerReply
 }
+
+// brokerReply is one reply the scripted expert gave, kept as a person's judgement is.
+type brokerReply struct {
+	ID, TaskID, Asked, Text string
+	At                      time.Time
+}
+
+// maxBrokerReplies bounds the replies one run keeps (the oldest go first).
+const maxBrokerReplies = 500
 
 type brokerDraft struct {
 	ID          string
@@ -140,6 +158,35 @@ func (b *Broker) BeginModel(desktopID string, maxTokens int64, model string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.run = &brokerRun{desktopID: desktopID, maxTokens: maxTokens, exhausted: make(chan struct{}), model: model}
+}
+
+// KeepReply keeps the scripted expert's reply to a question asked on taskID as the person's word on that task, and
+// returns the judgement id it is read back by: the desktop's control plane here is this broker, so the words the
+// expert gives stand where a person's judgements stand (GET /api/desktops/judgements; person_record.py). The runner
+// sends the id with the reply, as the control plane sends a person's. Only the runner keeps one: nothing the desktop
+// sends makes a reply. "" when no run is open.
+func (b *Broker) KeepReply(taskID, asked, text string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.run == nil || strings.TrimSpace(text) == "" {
+		return ""
+	}
+	r := brokerReply{ID: tasks.NewJudgementID(), TaskID: taskID, Asked: asked, Text: text, At: time.Now().UTC()}
+	b.run.replies = append(b.run.replies, r)
+	if over := len(b.run.replies) - maxBrokerReplies; over > 0 {
+		b.run.replies = append([]brokerReply{}, b.run.replies[over:]...)
+	}
+	return r.ID
+}
+
+// ForgetReplies drops the replies kept so far: the desktop was reset to its snapshot, and what an earlier case was
+// told is no longer the worker's (a run that carries state keeps them).
+func (b *Broker) ForgetReplies() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.run != nil {
+		b.run.replies = nil
+	}
 }
 
 // End closes the broker; later calls get 404.
@@ -243,6 +290,7 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("/api/agent/events", b.events)
 	mux.HandleFunc("/api/outbox", b.outbox)
 	mux.HandleFunc("/api/desktops/memory", b.memory)
+	mux.HandleFunc("/api/desktops/judgements", b.judgements)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, pattern := mux.Handler(r)
 		if pattern == "" {
@@ -642,6 +690,74 @@ func (b *Broker) outbox(w http.ResponseWriter, r *http.Request) {
 	b.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": d.ID, "status": "draft", "replaced": replaced})
+}
+
+// brokerJudgementsMax bounds the worker-scoped read, as the control plane's does.
+const brokerJudgementsMax = 200
+
+// judgements answers GET /api/desktops/judgements for the run's desktop as the control plane answers it for a desktop
+// (httpapi desktopJudgementsHandler): ?task=<id> the expert's replies on that task, ?scope=worker[&kind=answer]
+// [&limit=N] its replies on every task of the run, newest first, and ?skill=<name> none (the broker keeps no skill's
+// words). Each reply is the scripted expert's, a person's stand-in (actor kind "scripted"). Only from the desktop's
+// own address.
+func (b *Broker) judgements(w http.ResponseWriter, r *http.Request) {
+	run := b.active()
+	if run == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !b.fromRunDesktop(r, run) {
+		http.Error(w, "unknown practice desktop", http.StatusForbidden)
+		return
+	}
+	q := r.URL.Query()
+	task, skill, scope := strings.TrimSpace(q.Get("task")), strings.TrimSpace(q.Get("skill")), strings.TrimSpace(q.Get("scope"))
+	limit := brokerJudgementsMax
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > brokerJudgementsMax {
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
+		}
+		limit = n
+	}
+	worker := scope == "worker" && task == "" && skill == "" && (q.Get("kind") == "" || q.Get("kind") == tasks.JudgementAnswer)
+	switch {
+	case worker, task != "" && skill == "" && scope == "" && tasks.ValidID(task), skill != "" && task == "" && scope == "":
+	default:
+		http.Error(w, "name a task, a skill or scope=worker", http.StatusBadRequest)
+		return
+	}
+	b.mu.Lock()
+	kept := append([]brokerReply{}, run.replies...)
+	b.mu.Unlock()
+	out := []map[string]any{}
+	for i := len(kept) - 1; i >= 0 && len(out) < limit && skill == ""; i-- {
+		if r := kept[i]; worker || r.TaskID == task {
+			out = append(out, expertJudgement(r))
+		}
+	}
+	if !worker { // (oldest first, as the control plane lists a task's)
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"judgements": out})
+}
+
+// expertJudgement is a kept reply as a desktop reads a judgement (httpapi desktopJudgement): the text's hash is of
+// its spacing collapsed, as the agent confirms a reply it kept.
+func expertJudgement(r brokerReply) map[string]any {
+	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(r.Text), " ")))
+	actor := map[string]any{"kind": tasks.ActorScripted, "roles": []string{"expert"}}
+	return map[string]any{"id": r.ID, "task_id": r.TaskID, "kind": tasks.JudgementAnswer, "actor": actor,
+		"text": r.Text, "text_sha256": hex.EncodeToString(sum[:]), "asked": r.Asked, "derived_from": "",
+		"skill_name": "", "secret": false, "at": r.At.Format("2006-01-02T15:04:05.000Z07:00")}
 }
 
 // memory accepts the agent's memory notes and drops them.

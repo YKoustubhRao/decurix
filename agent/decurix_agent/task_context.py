@@ -473,13 +473,15 @@ def request_date_marker(request):
 # is too slow on the save path).
 _ORDER_FILES = 6
 _ORDER_CHARS = 200000
+# How many of the files already in a folder the request names are read for their dates (_folder_files).
+_ORDER_FOLDER_FILES = 12
 _derived = {}
 
 
-def _files_text(paths):
+def _files_text(paths, limit=_ORDER_FILES):
     from decurix_agent.tools import office
     texts = []
-    for path in list(paths)[:_ORDER_FILES]:
+    for path in list(paths)[:limit]:
         try:
             if os.path.splitext(str(path))[1].lower() in office.IMAGE_TYPES:
                 continue
@@ -520,13 +522,68 @@ def set_answered_order(task_id, side, order, judgement_id):
 
 def app_date_order(task_id=None):
     """The order the application shows digit dates in: a person's answer for this task, else what the control plane
-    sent on /request (the org's, C6), else None."""
+    sent on /request (the org's, C6), else the person's answer kept for this application on an earlier task
+    (kept_app_order, by the host the task's form is on - note_app_host), else None."""
 
     task_id = task_id or current()
     answered = answered_order(task_id, "app")
     if answered:
         return answered["order"]
-    return sent_date_order(task_id) if task_id else None
+    sent = sent_date_order(task_id) if task_id else None
+    if sent:
+        return sent
+    host = _app_host["host"] if _app_host["task"] == task_id else ""
+    return kept_app_order(host) if host else None
+
+
+# The label a person's answer about an application's date order is kept under on the control plane (a field answer of
+# the worker, person_record.keep_field_answer), by the application's host: asked once per application, for good
+# (owner's ruling 2026-11-09: a month's six saves each asked "which day is 04-11-2026", and the next run would again).
+DATE_ORDER_LABEL = "date order of the application"
+# How long a read of the kept orders is reused (seconds): a save's checks read it many times.
+KEPT_ORDER_SECONDS = 120
+
+_app_host = {"task": "", "host": ""}
+_kept_orders = {"at": 0.0, "rows": []}
+
+
+def note_app_host(host, task_id=None):
+    """The host of the application the task's form is on (records.presave): where its date order is kept and read."""
+
+    _app_host.update(task=task_id or current() or "", host=str(host or ""))
+
+
+def kept_app_order(host):
+    """The date order a person answered for the application at `host` on an earlier task, kept by the control plane
+    as their judgement's learned row; None when none, unread, or two answers disagree."""
+
+    if not host:
+        return None
+    if time.time() - _kept_orders["at"] > KEPT_ORDER_SECONDS:
+        try:
+            from decurix_agent import person_record
+            _kept_orders["rows"] = person_record.field_answers()
+        except Exception:  # noqa: BLE001 - what cannot be read is no answer
+            _kept_orders["rows"] = []
+        _kept_orders["at"] = time.time()
+    orders = {r.get("option") for r in _kept_orders["rows"]
+              if r.get("label") == DATE_ORDER_LABEL and r.get("host") == host and r.get("option") in DATE_ORDERS}
+    return orders.pop() if len(orders) == 1 else None
+
+
+def _keep_app_order(task_id, host, order, judgement_id):
+    """Keep for later tasks the person's answer about the application's date order (kept_app_order). Never raises."""
+
+    if not host or order not in DATE_ORDERS or not judgement_id:
+        return
+    try:
+        from decurix_agent import person_record
+        person_record.keep_field_answer(task_id, judgement_id, DATE_ORDER_LABEL, host, order,
+                                        asked=f"which order {host} writes digit dates in")
+        _kept_orders["at"] = 0.0  # (read again next time: this answer is the newest)
+    except Exception as exc:  # noqa: BLE001 - kept for this task all the same
+        from decurix_agent.logging_utils import log
+        log(f"Could not keep the application's date order for later tasks: {exc}")
 
 
 def source_date_order(task_id=None):
@@ -549,8 +606,10 @@ def date_order(task_id=None):
 def _derived_order(task_id):
     """
     "day" or "month" from the request's own marker, then from the dates in the request and the text of its files that
-    cannot be read the other way (28/09/2026 is day first: binding.date_order), when they all agree; None otherwise.
-    Kept for the task, so the `gui` process that checks a save does not read the files again.
+    cannot be read the other way (28/09/2026 is day first: binding.date_order), when they all agree; then, when those
+    say nothing, from the same in them and the files already in a folder the request names (_folder_files: the other
+    bills of the batch a request points to by folder); None otherwise. Kept for the task, so the `gui` process that
+    checks a save does not read the files again - except a None while the folder could not be listed yet.
     """
 
     import hashlib
@@ -568,14 +627,40 @@ def _derived_order(task_id):
         _derived[key] = None if kept["order"] == "none" else kept["order"]
         return _derived[key]
     order = request_date_marker(request)
+    listed = True
     if order is None:
         from decurix_agent import attachments, binding
         files = current_files() if task_id and task_id == current() else []
-        order = binding.date_order([attachments.text(request)] + _files_text(files or attachments.files(request)))
+        given = [attachments.text(request)] + _files_text(files or attachments.files(request))
+        order = binding.date_order(given)
+        if order is None:
+            # Found live (2026-11-10): a bill's "02-04-2027" was a question to the person while the other bills of
+            # the folder the request named wrote 15-04-2027 and 22-04-2027 - day first - unread, since only attached
+            # files were. They decide only where the request and its own files say nothing, and only all agreeing.
+            folder, listed = _folder_files(task_id, files)
+            if folder:
+                order = binding.date_order(given + _files_text(folder, _ORDER_FOLDER_FILES))
     _derived[key] = order
-    if task_id:
+    if task_id and (order is not None or listed):
+        # (A None while the folder could not be listed is kept by this process only: another reads the folder again
+        # once the task's start is known.)
         _keep_context(task_id, derived_date_order={"request": key[1], "order": order or "none"})
     return order
+
+
+def _folder_files(task_id, attached=()):
+    """(paths, listed): the files already in a folder the request names, less what the task made and the request's own
+    files (records._request_folder_files); listed is False when the folder could not be told from what the task made
+    (its start unknown) - nothing is decided from it then."""
+
+    if not task_id or task_id != current() or since() is None:
+        return [], False
+    try:
+        from decurix_agent.computer import records
+        own = {os.path.realpath(str(p)) for p in attached or ()}
+        return [p for p in records._request_folder_files(task_id) if os.path.realpath(str(p)) not in own], True
+    except Exception:  # noqa: BLE001 - a folder not listed says nothing about dates
+        return [], True
 
 
 # ============================================================
@@ -599,9 +684,12 @@ def ask_date_order(task_id, side, value):
     found = values.readings(value)
     if side not in SIDES or len(found) != 2 or not valid(task_id):
         return None
+    if side in (_context(task_id).get("date_left_open") or []):
+        return None  # (asked once in this task and not settled: never put to the person again - date_left_open)
     question = {"side": side, "value": " ".join(str(value).split())[:40],
                 "options": {"1": "day", "2": "month"},
-                "readings": {order: values.spoken(day) for order, day in found.items()}}
+                "readings": {order: values.spoken(day) for order, day in found.items()},
+                "host": _app_host["host"] if side == "app" and _app_host["task"] == task_id else ""}
     current_q = _context(task_id).get("date_question")
     if isinstance(current_q, dict) and current_q.get("side") == side and current_q.get("value") == question["value"]:
         return current_q
@@ -612,8 +700,15 @@ def ask_date_order(task_id, side, value):
 def date_question(task_id=None):
     """The date-order question a save of the task waits on, or None."""
 
-    found = _context(task_id or current()).get("date_question") if (task_id or current()) else None
-    return found if isinstance(found, dict) and found.get("side") in SIDES else None
+    task_id = task_id or current()
+    found = _context(task_id).get("date_question") if task_id else None
+    if not isinstance(found, dict) or found.get("side") not in SIDES:
+        return None
+    # Settled since it was raised (the organisation's order came with a later request, or a person answered it): no
+    # question. Found live (2026-11-08): a task run again under the same id asked an earlier attempt's date question in
+    # place of its plan, though the organisation's order had arrived with the request.
+    known = app_date_order(task_id) if found["side"] == "app" else answered_order(task_id, "source")
+    return None if known else found
 
 
 def date_question_text(question):
@@ -634,11 +729,23 @@ def mark_date_asked(task_id, query_id):
 
 
 def unmark_date_asked(task_id):
-    """The reply to the date question picked neither reading: it is still open, and goes out again when next asked."""
+    """The reply to the date question picked neither reading: the question is left open and never put again in this
+    task (date_left_open) - asked once, not before every save (owner's ruling 2026-11-09: a month's six saves each
+    asked it, and the case ended on the number of questions). The save says it waits on the person instead."""
 
     question = date_question(task_id)
     if question:
-        _keep_context(task_id, date_question={k: v for k, v in question.items() if k != "query_id"})
+        left = list(_context(task_id).get("date_left_open") or [])
+        if question["side"] not in left:
+            left.append(question["side"])
+        _keep_context(task_id, date_question=None, date_left_open=left)
+
+
+def date_left_open(task_id=None, side="app"):
+    """Whether this task's question about one side's date order was asked and left unsettled (unmark_date_asked)."""
+
+    task_id = task_id or current()
+    return bool(task_id) and side in (_context(task_id).get("date_left_open") or [])
 
 
 def date_query_answered(task_id, query_id):
@@ -663,8 +770,10 @@ def take_date_answer(task_id, reply, judgement_id=None, query_id=None):
     order = question["options"].get(choice)
     if not order:
         return None
-    if not set_answered_order(task_id, question["side"], order,
-                              judgement_id if judgement_id is not None else reply_judgement(task_id)):
+    judgement = judgement_id if judgement_id is not None else reply_judgement(task_id)
+    if not set_answered_order(task_id, question["side"], order, judgement):
         return None
+    if question["side"] == "app":
+        _keep_app_order(task_id, question.get("host") or "", order, judgement)
     _keep_context(task_id, date_question=None)
     return order

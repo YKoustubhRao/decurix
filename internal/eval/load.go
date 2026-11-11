@@ -26,6 +26,8 @@ var (
 	collectionPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$`)
 	hostPattern       = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?$`)
 	isoDate           = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	// rolePattern is a control's role as the gate words it (button, link, push button): what GateControl reads.
+	rolePattern = regexp.MustCompile(`^[a-z][a-z ]{0,39}$`)
 )
 
 // Problems is every reason a suite cannot be run, in the order found.
@@ -159,6 +161,7 @@ func Load(tarBytes []byte) (Suite, error) {
 			continue
 		}
 		c, caseProblems := loadCase(s, id, files)
+		c.ConfirmsPlans = s.ConfirmsPlans
 		problems = append(problems, caseProblems...)
 		s.Cases = append(s.Cases, c)
 	}
@@ -338,6 +341,37 @@ func loadCase(s Suite, id string, files entries) (Case, Problems) {
 		if qualification.CredentialLike(withheld(f.Answer)) {
 			add("the fact %s's answer looks like it holds a credential.", f.ID)
 		}
+	}
+	// How each side writes digit dates (the expert's answer to a date-order question): "app" or "source", "day" or "month".
+	for side, order := range c.DateOrders {
+		if (side != "app" && side != "source") || (order != "day" && order != "month") {
+			add("date_orders holds %q: %q - each side is \"app\" or \"source\", each order \"day\" or \"month\".", side, order)
+		}
+	}
+	// Approvals the person gives: each a click on a named control, matched against the gate's own question.
+	if len(c.Approves) > MaxApproves {
+		add("approves more than %d actions.", MaxApproves)
+	}
+	approved := map[string]bool{}
+	for i, a := range c.Approves {
+		name := strings.Join(strings.Fields(a.Control), " ")
+		if name == "" || utf8.RuneCountInString(name) > MaxControlName || strings.Contains(name, `"`) || !utf8.ValidString(name) {
+			add("approval %d needs the control a click acts on: 1 to %d characters, no double quote.", i+1, MaxControlName)
+		}
+		if a.Role != "" && !rolePattern.MatchString(a.Role) {
+			add("approval %d's role %q must be 1 to 40 lower-case letters and spaces (button, link).", i+1, clipText(a.Role, 80))
+		}
+		key := strings.ToLower(name) + "|" + strings.ToLower(a.Role)
+		if approved[key] {
+			add("approval %d is listed twice.", i+1)
+		}
+		approved[key] = true
+		if qualification.CredentialLike(withheld(a.Control)) {
+			add("approval %d looks like it holds a credential.", i+1)
+		}
+	}
+	if len(c.Approves) > 0 && c.Expected.Outcome == OutcomeApproval {
+		add("a case that expects the worker to stop at the approval gate approves nothing.")
 	}
 	// Budget: a case may only lower the suite's.
 	if c.Budget.MaxTokens < 0 || c.Budget.MaxMinutes < 0 ||

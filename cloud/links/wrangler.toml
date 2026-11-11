@@ -1,0 +1,25 @@
+# The link service Worker (worker.js): its name, address, daily sweep, settings and database. Deployed by
+# `npx wrangler deploy` from this folder; README.md has the one-time setup (D1 database, the two secrets).
+name = "decurix-links"
+account_id = "458293b2573c77258b244199d829105d"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+workers_dev = false
+routes = [{ pattern = "links.decurix.computer", custom_domain = true }]
+
+[triggers]
+crons = ["17 3 * * *"]
+
+[vars]
+DOMAIN = "decurix.computer"
+ACCOUNT_ID = "458293b2573c77258b244199d829105d"
+ZONE_ID = "d69b68190f1e97e9a76f7ba8d2bd71ec"
+# Below the free plan's DNS record limit for the zone, with room for the website's own records.
+MAX_NAMES = "150"
+CLAIMS_PER_IP_PER_DAY = "3"
+STALE_DAYS = "90"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "decurix-links"
+database_id = "b08cd10b-9424-4e57-8302-29ab560c4db2"

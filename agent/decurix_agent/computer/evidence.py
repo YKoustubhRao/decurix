@@ -292,6 +292,23 @@ def entered(task_id=None):
                           event.get("option") if event.get("kind") == "select" else None) if value]
 
 
+def listed_picks(task_id=None):
+    """The options a task's selects chose that the application's own list held: an entry its list offered, or the one
+    the pick took. Never a filler the worker made up, whatever it looks like (core._not_picked)."""
+
+    out = []
+    for event in _task_events(task_id):
+        if event.get("outcome") not in (None, "done") or event.get("kind") != "select":
+            continue
+        option, taken = str(event.get("option") or ""), str(event.get("taken") or "")
+        offered = [" ".join(str(o).split()).casefold() for o in event.get("offered") or ()]
+        if taken:
+            out.append(taken)
+        if option and " ".join(option.split()).casefold() in offered:
+            out.append(option)
+    return out
+
+
 def pressed(task_id=None):
     """The names of the controls a task's tools pressed and that went through, oldest first."""
 

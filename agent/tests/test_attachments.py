@@ -1,3 +1,8 @@
+"""
+Files attached to a request or a ticket: what a request's words are, which files a ticket keeps with its recording
+(also once a broker-mode recording is handed back whole), and that a lesson and its study see them.
+"""
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,6 +65,39 @@ class TicketTest(unittest.TestCase):
 
         self.assertEqual(status["files"], ["/a/PO.pdf", "/a/terms.pdf"])
         self.assertEqual(kept, {"demo-1": {"files": ["/a/PO.pdf", "/a/terms.pdf"]}})
+
+    def test_a_tickets_files_are_written_again_once_the_recording_is_whole(self):
+        # Broker mode: stop() hands the screen user's whole recording back, replacing the worker's meta.json and the
+        # files begin() and attach() wrote into it; end() writes them again after it.
+        order = []
+
+        def update(session_id, **fields):
+            order.append(("update", session_id, fields))
+
+        def stop():
+            order.append(("stop",))
+
+        ticket = {"task_id": "t1", "title": "enter the order", "session_id": "demo-1", "files": ["/a/order.pdf"]}
+        with mock.patch.object(record_task, "_ticket", ticket), \
+                mock.patch.object(record_task.recording, "update", update), \
+                mock.patch.object(record_task.demonstration, "stop", stop), \
+                mock.patch.object(record_task.demonstration, "status", return_value={"paused": False, "events": 2}), \
+                mock.patch.object(record_task.progress, "emit"):
+            record_task.end()
+
+        self.assertEqual(order, [("stop",), ("update", "demo-1", {"files": ["/a/order.pdf"]})])
+
+    def test_a_ticket_that_never_recorded_writes_nothing(self):
+        ticket = {"task_id": "t1", "title": "enter the order", "session_id": None, "files": ["/a/order.pdf"]}
+        with mock.patch.object(record_task, "_ticket", ticket), \
+                mock.patch.object(record_task.recording, "update") as update, \
+                mock.patch.object(record_task.demonstration, "stop") as stop, \
+                mock.patch.object(record_task.demonstration, "status", return_value={"paused": False, "events": 0}), \
+                mock.patch.object(record_task.progress, "emit"):
+            record_task.end()
+
+        stop.assert_not_called()
+        update.assert_not_called()
 
     def test_attaching_with_no_ticket_open_is_refused(self):
         with mock.patch.object(record_task, "_ticket", None):

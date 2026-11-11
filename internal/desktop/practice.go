@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/netip"
 	"os"
@@ -35,7 +36,8 @@ const (
 	PracticeNetworkName = "decurix-practice"
 	// PracticeLabel marks every container and network a practice run made.
 	PracticeLabel = "decurix-practice"
-	// PracticeMockAlias is the mock app's name on the practice network; the browser maps recorded hosts to it.
+	// PracticeMockAlias begins each run's mock app name on the practice network (PracticeMockHost); the browser maps
+	// recorded hosts to it.
 	PracticeMockAlias = "practice-mock"
 	// PracticeMockPort is where the mock app listens inside its container.
 	PracticeMockPort = "8000"
@@ -77,6 +79,24 @@ func PracticeResetPaths() []string { return append([]string{}, practiceResetPath
 // the image).
 const practiceResetScript = `kill -STOP -1 2>/dev/null; rm -rf -- "$@" /tmp/decurix-* /tmp/decurix.* /tmp/thebot-soul.log`
 
+// practiceSettlePaths are what SettlePractice clears between the cases of a carry-state run: the open task's and
+// nothing learned. The agent's record of its task in hand (active-task.json: kept so a restart reports it
+// interrupted, or carries a long request on) and the browser profiles (a killed browser opens on a "restore pages"
+// bar) go; the methods, skills, memory and the work folder stay.
+var practiceSettlePaths = []string{
+	"/home/headless/.config/chromium", "/home/headless/.config/google-chrome", practiceDecurixDir + "/active-task.json",
+}
+
+// PracticeSettlePaths lists what SettlePractice clears between a carry-state run's cases, for runners and their tests.
+func PracticeSettlePaths() []string { return append([]string{}, practiceSettlePaths...) }
+
+// practiceSettleScript, run as the worker, stops every process of the worker (as practiceResetScript does), clears
+// the paths it is given, the agent's task files in /tmp and soul's job log, and every request not yet handled in the
+// agent's command folder (a handled one is renamed *.done): a request queued behind the earlier case's open question
+// would otherwise run as a task of its own after the restart.
+const practiceSettleScript = `kill -STOP -1 2>/dev/null; rm -rf -- "$@" /tmp/decurix-* /tmp/decurix.* /tmp/thebot-soul.log; ` +
+	`find ` + practiceDecurixDir + `/command -maxdepth 1 -type f ! -name '*.done' -exec rm -f -- {} + 2>/dev/null; true`
+
 // practiceGateResetScript, run as root, stops the gate's process too and clears the gate's own store (the pending
 // request, any grant, the last reply), which belongs to the gate's user and is out of the worker's reach. Its key stays.
 const practiceGateResetScript = `kill -STOP -1 2>/dev/null; rm -rf -- /var/lib/decurix-gate/computer`
@@ -109,7 +129,15 @@ type PracticeSpec struct {
 	// LegacyGate is pinned old code in AgentTree, whose gate may predate /secrets and /request: a 404 from those is
 	// then passed (TellGate). Only an eval arm with its own agent tree sets it; the practice runner never does.
 	LegacyGate bool
+	// SoulDecisions turns on every decision soul words and reads in place of Python (plan rule 3, phase 2:
+	// SoulDecisionSwitches) on this desktop: only an eval arm sets it (+soul), to measure them before they default on.
+	SoulDecisions bool
 }
+
+// SoulDecisionSwitches are the agent's switches for the decisions moved into soul (plan rule 3, phase 2), each off by
+// default until an eval with it on shows no regression (plan rule 1): the final check's judge, the escalation ladder's
+// questions.
+var SoulDecisionSwitches = []string{"DECURIX_SOUL_JUDGE", "DECURIX_SOUL_ESCALATION"}
 
 // PracticeDesktop is a created practice desktop.
 type PracticeDesktop struct {
@@ -137,7 +165,7 @@ func (m *Manager) EnsurePracticeNetwork(ctx context.Context) (netip.Prefix, neti
 			return netip.Prefix{}, netip.Addr{}, err
 		}
 		if _, err = m.client.NetworkCreate(ctx, PracticeNetworkName, network.CreateOptions{
-			Driver: "bridge", Internal: true, Labels: map[string]string{PracticeLabel: "true"},
+			Driver: "bridge", Internal: true, Labels: map[string]string{PracticeLabel: "true", OwnerLabel: ownerID()},
 		}); err != nil {
 			return netip.Prefix{}, netip.Addr{}, fmt.Errorf("create practice network: %w", err)
 		}
@@ -233,11 +261,15 @@ func controlPlaneInContainer() bool {
 }
 
 // PracticeSubnets returns the practice network's address ranges, for refusing
-// them on the primary and gated listeners; nil when the network does not exist.
-func (m *Manager) PracticeSubnets(ctx context.Context) []netip.Prefix {
+// them on the primary and gated listeners; none and no error when the network
+// does not exist, an error when Docker could not say.
+func (m *Manager) PracticeSubnets(ctx context.Context) ([]netip.Prefix, error) {
 	inspect, err := m.client.NetworkInspect(ctx, PracticeNetworkName, network.InspectOptions{})
+	if client.IsErrNotFound(err) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []netip.Prefix
 	for _, cfg := range inspect.IPAM.Config {
@@ -245,7 +277,7 @@ func (m *Manager) PracticeSubnets(ctx context.Context) []netip.Prefix {
 			out = append(out, p)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // copyOut reads one path of a container as a tar, bounded, by Docker's root-side copy. Only for a fixed root-owned
@@ -309,8 +341,45 @@ func (m *Manager) PracticeAgentTree(ctx context.Context, workerID string) ([]byt
 	if err != nil {
 		return nil, "", err
 	}
+	// The worker's soul goes with its agent tree: the agent and soul are one harness, and a practice desktop running
+	// the image's soul under the worker's agent tested neither. Found live (2026-11-08): soul fixes deployed to the
+	// taught worker never reached an eval's practice desktops, and a case failed on what one of them had fixed.
+	// A worker with no /opt/soul (or one that cannot be read) keeps the image's.
+	if soul, serr := m.copyOut(ctx, found.ContainerID, "/opt/soul", practiceMaxTar); serr == nil {
+		if joined, jerr := joinTars(b, soul); jerr == nil {
+			b = joined
+		}
+	}
 	sum, err := TarFingerprint(b)
 	return b, sum, err
+}
+
+// joinTars is one tar holding every entry of a, then every entry of b.
+func joinTars(a, b []byte) ([]byte, error) {
+	var out bytes.Buffer
+	tw := tar.NewWriter(&out)
+	for _, part := range [][]byte{a, b} {
+		tr := tar.NewReader(bytes.NewReader(part))
+		for {
+			h, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if err := tw.WriteHeader(h); err != nil {
+				return nil, err
+			}
+			if _, err := io.Copy(tw, tr); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 // PracticeSnapshot copies the worker's agent state folders (PracticeSnapshotParts)
@@ -371,7 +440,7 @@ func (m *Manager) PracticeSnapshot(ctx context.Context, workerID string) ([]byte
 // practiceBrowserFlags is the shell line appended to the image's browser launch
 // flags. The launcher sources the file with its own arguments, so `set --` adds
 // one argument with spaces intact (CHROMIUM_FLAGS is word-split).
-func practiceBrowserFlags(hosts []string) (string, error) {
+func practiceBrowserFlags(hosts []string, runID string) (string, error) {
 	if len(hosts) == 0 {
 		return "", nil
 	}
@@ -380,7 +449,7 @@ func practiceBrowserFlags(hosts []string) (string, error) {
 		if !practiceHostPattern.MatchString(h) {
 			return "", fmt.Errorf("not a host name: %q", h)
 		}
-		rules = append(rules, "MAP "+h+" "+PracticeMockAlias+":"+PracticeMockPort)
+		rules = append(rules, "MAP "+h+" "+PracticeMockHost(runID)+":"+PracticeMockPort)
 	}
 	return "\n# Practice desktop: recorded hosts reach the mock app.\nset -- '--host-resolver-rules=" + strings.Join(rules, ",") + "' \"$@\"\n", nil
 }
@@ -427,6 +496,11 @@ func practiceEnvironment(inherited []string, spec PracticeSpec, vncPassword stri
 			"DECURIX_BRAIN_VISION="+vision,
 		)
 	}
+	if spec.SoulDecisions {
+		for _, name := range SoulDecisionSwitches {
+			out = append(out, name+"=1")
+		}
+	}
 	return out
 }
 
@@ -446,7 +520,7 @@ func practiceConfigs(spec PracticeSpec, env, securityOpt []string) (*container.C
 	name := PracticeDesktopID(spec.RunID)
 	return &container.Config{
 			Image: spec.Image, Env: env, Hostname: name,
-			Labels: map[string]string{PracticeLabel: "true", "decurix-practice-run": spec.RunID},
+			Labels: map[string]string{PracticeLabel: "true", "decurix-practice-run": spec.RunID, OwnerLabel: ownerID()},
 		}, &container.HostConfig{
 			NetworkMode: container.NetworkMode(PracticeNetworkName),
 			// The worker's own desktop's options, no-new-privileges included as on every desktop (B-21): the
@@ -490,7 +564,7 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 	if len(m.HostGUISecret) == 0 {
 		return d, ErrNoSecret
 	}
-	flags, err := practiceBrowserFlags(spec.Hosts)
+	flags, err := practiceBrowserFlags(spec.Hosts, spec.RunID)
 	if err != nil {
 		return d, err
 	}
@@ -686,7 +760,24 @@ func practicePassword() string {
 // profile and the work folder, restarts the container, and restores the pinned
 // snapshot while it is stopped.
 func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte) error {
-	// It deletes a worker's whole state: only a practice desktop the control plane made is reset, never a worker's own
+	return m.restartPractice(ctx, id, practiceResetScript, practiceResetPaths, snapshot)
+}
+
+// SettlePractice ends whatever the worker still has in hand between two cases of a carry-state run (a learning curve),
+// keeping everything it learned: it stops the worker's processes, clears the open task (practiceSettlePaths, requests
+// not yet handled, the agent's task files in /tmp, soul's job log) and, as root, the gate's store (a pending request,
+// a grant, the last reply; its key stays), then restarts the container. Found live (2026-11-08, the first learning-curve
+// run): a case that ended at an approval left the question open, and the next case's request, sent a second later,
+// queued behind it until that case ran out of time. A person who starts other work leaves an unanswered question
+// behind; the restart is that, made certain.
+func (m *Manager) SettlePractice(ctx context.Context, id string) error {
+	return m.restartPractice(ctx, id, practiceSettleScript, practiceSettlePaths, nil)
+}
+
+// restartPractice runs script (as the worker, with paths) and the gate's reset (as root) in a practice desktop, then
+// kills it, restores snapshot when one is given, and starts it again.
+func (m *Manager) restartPractice(ctx context.Context, id, script string, paths []string, snapshot []byte) error {
+	// It deletes a worker's state: only a practice desktop the control plane made is reset, never a worker's own
 	// desktop or a mock (the label is the control plane's, set at creation).
 	inspect, err := m.client.ContainerInspect(ctx, id)
 	if err != nil {
@@ -695,7 +786,7 @@ func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte)
 	if inspect.Config == nil || inspect.Config.Labels[PracticeLabel] != "true" || inspect.Config.Labels["decurix-practice-mock"] == "true" {
 		return ErrNotPractice
 	}
-	cmd := append([]string{"/bin/sh", "-c", practiceResetScript, "reset"}, practiceResetPaths...)
+	cmd := append([]string{"/bin/sh", "-c", script, "reset"}, paths...)
 	if err := m.practiceExec(ctx, id, "headless", cmd); err != nil {
 		return fmt.Errorf("clear the practice desktop: %w", err)
 	}
@@ -851,18 +942,30 @@ func (m *Manager) CollectPractice(ctx context.Context, id, caseID string, inputs
 
 // practiceMockConfigs is the mock app's boundary: qualification's (read-only
 // root, tmpfs /work, no capabilities, small limits) on the practice network, under
-// PracticeMockAlias. It waits for its files, then serves the generated app.
+// PracticeMockHost(runID). It waits for its files, then serves the generated app.
 func practiceMockConfigs(image, runID string, inherited []string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	config, host := qualificationConfigs(qualification.Definition{Image: image})
 	config.Env = qualificationEnvironment(inherited)
 	config.Entrypoint = []string{"/bin/sh", "-c", "while [ ! -f /work/ready ]; do sleep 0.2; done; exec /usr/bin/python3 /work/mock_app.py --port " + PracticeMockPort + " --fixture /work/fixture.json --state /work/state.json"}
 	config.Cmd = nil
-	config.Labels = map[string]string{PracticeLabel: "true", "decurix-practice-run": runID, "decurix-practice-mock": "true"}
+	config.Labels = map[string]string{PracticeLabel: "true", "decurix-practice-run": runID, "decurix-practice-mock": "true", OwnerLabel: ownerID()}
 	host.NetworkMode = container.NetworkMode(PracticeNetworkName)
 	host.Resources.Memory, host.Resources.MemorySwap = 128<<20, 128<<20
 	pids := int64(32)
 	host.Resources.PidsLimit = &pids
-	return config, host, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{PracticeNetworkName: {Aliases: []string{PracticeMockAlias}}}}
+	return config, host, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{PracticeNetworkName: {Aliases: []string{PracticeMockHost(runID)}}}}
+}
+
+// PracticeMockHost is one run's mock app name on the shared practice network. Each run has its own: found live
+// (2026-11-09), two control planes ran evals at once, both mocks answered to one fixed name, Docker's DNS spread a
+// desktop's requests between them, and a books case saw its company vanish into the other run's app mid-run.
+func PracticeMockHost(runID string) string {
+	name := PracticeMockAlias + "-" + runID
+	if len(name) > 63 { // (one DNS label)
+		sum := sha256.Sum256([]byte(runID))
+		name = PracticeMockAlias + "-" + hex.EncodeToString(sum[:8])
+	}
+	return name
 }
 
 // StartPracticeMock starts a fresh mock app for one case and copies its source
@@ -878,6 +981,9 @@ func (m *Manager) StartPracticeMock(ctx context.Context, image, runID string, so
 	}
 	if len(fixture) == 0 {
 		fixture = []byte("{}")
+	}
+	if err = m.removeRunMocks(ctx, runID); err != nil {
+		return "", err
 	}
 	config, host, net := practiceMockConfigs(image, runID, inherited)
 	created, err := m.client.ContainerCreate(ctx, config, host, net, nil, "")
@@ -993,6 +1099,30 @@ func (m *Manager) UnpausePractice(ctx context.Context, ids ...string) error {
 	return nil
 }
 
+// removeRunMocks removes every mock app this control plane started for runID that is still there, before the run's
+// next mock starts: they all answer to one name (PracticeMockHost), so a leftover one would take part of the next
+// case's requests. Found live (2026-11-10): a case's mock outlived it when its removal ran out of time, and the
+// run's later cases saved into and read from that stale app. A mock it cannot remove stops the case (an error),
+// never runs it beside a stale one.
+func (m *Manager) removeRunMocks(ctx context.Context, runID string) error {
+	list, err := m.client.ContainerList(ctx, container.ListOptions{All: true, Filters: filters.NewArgs(
+		filters.Arg("label", "decurix-practice-run="+runID), filters.Arg("label", "decurix-practice-mock=true"))})
+	if err != nil {
+		return err
+	}
+	for _, c := range list {
+		// (The labels are checked here too, not only by the daemon's filter; another plane's are never touched.)
+		if c.Labels["decurix-practice-run"] != runID || c.Labels["decurix-practice-mock"] != "true" || !OwnedHere(c.Labels) {
+			continue
+		}
+		log.Printf("practice: removing run %s's mock app %s left from an earlier case", runID, c.ID)
+		if err := m.RemovePractice(ctx, c.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RemovePractice force-removes practice containers; one already gone is fine.
 func (m *Manager) RemovePractice(ctx context.Context, ids ...string) error {
 	var first error
@@ -1033,6 +1163,10 @@ func (m *Manager) CleanupPractice(ctx context.Context) error {
 		return err
 	}
 	for _, c := range list {
+		if !OwnedHere(c.Labels) {
+			LogNotOwned("practice cleanup", strings.TrimPrefix(strings.Join(c.Names, ","), "/"))
+			continue
+		}
 		if err := m.client.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !client.IsErrNotFound(err) {
 			return err
 		}
@@ -1048,6 +1182,10 @@ func (m *Manager) CleanupPractice(ctx context.Context) error {
 		m.leavePracticeNetwork(ctx)
 	}
 	for _, n := range nets {
+		if !OwnedHere(n.Labels) {
+			LogNotOwned("practice cleanup", n.Name)
+			continue
+		}
 		if err := m.client.NetworkRemove(ctx, n.ID); err != nil && !client.IsErrNotFound(err) {
 			return err
 		}

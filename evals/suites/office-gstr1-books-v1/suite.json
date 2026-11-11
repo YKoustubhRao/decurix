@@ -1,0 +1,37 @@
+{
+  "schema": "decurix.eval-suite/v1",
+  "name": "office-gstr1-books-v1",
+  "description": "A CA office files a client's monthly GSTR-1 from its books: the month's sales return is exported from the books app as JSON into the client's own month folder on the office share, imported into the return-prep software with Overwrite, checked against the books, its receivers' GSTINs validated against the portal's register (names taken from it), saved to the portal, the period chosen there (financial year, quarter, month), the summary generated and the return filed with EVC, whose OTP only the client has. Case 1 is the one a person demonstrates; the rest are new months with the traps a real month has: the export dialog still pointing at another client's or last month's folder, a receiver never validated, inter-state supplies (IGST, B2C Large), several HSN codes, a cancelled invoice in the series, the portal opening on the current quarter, an earlier partial import that Append would double, and a receiver whose GSTIN the register shows cancelled (the return must not be filed). Cases 5 to 12 are both clients' next months (January to April 2027, April in each client's new company for 2027-28), the same receivers and some new ones, about half of them plain and the rest with one of those traps again, so a worker taught once can show its curve over fresh months. Graded on the share, the software's receivers and uploads, and the portal's tables and filed return, exactly; and the ARN in the report. Fictional data; the ca-office mock.",
+  "mocks": {
+    "ca-office": {
+      "hosts": [
+        "chat.example.test",
+        "mail.example.test",
+        "books.example.test",
+        "fileprep.example.test",
+        "taxnet.example.test"
+      ]
+    }
+  },
+  "budget": {
+    "max_tokens": 10000000,
+    "max_minutes": 120
+  },
+  "cases": [
+    "og-1-october",
+    "og-2-november",
+    "og-3-december",
+    "og-4-cancelled-gstin",
+    "og-5-january",
+    "og-6-january",
+    "og-7-february",
+    "og-8-february",
+    "og-9-march",
+    "og-10-march",
+    "og-11-april-cancelled-gstin",
+    "og-12-april"
+  ],
+  "carry_state": false,
+  "confirms_plans": true,
+  "carry_allowed": true
+}

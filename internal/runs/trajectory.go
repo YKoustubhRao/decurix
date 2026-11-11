@@ -305,6 +305,10 @@ type EvalLabel struct {
 	Invalid    bool   `json:"invalid"`
 	Infra      bool   `json:"infra"`
 	CarryState bool   `json:"carry_state"`
+	// FromWorker is the desktop whose taught state the run's cases started from, and SnapshotSHA that state's
+	// fingerprint; both empty for a run that started every case empty.
+	FromWorker  string `json:"from_worker,omitempty"`
+	SnapshotSHA string `json:"snapshot_sha,omitempty"`
 }
 
 // Sources is everything Build joins.

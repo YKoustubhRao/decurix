@@ -142,6 +142,14 @@ type Request struct {
 	Reading *skills.Reading
 	// PlanAgreed is the host's word that the request is a stage of a plan the person agreed (skills.RunContext).
 	PlanAgreed bool
+	// EarlierSaid is the person's replies on the task before this request, each with its question (skills.RunContext).
+	EarlierSaid []skills.Said
+	// PickedFields is the taught task's fields filled by picking an application's entry (skills.RunContext).
+	PickedFields []string
+	// CollectOnly is the host's word that the job collects documents and enters nothing (skills.RunContext).
+	CollectOnly bool
+	// EnteredEarlier is what earlier jobs of the task entered and saved (skills.RunContext).
+	EnteredEarlier []string
 }
 
 type Scheduler struct {

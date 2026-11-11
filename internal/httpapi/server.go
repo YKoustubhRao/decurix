@@ -173,6 +173,9 @@ type Server struct {
 	stepImagesMu     sync.Mutex
 	recentStepImages map[string]string
 
+	// learnedMu holds a learned row's "kept already?" read and its write together (desktopLearnedHandler).
+	learnedMu sync.Mutex
+
 	// hostGUI runs Windows apps on a private desktop of the host and streams them to a VM; created on first use.
 	hostGUIOnce sync.Once
 	hostGUIMgr  *winhost.Manager
@@ -196,8 +199,8 @@ type Server struct {
 	hostVisionMu sync.Mutex
 	hostVision   map[string]*hostVision
 
-	// callerAt stands in for Desktops.DesktopAt in callerDesktop, in tests.
-	callerAt func(r *http.Request) (string, bool)
+	// callerAt stands in for Desktops.CallerAt in callerDesktop, in tests.
+	callerAt func(r *http.Request) (string, bool, error)
 
 	// agentRequest stands in for Desktops.AgentRequest there, in tests.
 	agentRequest func(ctx context.Context, id, method, path string, body io.Reader) (*http.Response, error)
@@ -343,6 +346,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(stepImagePath, s.stepImageHandler)
 	mux.HandleFunc("/api/agent/events", s.agentEventHandler)
 	mux.HandleFunc("/api/querytext", s.queryTextHandler)
+	mux.HandleFunc("/api/agent/waiting", s.agentWaitingHandler)
 	mux.HandleFunc("/api/querynotes", s.queryNotesHandler)
 	mux.HandleFunc("/api/tasks/finished", s.finishedTasksHandler)
 	mux.HandleFunc("/api/querynotes/close", s.closeQueryNoteHandler)

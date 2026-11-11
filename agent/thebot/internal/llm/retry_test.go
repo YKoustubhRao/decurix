@@ -141,6 +141,42 @@ func TestAProvidersOwnFailureIsAskedAgain(t *testing.T) {
 	}
 }
 
+// The control plane answers a desktop it could not place (Docker did not answer) 503 "try again", and a caller it
+// knows is no desktop 403 (found live 2026-11-11). The first is asked again and its answer used; the second is final.
+func TestTheControlPlanesTryAgainIsAskedAgainItsRefusalIsNot(t *testing.T) {
+	for _, c := range []struct {
+		status    int
+		failFirst int
+		wantCalls int
+		wantOK    bool
+	}{
+		{http.StatusServiceUnavailable, 2, 3, true},
+		{http.StatusForbidden, 2, 1, false},
+	} {
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			if calls <= c.failFirst {
+				w.Header().Set("Retry-After-Ms", "0")
+				w.WriteHeader(c.status)
+				io.WriteString(w, `{"error":"the desktop list could not be read; try again"}`)
+				return
+			}
+			io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+		}))
+		p := NewOpenAI("test", "")
+		p.BaseURL = server.URL
+		out, err := p.Chat(context.Background(), "demo", nil, Options{})
+		server.Close()
+		if calls != c.wantCalls || (err == nil) != c.wantOK || c.wantOK && out.Text != "ok" {
+			t.Errorf("HTTP %d: calls %d (want %d), out %+v, err %v", c.status, calls, c.wantCalls, out, err)
+		}
+		if !c.wantOK && Transient(err) {
+			t.Errorf("HTTP %d was taken as transient: %v", c.status, err)
+		}
+	}
+}
+
 func TestACallThatCouldNotConnectIsTriedAgain(t *testing.T) {
 	// A listener that is not there yet: the first two dials are refused, then it answers.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

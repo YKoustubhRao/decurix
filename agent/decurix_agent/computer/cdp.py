@@ -1079,6 +1079,9 @@ def observe():
     stack = [(root, [f"site {site}"], False, None)] if root else []
     visits = 0
     relayed = any(viewer in url for viewer in RELAYED_VIEWER_PATHS)
+    # The names the page's controls carry: a label whose words are one of them is that control's name, listed with it.
+    control_names = {" ".join(((n.get("name") or {}).get("value", "") or "").split()).lower()
+                     for n in nodes if _ax_role(n) in INTERACTIVE} - {""}
 
     while stack:
         node, segments, inside_row, bar = stack.pop()
@@ -1120,6 +1123,12 @@ def observe():
                 parent = by_id.get(node.get("parentId"))
                 parent_role = ((parent or {}).get("role") or {}).get("value", "").lower()
                 include = parent_role not in NAMED_BY_CONTENT
+                if not include and parent_role in ("labeltext", "label"):
+                    # A label that names no control - the caption of a figure shown read-only ("Grand Total" over
+                    # its amount) - is the only thing that says what that figure is. Found live (2026-11-08): a saved
+                    # form's totals were listed as bare amounts, and the independent check set them against the wrong
+                    # lines of the document and put eight false disagreements to the person.
+                    include = " ".join(text_of(parent).split()).lower() not in control_names
 
         if include:
             box, on_screen = screen_box(backend_id)
@@ -1990,7 +1999,7 @@ def type_text(element, text, replace=True, check_later=False):
         if any(v in ((getattr(page, "target", None) or {}).get("url") or "") for v in RELAYED_VIEWER_PATHS):
             return True
 
-        # Did it stay? ERPNext's date field empties itself after text arrives
+        # Did it stay? A web ERP's date field empties itself after text arrives
         # in one piece while its date picker is open (found live: every
         # "type 10-12-2026 into Delivery Date" reported success and left the
         # field empty, so the order could not be saved). The same text typed
@@ -2170,6 +2179,103 @@ FOCUSED_NUMBER = """(() => { const a = document.activeElement;
     ? (a.getAttribute('aria-label') || a.name || a.id || 'number field') : null; })()"""
 
 
+_LINK_TARGET = """function() {
+  const a = this.closest ? this.closest('a[href]') : null;
+  if (!a) return '';
+  const raw = (a.getAttribute('href') || '').trim();
+  if (!raw || raw.startsWith('#')) return '';
+  // A link a script or a framework may turn into an act: an inline handler, or the markup that makes a link send a
+  // request of its own (data-method="post|delete", data-remote, data-turbo-method) - unsure is not navigation.
+  for (let n = this; n; n = n.parentElement) {
+    for (const name of ['onclick', 'onmousedown', 'onmouseup', 'onpointerdown', 'onpointerup', 'data-method',
+                        'data-remote', 'data-turbo-method', 'data-turbo-stream', 'hx-post', 'hx-put', 'hx-delete',
+                        'hx-patch']) {
+      if (n.hasAttribute && n.hasAttribute(name)) return '';
+    }
+    if (n === a) break;
+  }
+  try { const u = new URL(a.href, document.baseURI); return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : ''; }
+  catch (e) { return ''; }
+}"""
+
+# The nodes whose listeners a press reaches: the control, every element above it, the document and the window.
+_PRESS_PATH = """function() {
+  const out = [];
+  for (let n = this; n; n = n.parentNode) out.push(n);
+  out.push(window);
+  return out;
+}"""
+
+# Events a press of a link fires that a script may act on.
+_PRESS_EVENTS = {"click", "auxclick", "mousedown", "mouseup", "pointerdown", "pointerup", "touchstart", "touchend",
+                 "keydown", "keyup", "keypress"}
+
+
+def _press_listened(page, object_id):
+    """Whether a script listens for a press anywhere on its way (the control, its ancestors, the document, the
+    window), as DevTools reads listeners; None when that cannot be read. A framework that delegates its handlers to
+    the root is listening: such a link may act by script whatever its address."""
+
+    path = page.call("Runtime.callFunctionOn", {"objectId": object_id, "functionDeclaration": _PRESS_PATH})
+    array_id = (path.get("result") or {}).get("objectId")
+    if not array_id:
+        return None
+    props = page.call("Runtime.getProperties", {"objectId": array_id, "ownProperties": True}).get("result") or []
+    nodes = [p["value"]["objectId"] for p in props
+             if str(p.get("name", "")).isdigit() and (p.get("value") or {}).get("objectId")]
+    if not nodes:
+        return None
+    for node in nodes:
+        listeners = page.call("DOMDebugger.getEventListeners", {"objectId": node}).get("listeners")
+        if listeners is None:
+            return None
+        if any(str(listener.get("type") or "") in _PRESS_EVENTS for listener in listeners):
+            return True
+    return False
+
+
+def link_target(element):
+    """The web address a press on this control goes to, as the page's own markup says (an anchor's href, http or https,
+    not a script and not a spot on the same page), or "" when it is no such link, when a script may act on the press
+    (an inline handler or a request-sending attribute on its way to the anchor, or a press listener anywhere from the
+    control up to the window: _press_listened), or when the page cannot be asked. Review of freeze 2 (A6): a link
+    with a click handler or data-method="post" was read as navigation."""
+
+    page = None
+    try:
+        page = _page_for(element)
+        object_id = _object(page, element["handle"]["backend_id"])
+        value = page.call("Runtime.callFunctionOn", {"objectId": object_id, "returnByValue": True,
+                                                     "functionDeclaration": _LINK_TARGET}).get("result", {}).get("value")
+        if not isinstance(value, str) or not value:
+            return ""
+        if _press_listened(page, object_id) is not False:
+            return ""
+        return value
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
+        return ""
+    finally:
+        if page is not None:
+            page.close()
+
+
+def page_has_keyboard():
+    """Whether the active page's own document has the keyboard (document.hasFocus()): False when it is in the browser's
+    own controls - its address bar - or another window; None when the page cannot be asked."""
+
+    page = None
+    try:
+        page = active_page()
+        value = page.call("Runtime.evaluate", {"expression": "document.hasFocus()", "returnByValue": True}).get(
+            "result", {}).get("value")
+        return value if isinstance(value, bool) else None
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
+        return None
+    finally:
+        if page is not None:
+            page.close()
+
+
 def focused_number_field():
     """The label of the number field that has the keyboard, or None."""
 
@@ -2183,6 +2289,28 @@ def focused_number_field():
     finally:
         if page is not None:
             page.close()
+
+
+# How much of a field's value the form readers keep (FORM_FIELDS, core._page_fields, the Enter path): the 600 characters
+# approvals quote. A longer value is cut at a word and marked cut (cut_value), and a cut read is never judged as the
+# whole value (records.presave). Found live (2026-11-08): values were cut at 80 characters without a mark, and a
+# declared 126-character Notes field was refused at every save as differing from the record until the budget ran out.
+FORM_VALUE_CHARS = 600
+
+
+def cut_value(value, limit=None):
+    """(value, cut): a field's value whole up to `limit` (FORM_VALUE_CHARS) characters; a longer one cut at its last
+    whole word before that (no partial token left to judge) and marked cut."""
+
+    value = str(value if value is not None else "")
+    limit = FORM_VALUE_CHARS if limit is None else limit
+    if len(value) <= limit:
+        return value, False
+    part = value[:limit]
+    gap = max(part.rfind(c) for c in " \n\t")
+    if gap > limit // 2:
+        part = part[:gap]
+    return part.rstrip(), True
 
 
 FORM_FIELDS = """function(enter) {
@@ -2203,24 +2331,62 @@ FORM_FIELDS = """function(enter) {
     const l = f.closest('label'); if (l) return l.textContent.trim();
     return f.name || f.id || f.type;
   };
-  const out = [];
+  const out = [], unset = [];
   for (const f of form.elements) {
     if (f.disabled) continue;
     const ft = (f.type || '').toLowerCase();
     if (['hidden', 'submit', 'button', 'reset', 'image', 'file', 'password'].includes(ft)) continue;
     let v = '';
-    if (f.tagName === 'SELECT') { const o = f.options[f.selectedIndex]; v = o && o.value !== '' ? o.label : ''; }
+    if (f.tagName === 'SELECT') {
+      const o = f.options[f.selectedIndex];
+      v = o && o.value !== '' ? o.label : '';
+      // A choice left in its "no selection" state - nothing selected, or the option whose value is empty - told by
+      // structure, never by the option's words (records.presave: declared from a source, or asked).
+      if (!o || o.value === '') unset.push(labelOf(f).slice(0, 60));
+    }
     else if (ft === 'checkbox' || ft === 'radio') { if (!f.checked) continue; v = 'checked'; }
-    else v = String(f.value || '');
+    else {
+      v = String(f.value || '');
+      if (v.trim() === '' && (f.getAttribute('role') || '').toLowerCase() === 'combobox') unset.push(labelOf(f).slice(0, 60));
+    }
     if (v.trim() === '') continue;
-    out.push([labelOf(f).slice(0, 60), v.slice(0, 80), ft, (f.getAttribute('autocomplete') || '').toLowerCase()]);
+    // A value is read whole up to __VALUE_CHARS__ characters; a longer one is cut at its last whole word before that and
+    // marked cut, so nothing judges the part as the whole (cut_value; records.presave).
+    let cut = false;
+    if (v.length > __VALUE_CHARS__) {
+      cut = true;
+      v = v.slice(0, __VALUE_CHARS__);
+      const gap = v.search(/\\s\\S*$/);
+      if (gap > __VALUE_CHARS__ / 2) v = v.slice(0, gap);
+    }
+    // A placeholder that writes a date format ("DD-MM-YYYY") states the order the field takes a date in
+    // (values.stated_date_order); any other placeholder is not passed on.
+    const holder = (f.getAttribute('placeholder') || '').trim();
+    const format = /^[ymd]{1,4}([-\\/. ][ymd]{1,4}){2}$/i.test(holder) ? holder : '';
+    out.push([labelOf(f).slice(0, 60), v, ft, (f.getAttribute('autocomplete') || '').toLowerCase(), cut, format]);
   }
   const name = form.getAttribute('aria-label') || form.getAttribute('name') || form.id ||
     ((form.querySelector('legend, h1, h2, h3') || {}).textContent || '').trim() || 'the form';
   const control = enter ? submitControl : b;
   const submit = ((control && (control.getAttribute('aria-label') || control.textContent || control.value)) || '').trim();
-  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60)};
-}"""
+  // How the press sends the form, as the page writes it (a control's own formmethod over the form's). A form that
+  // names none is not taken as GET: an app may send it by script, with a POST of its own.
+  const method = ((control && control.getAttribute('formmethod')) || form.getAttribute('method') || '').toLowerCase();
+  // A sign-in's shape: one secret field that is not a one-time code, beside one filled field naming who signs in.
+  // A one-time code, a signing PIN alone or a form of more fields is not one.
+  const live = [...form.elements].filter(f => !f.disabled && f.tagName === 'INPUT');
+  const secrets = live.filter(f => (f.type || '').toLowerCase() === 'password');
+  const oneTime = f => (f.getAttribute('autocomplete') || '').toLowerCase() === 'one-time-code'
+    || (f.getAttribute('inputmode') || '').toLowerCase() === 'numeric';
+  const named = live.filter(f => ['text', 'email', ''].includes((f.type || '').toLowerCase()) && String(f.value || '').trim() !== '');
+  const others = live.filter(f => !['password', 'text', 'email', '', 'hidden', 'submit', 'button', 'checkbox'].includes((f.type || '').toLowerCase()));
+  const signsIn = secrets.length === 1 && !oneTime(secrets[0]) && named.length === 1 && others.length === 0
+    && [...form.elements].filter(f => !f.disabled && ['SELECT', 'TEXTAREA'].includes(f.tagName)).length === 0;
+  // Whether a password-type field holds something (its value never leaves the page): a code or PIN the press sends.
+  const secretFilled = secrets.some(f => String(f.value || '').trim() !== '');
+  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60), unset: unset, method: method, signs_in: signsIn,
+          secret_filled: secretFilled};
+}""".replace("__VALUE_CHARS__", str(FORM_VALUE_CHARS))
 
 # A form with fewer filled fields than this (a search box and its button, a sign-in) is sent without the check.
 FORM_CHECK_MIN_FIELDS = 3
@@ -2242,7 +2408,8 @@ def _without_secrets(found):
         return found
     from decurix_agent.computer import privacy
 
-    fields = []
+    fields, cut, formats = [], [], {}
+    secret_filled = bool(found.get("secret_filled"))  # (a password-type field, which the page's read leaves out)
     for item in found.get("fields") or []:
         label, value = (list(item) + ["", ""])[:2]
         kind, autocomplete = (list(item) + ["", "", "", ""])[2:4]
@@ -2251,9 +2418,18 @@ def _without_secrets(found):
             secret = privacy.secret_field(field) or privacy.credential_in(str(value))
         except Exception:  # noqa: BLE001 - not known to be safe to show: withheld
             secret = True
+        if secret and str(value or "").strip():
+            secret_filled = True  # a code or PIN the press sends: its value is never listed (core._authorises)
         if not secret:
             fields.append([label, value])
-    return dict(found, fields=fields)
+            if len(item) > 4 and item[4]:
+                cut.append(label)  # read in part (FORM_VALUE_CHARS): never judged as the whole value
+            if len(item) > 5 and item[5] and _FORMAT_PLACEHOLDER.match(str(item[5])):
+                formats[str(label)] = str(item[5])[:20]  # its placeholder's date format (values.stated_date_order)
+    # "cut": the labels whose values were read in part; "unset": choices left in their "no selection" state;
+    # "formats": {label: the date format its placeholder writes}.
+    return dict(found, fields=fields, cut=cut, unset=[str(u) for u in found.get("unset") or [] if str(u).strip()],
+                formats=formats, secret_filled=secret_filled)
 
 
 # The largest WebSocket frame read from the browser (a screenshot of a large page is a few MB), and how many
@@ -2844,7 +3020,7 @@ def _navigate_or_refuse_to_leave(page, url):
     Page.navigate, unless the page asks whether to leave with unsaved changes
     ("Leave site? Changes you made may not be saved"): then stay, and say so.
 
-    Found on ERPNext, which asks that of any form with changes: Page.navigate
+    Found on a web ERP, which asks that of any form with changes: Page.navigate
     does not answer while the question is open, so an open timed out after
     20 s and left the dialog on the screen for whatever came next. Leaving
     would throw the changes away without anyone deciding to, so the answer is

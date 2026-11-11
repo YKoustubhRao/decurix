@@ -48,6 +48,11 @@ def begin(skill, task, text, values=None, mode="model", **extra):
         # A task done from a recording nobody has taught yet (skill_task's one-off).
         "recording": (run.get("mimic") or {}).get("id") if run.get("one_off") else None,
         "values": dict(values or {}),
+        # The fields the run leaves as the application fills them in, each with the judgement of the person's reply it
+        # rests on (skill_task "Left to the application"): `gui do` leaves them out only where that judgement, read
+        # from the control plane, offered it (person_record.left_decision) - this file names, it backs nothing.
+        "left": {str(name): str((left or {}).get("judgement") or "")
+                 for name, left in (run.get("left_to_app") or {}).items()},
     })
 
     return _current
@@ -99,6 +104,15 @@ def open_question():
 # What the person was asked during the task being worked on, and what they answered (note_exchange).
 _exchanges = {"task": None, "said": []}
 MAX_EXCHANGES = 12
+
+
+def exchanges_this_task():
+    """[(asked, reply)]: the questions put to the person in the task being worked on, each with their reply, oldest
+    first (note_exchange; [] for another task's)."""
+
+    if _exchanges["task"] != task_context.current():
+        return []
+    return list(_exchanges["said"])
 
 
 def note_exchange(asked, reply, judgement_id="", secret=False):
@@ -203,6 +217,43 @@ def said_this_task():
     return ("What the person said during this task - it decides over the request where they disagree, and what they "
             "asked for is part of the work:\n" + "\n".join(f"- asked: {q} - they answered: {a}"
                                                             for q, a in _exchanges["said"]))
+
+
+# What the final check is shown of each earlier answer (characters), and of them all.
+_EARLIER_ANSWER_CHARS = 800
+_EARLIER_ALL_CHARS = 8000
+
+
+def said_on_earlier_tasks():
+    """
+    What the person told this worker on its earlier tasks, for the final check's judge (person_record.worker_said:
+    the control plane's record, never a file or note of the worker's), each answer with the question it answered: a
+    rule they gave there holds here, over the check's own idea of how the work should be laid out. "" when none or
+    unread.
+    """
+
+    try:
+        from decurix_agent import person_record
+        rows = person_record.worker_said()
+    except Exception:  # noqa: BLE001 - what cannot be confirmed is not shown
+        return ""
+    lines, size = [], 0
+    for row in rows:
+        asked = " ".join(str(row.get("asked") or "").split())[:400]
+        said = " ".join(str(row.get("text") or "").split())[:_EARLIER_ANSWER_CHARS]
+        if not said:
+            continue
+        line = f"- asked: {asked} - they answered: {said}" if asked else f"- they said: {said}"
+        if size + len(line) > _EARLIER_ALL_CHARS:
+            break
+        lines.append(line)
+        size += len(line)
+    if not lines:
+        return ""
+    return ("What the person told this worker on its earlier tasks (newest first; each answer is to its own question "
+            "there; a rule or way of laying out the work they gave holds on this task too, over your own idea of how "
+            "it should be done and over a rule the task was taught that it differs from - judge the work against "
+            "it):\n" + "\n".join(lines))
 
 
 # A no that is "not yet": the person asks for something first and says to come back. Found live (2026-10-27): "No -
@@ -342,6 +393,17 @@ def run_values(skill=None, recording=None):
         return dict(values) if isinstance(values, dict) else {}
 
     return {}
+
+
+def run_left(skill):
+    """{name: judgement id} of the fields the run handed over as `skill` leaves as the application fills them in ({}
+    when it was handed nothing, something else, or for another task). Read from any process; backs nothing by itself
+    (person_record.left_decision checks each judgement on the control plane)."""
+
+    kept = _kept()
+    if kept is None or not skill or kept.get("skill") != skill or not isinstance(kept.get("left"), dict):
+        return {}
+    return {str(k): str(v or "") for k, v in kept["left"].items()}
 
 
 def handed(skill):

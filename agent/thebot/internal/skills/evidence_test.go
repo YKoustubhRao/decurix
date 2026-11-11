@@ -30,6 +30,34 @@ func TestWhatIsReadIsKeptAsUnitsWithTheirSource(t *testing.T) {
 	}
 }
 
+// Found live (2026-11-10): "gui read e700" was kept as a document named "e700", and the coverage check sent the work
+// back three times with "e700 (read; none of its figures went into what was entered)".
+func TestAnElementReadOffTheScreenIsScreenEvidenceNeverACoverageGap(t *testing.T) {
+	st := &operatorState{ActiveWindow: "Return summary - Portal - Chromium"}
+	st.noteEvidence("gui read e700", "text \"Summary\" (e700) holds 52 characters in 2 lines:\nTaxable value 41,250.00\nTax 7,425.00")
+	st.noteEvidence("gui read --role textbox --name Notes", "textbox \"Notes\" (e12) holds 14 characters in 1 line:\nRef 99881 kept")
+	for _, u := range st.Units {
+		if u.Kind != "screen" || u.Source != screenSource("Return summary - Portal - Chromium") {
+			t.Fatalf("an element read became %+v", u)
+		}
+	}
+	if gaps := st.coverageGaps(); len(gaps) != 0 {
+		t.Fatalf("an element read is a coverage gap: %q", gaps)
+	}
+	if issues := st.coverageIssues("Filed."); len(issues) != 0 {
+		t.Fatalf("an element read sent the work back: %+v", issues)
+	}
+	// Still evidence: a record's values it shows stand together in it.
+	if !st.unitHolds("7425.00") || st.recordFinding([]string{"41250.00", "7425.00"}) != "" {
+		t.Error("what an element read showed is no longer evidence")
+	}
+	// A document read whole still counts.
+	st.noteEvidence("office read /w/Invoice_455.pdf", "Invoice No: 455\nTaxable 8,000.00")
+	if gaps := strings.Join(st.coverageGaps(), "\n"); !strings.Contains(gaps, "Invoice_455.pdf (read;") {
+		t.Fatalf("a document read and never entered is no longer a gap: %q", gaps)
+	}
+}
+
 // Found live (2026-10-23): invoice 455's number with 456's amount.
 func TestValuesOfOneRecordFromDifferentSourceRecordsAreFound(t *testing.T) {
 	st := &operatorState{Hosted: true}
@@ -701,6 +729,42 @@ func TestAChecksErrorIsNotAPass(t *testing.T) {
 		matrix := (&OperatorSkill{}).caseMatrix(rc, st, action)
 		if len(matrix) != 1 || !matrix[0].Unchecked {
 			t.Errorf("%s: case matrix points = %+v, want one not-checked point", name, matrix)
+		}
+	}
+}
+
+// A loop that filters office read's output under its own marker lines ("=== NAME ===") is credited only with what
+// code finds in the file itself: a filtered line of the bill is its line; a marker over nothing, or over lines the
+// file does not hold, earns nothing (found live 2026-11-09: five bills read so were "never read", three times over).
+func TestALoopsMarkerIsCreditedOnlyWithTheFilesOwnLines(t *testing.T) {
+	bills := map[string]string{
+		"/w/bills/1048 Vasco Bay.docx":        "1048 Vasco Bay.docx: 4 table(s)\nBASIC PRICE | 40,000.00\nIGST @ 18% | 7,200.00\nGRAND TOTAL | 47,200.00\n",
+		"/w/bills/1049 Hampi Residency.docx":  "1049 Hampi Residency.docx: 4 table(s)\nBASIC PRICE | 12,000.00\nCGST @ 9% | 1,080.00\nGRAND TOTAL | 14,160.00\n",
+		"/w/bills/1050 Bhuvana Hospital.docx": "1050 Bhuvana Hospital.docx: 4 table(s)\nBASIC PRICE | 18,000.00\nGRAND TOTAL | 21,240.00\n",
+	}
+	st := &operatorState{readDocument: func(file string) (string, bool) {
+		text, ok := bills[file]
+		return text, ok
+	}}
+	out := "=== 1048 Vasco Bay.docx ===\nBASIC PRICE | 40,000.00\nGRAND TOTAL | 47,200.00\n" +
+		"=== 1049 Hampi Residency.docx ===\nGRAND TOTAL | 99,999.00\n" + // (not in the file: invented)
+		"=== 1050 Bhuvana Hospital.docx ===\n\n" // (nothing under it)
+	st.noteEvidence(`for f in /w/bills/*.docx; do echo "=== $(basename "$f") ==="; office read "$f" | grep -i "total\|basic"; done`, out)
+	var docs []string
+	for _, u := range st.Units {
+		if u.Kind == "document" {
+			docs = append(docs, u.Source)
+		}
+	}
+	if strings.Join(docs, "|") != "1048 Vasco Bay.docx" {
+		t.Fatalf("documents credited = %v, want only the one whose lines stand in it", docs)
+	}
+	// Without code's own read of the file, a marker earns nothing.
+	st = &operatorState{}
+	st.noteEvidence(`for f in /w/bills/*.docx; do echo "=== $f ==="; office read "$f" | grep total; done`, out)
+	for _, u := range st.Units {
+		if u.Kind == "document" {
+			t.Fatalf("credited with no read of the file: %+v", u)
 		}
 	}
 }

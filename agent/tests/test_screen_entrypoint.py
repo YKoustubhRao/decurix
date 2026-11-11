@@ -109,6 +109,12 @@ class TheTwoSessions(unittest.TestCase):
         self.assertIn('"${DECURIX_SCREEN_USER:-}" != "1"', guard)
 
     @unittest.skipUnless(DOCKERFILE.is_file(), "the repository's docker/ folder is not beside this agent/ copy")
+    def test_the_image_puts_the_broker_panel_layout_where_the_worker_session_reads_it(self):
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+        self.assertIn("COPY agent/decurix-panel-broker.xml /opt/decurix-panel-broker.xml", dockerfile)
+        self.assertRegex(dockerfile, r"chmod 644 [^\n]*/opt/decurix-panel-broker\.xml")
+
+    @unittest.skipUnless(DOCKERFILE.is_file(), "the repository's docker/ folder is not beside this agent/ copy")
     def test_the_image_has_both_sessions_and_keeps_the_default_modes_vnc(self):
         dockerfile = DOCKERFILE.read_text(encoding="utf-8")
         for path in ("/opt/decurix-screen-session.sh", "/opt/decurix-worker-session.sh",
@@ -117,6 +123,53 @@ class TheTwoSessions(unittest.TestCase):
         self.assertIn("tigervnc-standalone-server", dockerfile)
         self.assertIn("ln -sfn /usr/libexec/vncserver /usr/bin/vncserver", dockerfile)
         self.assertIn("--force-confold", dockerfile)
+
+
+PANEL_BROKER = AGENT / "decurix-panel-broker.xml"
+PANEL_DEFAULT = AGENT / "decurix-panel.xml"
+
+
+class TheWindowList(unittest.TestCase):
+    """The panel's window list in broker mode: the worker's panel cannot see the windows (an untrusted client), so the
+    screen user runs a window list that can only list and raise them (computer/windowlist.py), and the worker's panel
+    loses its own. Not a second xfce4-panel as the screen user: even locked, its menus (Log Out, Help) and its window
+    list's "Launch New Instance" start programs, and that would be a way round the gate."""
+
+    def test_the_screen_session_runs_the_window_list_as_the_screen_user_and_no_panel(self):
+        screen = code(SCREEN.read_text(encoding="utf-8"))
+        self.assertIn("python3 -m decurix_agent.computer.windowlist", screen)
+        # In a loop that stops when it says it cannot run here (3), like the broker's.
+        loop = screen[screen.index("decurix_agent.computer.windowlist"):]
+        self.assertIn("[ $? -eq 3 ] && break", loop[:200])
+        for launcher in ("xfce4-panel", "xfdesktop", "whiskermenu", "exo-open", "xdg-open", "xfce4-terminal"):
+            self.assertNotIn(launcher, screen)
+
+    def test_the_worker_does_not_run_the_window_list(self):
+        worker = code(WORKER.read_text(encoding="utf-8"))
+        self.assertNotIn("windowlist", worker)
+
+    def test_the_worker_session_puts_the_layout_without_a_window_list_in_place_before_the_panel_starts(self):
+        worker = code(WORKER.read_text(encoding="utf-8"))
+        put = worker.index("/opt/decurix-panel-broker.xml")
+        self.assertLess(put, worker.index('for part in xfsettingsd xfce4-panel'))
+        self.assertIn('grep -q \'value="tasklist"\' "$PANEL_XML"', worker)
+        self.assertIn('mv -f "$PANEL_XML.new" "$PANEL_XML"', worker)
+
+    def test_the_broker_layout_has_no_window_list_and_keeps_the_launchers(self):
+        broker = PANEL_BROKER.read_text(encoding="utf-8")
+        self.assertNotIn("tasklist", broker)
+        self.assertNotIn("windowmenu", broker)
+        default = PANEL_DEFAULT.read_text(encoding="utf-8")
+        self.assertIn('value="tasklist"', default)  # what the worker session looks for to replace it
+        # The launchers keep their plugin ids: their desktop files live in launcher-<id>/ in the worker's home.
+        for plugin in ('"plugin-2" type="string" value="whiskermenu"', '"plugin-3" type="string" value="launcher"',
+                       '"plugin-4" type="string" value="launcher"', '"plugin-5" type="string" value="launcher"'):
+            self.assertIn(plugin, broker)
+            self.assertIn(plugin, default)
+        # Two bars on the bottom edge, at the left (p=8) and the right (p=4), each as long as what it holds.
+        self.assertIn('value="p=8;x=0;y=0"', broker)
+        self.assertIn('value="p=4;x=0;y=0"', broker)
+        self.assertEqual(broker.count('<property name="length-adjust" type="bool" value="true"/>'), 2)
 
 
 if __name__ == "__main__":

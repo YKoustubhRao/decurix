@@ -517,15 +517,41 @@ def note_command(command):
                 _run["shell"].append(command)
 
 
+def task_commands():
+    """The shell commands this task ran, from every engine: the engine jobs' that worked, then those noted as run."""
+
+    with _lock:
+        shell = list(_run["shell"])
+    return ran_commands() + shell
+
+
 def changed_things(commands=None):
     """The commands among `commands` (the task's own, from every engine, when None) that could have changed
     something."""
 
     if commands is None:
-        with _lock:
-            shell = list(_run["shell"])
-        commands = ran_commands() + shell
+        commands = task_commands()
     return [c for c in commands if _changes(c)]
+
+
+# A curl or wget told to send data: a method that writes, a body, a form or an upload - TheBot's safety rule's reading
+# (safety.go, "it sends data to a web service"): -d/-F/-T are case-sensitive (-f, -s, -t send nothing). A here-document
+# or a pipe's other side is not curl's.
+_SENDS = re.compile(
+    r"\bcurl\b[^|;&\n]*(?:\s(?:-X\s*|--request[\s=]+)['\"]?(?i:post|put|patch|delete)\b"
+    r"|\s--(?:data|data-[\w-]+|json|form|form-string|upload-file)\b|\s-[a-zA-Z]*[dFT](?:[\s=@'\"]|$))"
+    r"|\bwget\b[^|;&\n]*\s--(?:post-data|post-file|body-data|body-file|method[\s=]+['\"]?(?i:post|put|patch|delete)\b)")
+# Code that reaches the network to send (a script's HTTP client asked to post, put or patch).
+_SENDS_IN_CODE = re.compile(r"\b(?:requests|httpx|session|client)\.(?:post|put|patch|delete|request)\s*\(|\burlopen\s*\("
+                            r"[^)]*\bdata\s*=|\bRequest\s*\([^)]*\bdata\s*=|\bmethod\s*=\s*['\"](?i:post|put|patch)")
+
+
+def sends_data(command):
+    """Whether a shell command sends data to a web service: a curl or wget told to send, or code run inline or from a
+    here-document that posts, puts or patches."""
+
+    command = str(command or "")
+    return bool(_SENDS.search(command) or (_INTERPRETER.search(command) and _SENDS_IN_CODE.search(command)))
 
 
 def use(ok, commands):

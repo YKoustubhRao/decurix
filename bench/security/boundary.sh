@@ -95,7 +95,7 @@ trap cleanup EXIT
 if [ "$LAYER" = 1 ]; then
     mkdir -p "$WORK/ctx"
     for f in decurix-entrypoint.sh decurix-screen-session.sh decurix-worker-session.sh start_agent_terminal.sh \
-        decurix-xfwm4.xml gui; do
+        decurix-xfwm4.xml decurix-panel-broker.xml gui; do
         cp "$REPO/agent/$f" "$WORK/ctx/"
     done
     cp -r "$REPO/agent/decurix_agent" "$WORK/ctx/decurix_agent"
@@ -111,6 +111,7 @@ RUN [ -x /usr/bin/Xtigervnc ] || { apt-get update >/dev/null && DEBIAN_FRONTEND=
 COPY decurix-entrypoint.sh decurix-screen-session.sh decurix-worker-session.sh start_agent_terminal.sh /opt/
 COPY gui /usr/local/bin/gui
 COPY decurix-xfwm4.xml /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+COPY decurix-panel-broker.xml /opt/decurix-panel-broker.xml
 RUN rm -rf /opt/decurix_agent
 COPY decurix_agent /opt/decurix_agent
 RUN chmod 755 /opt/decurix-entrypoint.sh /opt/decurix-screen-session.sh /opt/decurix-worker-session.sh \

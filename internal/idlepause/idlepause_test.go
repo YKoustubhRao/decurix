@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,7 +25,15 @@ type fakeDesktops struct {
 	viewed  map[string]time.Time
 }
 
-func (f *fakeDesktops) List(context.Context) ([]desktop.Desktop, error) { return f.list, nil }
+// List is the fake's desktops, each this control plane's (desktop.OwnerLabel) unless its id starts "other-".
+func (f *fakeDesktops) List(context.Context) ([]desktop.Desktop, error) {
+	out := make([]desktop.Desktop, len(f.list))
+	for i, d := range f.list {
+		d.Owned = !strings.HasPrefix(d.ID, "other-")
+		out[i] = d
+	}
+	return out, nil
+}
 
 func (f *fakeDesktops) Stop(_ context.Context, id string) error {
 	f.mu.Lock()
@@ -270,5 +279,27 @@ func TestCheckFastPause(t *testing.T) {
 
 	if len(desktops.paused) != 1 || desktops.paused[0] != "bordu" {
 		t.Fatalf("fast-pause: paused = %v, want [bordu]", desktops.paused)
+	}
+}
+
+// A desktop another control plane created (or one that names no creator) is never paused or stopped by this one's
+// sweep, however idle it looks here: found live (2026-11-08), a second control plane on the same Docker paused a
+// desktop the first was driving mid-task.
+func TestAnotherControlPlanesDesktopIsLeftAlone(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	idle := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	desktops := &fakeDesktops{list: []desktop.Desktop{
+		{ID: "other-erpbills", Status: "running", StartedAt: idle},
+		{ID: "mine", Status: "running", StartedAt: idle},
+	}}
+	c := &Checker{Desktops: desktops, Tasks: &fakeTasks{}, Threshold: time.Minute, Action: "stop", now: func() time.Time { return now }}
+	c.sweep(context.Background())
+	for _, id := range append(append([]string{}, desktops.stopped...), desktops.paused...) {
+		if id == "other-erpbills" {
+			t.Fatalf("another control plane's desktop was stopped or paused: stopped %v paused %v", desktops.stopped, desktops.paused)
+		}
+	}
+	if len(desktops.stopped)+len(desktops.paused) != 1 {
+		t.Fatalf("this control plane's idle desktop was not put to rest: stopped %v paused %v", desktops.stopped, desktops.paused)
 	}
 }

@@ -225,10 +225,14 @@ func TestTheOperatorIsToldOnceWhenMostOfItsTimeIsGone(t *testing.T) {
 	}
 	note := timeNoteFor(st, began, deadline, began.Add(16*time.Minute))
 	for _, want := range []string{"about 9 of this task's 25 minutes are left", "6 screen actions so far, about 160 seconds each",
-		"rows of values go into a sheet with one gui type", "save it", "HELP"} {
+		"rows of values go into a sheet with one gui type", "save it", "HELP", "your own tools",
+		"Never act as another user, drive another process's socket"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note lacks %q: %q", want, note)
 		}
+	}
+	if strings.Contains(note, "quickest") {
+		t.Errorf("the note invites a shortcut: %q", note)
 	}
 	if note := timeNoteFor(st, began, began.Add(3*time.Minute), began.Add(150*time.Second)); note != "" {
 		t.Errorf("a goal of a few minutes was told: %q", note)

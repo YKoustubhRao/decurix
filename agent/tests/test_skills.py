@@ -23,7 +23,7 @@ from unittest import mock
 # Imported first: it stubs decurix_agent.config on a machine with no desktop.
 from test_recordings import FakeScreen, event, field
 
-from decurix_agent import http_api, playbooks, skill_task, state
+from decurix_agent import http_api, playbooks, skill_task, state, teaching
 from decurix_agent.computer import cli, learning, recording, replay, skill_engine, skills
 
 
@@ -53,7 +53,7 @@ def answer_all(skill, replies=None):
     """Answer every question with `replies` (by question kind) or a sensible default; return the last result."""
 
     replies = dict({"goal": "the customer shows in the list", "start": "yes", "variable": "changes",
-                    "optional": "sometimes", "coordinates": "keep", "unsupported": "manual", "approval": "go ahead", "confirm": "yes"}, **(replies or {}))
+                    "optional": "sometimes", "coordinates": "keep", "unsupported": "manual", "approval": "go ahead", "gates": "yes", "confirm": "yes"}, **(replies or {}))
     result = None
 
     while (question := learning.next_question(skill)) is not None:
@@ -72,7 +72,7 @@ class Building(unittest.TestCase):
         self.assertEqual([(p["name"], p["varies"], p["default"]) for p in skill["params"]],
                          [("customer_name", None, "Acme")])
         self.assertEqual([q["id"] for q in learning.questions(skill)],
-                         ["goal", "start", f"variable:{skill['steps'][1]['id']}", "approval", "confirm"])
+                         ["goal", "start", f"variable:{skill['steps'][1]['id']}", "gates", "approval", "confirm"])
 
     def test_a_secret_field_becomes_a_step_a_person_does(self):
         skill = learning.build([demo("demo-20260914T101500-aaaaaa", "Acme")])
@@ -382,10 +382,10 @@ class LearnedMemoryDispatch(unittest.TestCase):
             release.wait(timeout=2)
 
         def launch():
-            skill_task._remember_async({"name": "saved-skill"})
+            teaching._remember_async({"name": "saved-skill"})
             returned.set()
 
-        with mock.patch.object(skill_task, "_remember", slow_memory):
+        with mock.patch.object(teaching, "_remember", slow_memory):
             caller = threading.Thread(target=launch)
             caller.start()
             try:
@@ -416,8 +416,8 @@ class TeachingBase(unittest.TestCase):
             # The Outbox's log is this test's own: another test's drafts under the same task id are not this task's
             # work (review round 3: a gate test read them and sent correct work back).
             mock.patch.object(outbox, "DRAFTS_DIR", Path(self.tmp.name) / "drafts"),
-            mock.patch.object(skill_task, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
-            mock.patch.object(skill_task, "_remember_async", lambda skill: skill_task._remember(skill)),
+            mock.patch.object(teaching, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
+            mock.patch.object(teaching, "_remember_async", lambda skill: teaching._remember(skill)),
             mock.patch.object(skill_task, "ask_for_query", self._ask_for_query),
             mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None, **kw: self.finals.append((text, kind))),
             mock.patch.object(skill_task.usage, "add"),
@@ -437,6 +437,10 @@ class TeachingBase(unittest.TestCase):
         # about everything else, so the person here always says go ahead. test_approval_question.py asks it.
         if learning.APPROVAL_OPENING in text:
             return skill_task.resume("go ahead")
+        # Which steps stop for an OK is asked outright too (learning._gates): here the steps as learned are right.
+        # test_lesson_gates_own_words.py answers it in words.
+        if learning.GATES_OPENING in text:
+            return skill_task.resume("yes")
         self.asked.append((text, kind))
 
     def tearDown(self):
@@ -731,7 +735,7 @@ class Loops(unittest.TestCase):
         (loop,) = skill["loops"]
         self.assertEqual((loop["length"], loop["reps"], loop["enabled"]), (2, 3, None))
         # The typed fields are not asked about one by one until the loop is decided.
-        self.assertEqual([q["id"] for q in learning.questions(skill)], ["goal", "start", "loop:l1", "approval", "confirm"])
+        self.assertEqual([q["id"] for q in learning.questions(skill)], ["goal", "start", "loop:l1", "gates", "approval", "confirm"])
         self.assertIn("Pens", learning.questions(skill)[2]["text"])
 
     def test_the_same_text_each_time_is_not_data_and_not_a_loop(self):
@@ -762,7 +766,7 @@ class Loops(unittest.TestCase):
         self.assertEqual(len(skill["steps"]), 8)
         # The three typed fields are asked about together (test_learn_documents), not one by one.
         left = [q for q in learning.questions(skill) if q["id"] not in skill["answers"]]
-        self.assertEqual([q["kind"] for q in left], ["variables", "approval", "confirm"])
+        self.assertEqual([q["kind"] for q in left], ["variables", "gates", "approval", "confirm"])
         self.assertEqual(len(left[0]["values"]), 3)
 
     def looped(self):
@@ -834,11 +838,13 @@ def order_lines(session, lines=(("Bolts", "12"), ("Washers", "6"))):
 
 
 class LoopsWithAFixedField(unittest.TestCase):
-    """Found teaching a GnuCash invoice: every line types the same account, which is procedure, not data."""
+    """Found teaching a GnuCash invoice: every line types the same account, which is procedure, not data - once the
+    person says so: a value alike on every line of one demonstration is asked "same for every line, or read from each
+    line?" (a bill's quantity of 1 on both its lines was data, found live 2026-11-10)."""
 
     def looped(self):
         skill = learning.build([order_lines("demo-20260914T101500-aaaaaa")])
-        answer_all(skill, {"loop": "each"})
+        answer_all(skill, {"loop": "each", "variable": "same"})
         return skill
 
     def test_what_every_repetition_types_alike_stays_as_typed(self):

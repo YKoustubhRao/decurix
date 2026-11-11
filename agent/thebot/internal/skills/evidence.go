@@ -101,6 +101,9 @@ func (st *operatorState) addUnit(kind, source, text string) {
 		return
 	}
 	st.Units = append(st.Units, evidenceUnit{Kind: kind, Source: source, Text: truncateText(text, maxUnitChars)})
+	if sourceKind(kind) || kind == "person" {
+		st.Changes++ // a source read or a reply of the person can settle a review point (knowledge.go unsentPoints)
+	}
 	size := 0
 	for _, u := range st.Units {
 		size += len(u.Text)
@@ -135,13 +138,26 @@ func (st *operatorState) noteEvidence(command, output string) {
 		return
 	}
 	segs := shellSegments(command)
-	if len(segs) == 1 && (officeReadRe.MatchString(segs[0].Text) || guiReadRe.MatchString(segs[0].Text)) {
+	if len(segs) == 1 && guiReadRe.MatchString(segs[0].Text) {
+		// gui read shows what an element on the screen holds (a field, a page's text): screen evidence, kept whole so a
+		// record's values in it stand together - never a document of the work that what went out must reflect. Found live
+		// (2026-11-10): "gui read e700" was kept as a document named "e700", and the coverage check sent the work back
+		// three times with "e700 (read; none of its figures went into what was entered)"; the worker read more elements
+		// to settle it, each one more such "document".
+		source := "the screen"
+		if st.ActiveWindow != "" {
+			source = screenSource(st.ActiveWindow)
+		}
+		st.addUnit("screen", source, output)
+		return
+	}
+	if len(segs) == 1 && officeReadRe.MatchString(segs[0].Text) {
 		args := positional(shellWords(segs[0].Text)[2:])
 		source := "a file"
 		if len(args) > 0 {
 			source = path.Base(strings.ReplaceAll(unquoteWord(args[0]), `\`, "/"))
 		}
-		if guiReadRe.MatchString(segs[0].Text) || (len(args) > 0 && docFileTypeRe.MatchString(source)) {
+		if len(args) > 0 && docFileTypeRe.MatchString(source) {
 			st.addUnit("document", source, output)
 			return
 		}
@@ -253,6 +269,13 @@ func (st *operatorState) noteChainedReads(segs []shellSegment, output string) {
 			reads = append(reads, read{name, docFileTypeRe.MatchString(name), at})
 		}
 	}
+	if looped {
+		credited := map[string]bool{}
+		for _, r := range reads {
+			credited[r.source] = true
+		}
+		st.creditLoopMarkers(segs, output, credited)
+	}
 	var whole []read
 	for i := 0; i < len(reads); i++ {
 		if reads[i].at < 0 {
@@ -280,6 +303,85 @@ func (st *operatorState) noteChainedReads(segs []shellSegment, output string) {
 			st.addLines("row", r.source, output[r.at:end])
 		}
 	}
+}
+
+// loopMarkerRe is a line a loop prints to mark whose output follows: a document's name alone, with only decoration
+// around it ("=== 1049 Hampi Residency.docx ===").
+var loopMarkerRe = regexp.MustCompile(`(?m)^[\s=#*\-\[\]<>|]*([^\n:/\\=#*\[\]<>|]{1,200}\.(?:pdf|docx?|odt|rtf|txt|eml))[\s=#*\-\[\]<>|]*$`)
+
+// minCheckedLineChars is how many letters or digits a line under a loop's marker needs to be checked against the file.
+const minCheckedLineChars = 3
+
+// creditLoopMarkers credits a document a loop read under its own marker line, when the loop's body filtered office
+// read's output so its "<name>:" header is gone ("for f in *.docx; do echo "=== $f ==="; office read "$f" | grep ...").
+// A marker alone never earns the credit (a loop can print names without reading anything): code reads the file itself
+// (readDocument) and credits it only when every checkable line under the marker stands in that file's own text, and
+// there is at least one. Found live (2026-11-09): five bills read in such a loop were "never read" to the review, which
+// sent the run back three times until it ran out of time.
+func (st *operatorState) creditLoopMarkers(segs []shellSegment, output string, credited map[string]bool) {
+	if st.readDocument == nil {
+		return
+	}
+	dir := ""
+	for _, seg := range segs {
+		if m := forListRe.FindStringSubmatch(seg.Text); m != nil {
+			for _, w := range shellWords(m[1]) {
+				if p := unquoteWord(w); strings.ContainsAny(p, "*?") && strings.Contains(p, "/") {
+					dir = path.Dir(strings.ReplaceAll(p, `\`, "/"))
+				}
+			}
+		}
+	}
+	if dir == "" {
+		return
+	}
+	marks := loopMarkerRe.FindAllStringSubmatchIndex(output, -1)
+	for i, m := range marks {
+		name := strings.TrimSpace(output[m[2]:m[3]])
+		if credited[name] || strings.ContainsAny(name, "$*?·") {
+			continue
+		}
+		end := len(output)
+		if i+1 < len(marks) {
+			end = marks[i+1][0]
+		}
+		segment := output[m[1]:end]
+		text, ok := st.readDocument(dir + "/" + name)
+		if !ok || !segmentStandsIn(segment, text) {
+			continue
+		}
+		credited[name] = true
+		st.addUnit("document", name, segment)
+	}
+}
+
+// segmentStandsIn reports whether every checkable line of what a loop printed under a file's marker stands in that
+// file's own text (spacing and case aside), with at least one such line. A line holding a masked value ("·": the
+// command gave it) is not checkable either way.
+func segmentStandsIn(segment, text string) bool {
+	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+	whole := norm(text)
+	checked := 0
+	for _, line := range strings.Split(segment, "\n") {
+		l := norm(line)
+		if strings.Contains(l, "·") {
+			continue
+		}
+		n := 0
+		for _, r := range l {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				n++
+			}
+		}
+		if n < minCheckedLineChars {
+			continue
+		}
+		if !strings.Contains(whole, l) {
+			return false
+		}
+		checked++
+	}
+	return checked > 0
 }
 
 // maskedNameRe matches a file's name at a line's start as a header ("<name>:") or after a loop's own marker, with each
@@ -688,6 +790,12 @@ const maxCoverageIssues = 4
 // code. Entered, or said why it is left out, it is settled. Found live (2026-10-24): a phone photo of a sale bill was
 // saved with the others and never entered; the review raised other points, and the month's totals went out 8,750 short.
 func (st *operatorState) coverageIssues(report string) []reviewIssue {
+	// A goal whose rule is to collect the documents and enter nothing (a taught task's first phase) is asked no
+	// document's figures: found live (2026-11-08), the review sent such a phase back four times to "enter what it
+	// holds", the model entered the bill inside the phase, and the next review raised that as breaking the phase.
+	if st.CollectOnly {
+		return nil
+	}
 	said := strings.ToLower(report)
 	var out []reviewIssue
 	for _, gap := range st.coverageGaps() {
@@ -815,7 +923,7 @@ func (st *operatorState) noteListing(command, output string) {
 		if st.ListedAt == nil {
 			st.ListedAt = map[string]int{}
 		}
-		st.ListedAt[window] = len(st.Worked)
+		st.ListedAt[window] = st.at()
 	}
 	kept := st.Listings[:0]
 	for _, l := range st.Listings {
@@ -832,13 +940,22 @@ func (st *operatorState) noteListing(command, output string) {
 // lookBeforeCommit makes sure the checks before a commit have a screen of the window the action acts on: when none
 // was taken, the screen is looked at now (a read-only gui observe - the gate stopped there, so it is that window).
 func (o *OperatorSkill) lookBeforeCommit(rc RunContext, st *operatorState, action string) {
-	if !st.Hosted || st.actionListing(action) != "" {
+	window := actionWindow(action)
+	if window == "" {
+		window = st.ActiveWindow
+	}
+	// A look from before the work typed into the window is the form as it was, not as it is: looked at again too.
+	if !st.Hosted || (st.actionListing(action) != "" && !st.typedSinceLook(window)) {
 		return
 	}
+	started := time.Now()
 	res := runShell(rc.Ctx, rc.Dir(), "gui observe", 60*time.Second, st.guiEnv()...)
 	if res.ExitCode != 0 || strings.TrimSpace(res.Output) == "" {
 		rc.Logf("operator", "no screen of the action's window to check before it")
 		return
+	}
+	if shot := st.takeScreenshot(started); shot != nil {
+		st.lookShot, st.lookShotStep = shot, st.at()
 	}
 	st.noteListing("gui observe", res.Output)
 	st.noteEvidence("gui observe", res.Output)
@@ -1390,7 +1507,7 @@ func (st *operatorState) noteTypedWindow(window string) {
 	if st.TypedAt == nil {
 		st.TypedAt = map[string]int{}
 	}
-	st.TypedAt[window] = len(st.Worked)
+	st.TypedAt[window] = st.at()
 }
 
 // openWindowsLineRe is a screen listing's line of the open windows (agent elements.render).
@@ -1490,6 +1607,35 @@ func (st *operatorState) typedByWork(value string) bool {
 		}
 	}
 	return false
+}
+
+// at is where the goal stands in commands run, one the approval gate held included: what orders a window's typing
+// against its looks (TypedAt, ListedAt). A goal checkpointed before Step was kept counted commands that went through.
+func (st *operatorState) at() int {
+	if st.Step < len(st.Worked) {
+		st.Step = len(st.Worked)
+	}
+	return st.Step
+}
+
+// touchesScreen reports whether any simple command of command looks at or acts on the screen (screenVerbRe).
+func touchesScreen(command string) bool {
+	for _, seg := range shellSegments(command) {
+		if screenVerbRe.MatchString(seg.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+// noteHeldScreen is what a command the approval gate held did on the screen before the gate stopped it: the typing
+// of a chain ahead of the held press went through, so the window's looks from before are no longer what it holds.
+// Found live (2026-11-08, twice): "gui type ... && gui click Save" held at Save recorded nothing, the review was shown
+// the look from before the typing, and its "Still open" lines said fields were empty that gui observe showed filled.
+func (st *operatorState) noteHeldScreen(command string, res shellResult) {
+	if typedOnScreenRe.MatchString(command) {
+		st.noteWindow(command, shellResult{ExitCode: 0, Output: res.Output})
+	}
 }
 
 // typedSinceLook reports whether the work typed or chose in the window after its last look at it.

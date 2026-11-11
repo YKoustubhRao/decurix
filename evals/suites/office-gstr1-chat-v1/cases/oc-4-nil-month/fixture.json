@@ -1,0 +1,271 @@
+{
+ "app": {
+  "export_folder": "",
+  "fp_data": {},
+  "hsn_master": {
+   "4418": "Builders' joinery and carpentry of wood",
+   "8431": "Parts of lifts and escalators",
+   "9403": "Other furniture and parts thereof",
+   "9954": "Construction services",
+   "9987": "Maintenance, repair and installation (except construction) services"
+  },
+  "import_folder": "",
+  "last_company": "",
+  "mobiles": {
+   "29ACKPK4821M1Z5": "98xxxxxx50",
+   "29BCRPR7710C1Z9": "98xxxxxx60"
+  },
+  "now": "17:21:07",
+  "otps": {
+   "29BCRPR7710C1Z9:2026-10": "208857"
+  },
+  "signatories": {
+   "29ACKPK4821M1Z5": [
+    "Ravi Kamath"
+   ],
+   "29BCRPR7710C1Z9": [
+    "Sunita Rao"
+   ]
+  },
+  "tn_logins": [
+   {
+    "gstin": "29ACKPK4821M1Z5",
+    "password": "Sharavati#Demo26",
+    "user": "sharavati.builders"
+   },
+   {
+    "gstin": "29BCRPR7710C1Z9",
+    "password": "Netravati#Demo26",
+    "user": "netravati.interiors"
+   }
+  ],
+  "today": "2026-11-06"
+ },
+ "collections": {
+  "chat_messages": [
+   {
+    "at": "2026-08-12 15:57",
+    "file": "",
+    "id": "1",
+    "sender": "office",
+    "text": "We have to pay 18% GST on the rent you pay every month, under reverse charge, in cash.",
+    "thread": "1"
+   },
+   {
+    "at": "2026-08-12 15:58",
+    "file": "",
+    "id": "2",
+    "sender": "client",
+    "text": "Okay, we will pay.",
+    "thread": "1"
+   },
+   {
+    "at": "2026-11-06 10:05",
+    "file": "",
+    "id": "3",
+    "sender": "office",
+    "text": "Please send the invoices for October.",
+    "thread": "1"
+   },
+   {
+    "at": "2026-11-06 18:31",
+    "file": "",
+    "id": "4",
+    "sender": "client",
+    "text": "There are no bills this month, nothing was billed in October.",
+    "thread": "1"
+   },
+   {
+    "at": "2026-11-06 09:40",
+    "file": "",
+    "id": "5",
+    "sender": "client",
+    "text": "Sir, when is the ITR due?",
+    "thread": "2"
+   }
+  ],
+  "chat_threads": [
+   {
+    "client": "Netravati Interiors",
+    "id": "1",
+    "title": "Sunita Rao (Netravati Interiors)"
+   },
+   {
+    "client": "Kalinga Hardware",
+    "id": "2",
+    "title": "Manjunath (Kalinga Hardware)"
+   }
+  ],
+  "fp_clients": [
+   {
+    "group": "Asha",
+    "gstin": "29ACKPK4821M1Z5",
+    "id": "1",
+    "legal_name": "RAVI KAMATH",
+    "name": "Sharavati Builders",
+    "registration": "Regular",
+    "state": "Karnataka",
+    "taxnet_user": "sharavati.builders"
+   },
+   {
+    "group": "Rajesh",
+    "gstin": "29AAKFS3311C1ZG",
+    "id": "2",
+    "legal_name": "SHARAVATI AGENCIES",
+    "name": "Sharavati Agencies",
+    "registration": "Regular",
+    "state": "Karnataka",
+    "taxnet_user": ""
+   },
+   {
+    "group": "Asha",
+    "gstin": "29BCRPR7710C1Z9",
+    "id": "3",
+    "legal_name": "SUNITA RAO",
+    "name": "Netravati Interiors",
+    "registration": "Regular",
+    "state": "Karnataka",
+    "taxnet_user": "netravati.interiors"
+   },
+   {
+    "group": "Rajesh",
+    "gstin": "29AAJFK2093B1ZE",
+    "id": "4",
+    "legal_name": "KALINGA HARDWARE",
+    "name": "Kalinga Hardware",
+    "registration": "Regular",
+    "state": "Karnataka",
+    "taxnet_user": ""
+   }
+  ],
+  "tn_ledger": [
+   {
+    "cess": "0.00",
+    "cgst": "16964.00",
+    "gstin": "29ACKPK4821M1Z5",
+    "id": "1",
+    "igst": "0.00",
+    "sgst": "16964.00"
+   },
+   {
+    "cess": "0.00",
+    "cgst": "4210.00",
+    "gstin": "29BCRPR7710C1Z9",
+    "id": "2",
+    "igst": "0.00",
+    "sgst": "4210.00"
+   }
+  ],
+  "tn_returns": [
+   {
+    "arn": "AA290726679765N",
+    "filed_on": "2026-07-27",
+    "gstin": "29ACKPK4821M1Z5",
+    "id": "1",
+    "method": "EVC",
+    "nil": "no",
+    "period": "2026-07",
+    "signatory": "Ravi Kamath",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA290826926788Y",
+    "filed_on": "2026-08-27",
+    "gstin": "29ACKPK4821M1Z5",
+    "id": "2",
+    "method": "EVC",
+    "nil": "no",
+    "period": "2026-08",
+    "signatory": "Ravi Kamath",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA290926033990R",
+    "filed_on": "2026-09-27",
+    "gstin": "29ACKPK4821M1Z5",
+    "id": "3",
+    "method": "EVC",
+    "nil": "no",
+    "period": "2026-09",
+    "signatory": "Ravi Kamath",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA290726311270R",
+    "filed_on": "2026-07-27",
+    "gstin": "29BCRPR7710C1Z9",
+    "id": "4",
+    "method": "EVC",
+    "nil": "yes",
+    "period": "2026-07",
+    "signatory": "Sunita Rao",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA290826928361B",
+    "filed_on": "2026-08-27",
+    "gstin": "29BCRPR7710C1Z9",
+    "id": "5",
+    "method": "EVC",
+    "nil": "yes",
+    "period": "2026-08",
+    "signatory": "Sunita Rao",
+    "status": "Filed"
+   },
+   {
+    "arn": "AA290926148281R",
+    "filed_on": "2026-09-27",
+    "gstin": "29BCRPR7710C1Z9",
+    "id": "6",
+    "method": "EVC",
+    "nil": "yes",
+    "period": "2026-09",
+    "signatory": "Sunita Rao",
+    "status": "Filed"
+   }
+  ],
+  "tn_taxpayers": [
+   {
+    "gstin": "29ACKPK4821M1Z5",
+    "id": "1",
+    "legal_name": "RAVI KAMATH",
+    "registered_on": "2021-04-27",
+    "status": "Active",
+    "trade_name": "SHARAVATI BUILDERS"
+   },
+   {
+    "gstin": "29AAKFS3311C1ZG",
+    "id": "2",
+    "legal_name": "SHARAVATI AGENCIES",
+    "registered_on": "2021-04-27",
+    "status": "Active",
+    "trade_name": "SHARAVATI AGENCIES"
+   },
+   {
+    "gstin": "29BCRPR7710C1Z9",
+    "id": "3",
+    "legal_name": "SUNITA RAO",
+    "registered_on": "2021-04-27",
+    "status": "Active",
+    "trade_name": "NETRAVATI INTERIORS"
+   },
+   {
+    "gstin": "29AAJFK2093B1ZE",
+    "id": "4",
+    "legal_name": "KALINGA HARDWARE",
+    "registered_on": "2021-04-27",
+    "status": "Active",
+    "trade_name": "KALINGA HARDWARE"
+   },
+   {
+    "gstin": "29AAMFC4471R1ZK",
+    "id": "5",
+    "legal_name": "COASTAL AGRO FOODS LLP",
+    "registered_on": "2019-02-11",
+    "status": "Active",
+    "trade_name": "COASTAL AGRO FOODS LLP"
+   }
+  ]
+ },
+ "files": {}
+}

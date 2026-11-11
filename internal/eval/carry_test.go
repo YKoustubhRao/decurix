@@ -10,10 +10,12 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
@@ -64,8 +66,14 @@ func TestACarryStateRunClearsNothingBetweenARepeatsCases(t *testing.T) {
 	sb.mu.Lock()
 	resets := sb.resets
 	sb.mu.Unlock()
+	settles := sb.settles
 	if resets != 1 {
 		t.Fatalf("resets: %d, want 1 (before the second repeat's first case only)", resets)
+	}
+	// Between a repeat's cases the desktop is settled instead (the earlier case's open question ended, nothing
+	// learned cleared): 2 per repeat of 3 cases.
+	if settles != 4 {
+		t.Fatalf("settles: %d, want 4 (before every case but a repeat's first)", settles)
 	}
 	md := Summarise(run, rows).Markdown()
 	if !strings.Contains(md, "carried from case to case") {
@@ -82,6 +90,9 @@ func TestACarryStateRunClearsNothingBetweenARepeatsCases(t *testing.T) {
 	sb2.mu.Lock()
 	resets2 := sb2.resets
 	sb2.mu.Unlock()
+	if sb2.settles != 0 {
+		t.Fatalf("default mode settled %d times: every case but the arm's first is reset, never only settled", sb2.settles)
+	}
 	if run2.CarryState || resets2 != 5 {
 		t.Fatalf("default mode: carry %v, resets %d (want 5)", run2.CarryState, resets2)
 	}
@@ -178,5 +189,80 @@ func TestARowKeepsItsModelCalls(t *testing.T) {
 	rows, err := store.Rows("e_calls")
 	if err != nil || len(rows) != 1 || rows[0].Calls != 17 || rows[0].TokensIn != 90000 {
 		t.Fatalf("rows: %+v %v", rows, err)
+	}
+}
+
+// What settling clears between a carry-state run's cases is the open task's and the browser's, never what the worker
+// learned: the methods, skills, memory and soul's workspace under ~/.decurix, and the work folder, all stay.
+func TestSettlingKeepsWhatTheWorkerLearned(t *testing.T) {
+	settled := desktop.PracticeSettlePaths()
+	for _, p := range settled {
+		for _, kept := range []string{"/home/headless/.decurix", "/home/headless/.decurix/ai", "/home/headless/.decurix/methods",
+			"/home/headless/.decurix/skills", "/home/headless/work"} {
+			if p == kept || strings.HasPrefix(kept+"/", p+"/") {
+				t.Fatalf("settling clears %s, which holds %s", p, kept)
+			}
+		}
+	}
+	if !slices.Contains(settled, "/home/headless/.decurix/active-task.json") {
+		t.Fatalf("settling keeps the earlier case's task in hand: %q", settled)
+	}
+}
+
+// A reset that fails once (Docker stalled under load, found live 2026-11-09) is tried once more and the arm goes on;
+// one that fails twice ends the arm, as before.
+func TestAFailedResetIsTriedOnceMore(t *testing.T) {
+	saved := resetRetryWait
+	resetRetryWait = time.Millisecond
+	t.Cleanup(func() { resetRetryWait = saved })
+
+	s, sb, _, _, _ := newService(t, diligent)
+	sb.mu.Lock()
+	sb.resetFails = 1
+	sb.mu.Unlock()
+	run, err := s.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t), Repeats: 1, Arms: []Arm{{Name: "default", Kind: ArmModel}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run = waitDone(t, s, run.ID)
+	rows, _ := s.Store.Rows(run.ID)
+	if len(rows) != 3 || run.Status == "error" {
+		t.Fatalf("one failed reset: %d rows, status %q - want every case run", len(rows), run.Status)
+	}
+
+	s2, sb2, _, _, _ := newService(t, diligent)
+	sb2.mu.Lock()
+	sb2.resetFails = 2
+	sb2.mu.Unlock()
+	run2, err := s2.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t), Repeats: 1, Arms: []Arm{{Name: "default", Kind: ArmModel}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run2 = waitDone(t, s2, run2.ID)
+	rows2, _ := s2.Store.Rows(run2.ID)
+	if len(rows2) != 1 {
+		t.Fatalf("two failed resets: %d rows, want the arm to stop after its first case", len(rows2))
+	}
+}
+
+// TestCarryModes: a suite that must carry refuses a run that does not; one that may carry runs either way; one that
+// says neither refuses a run that carries (owner's ask 2026-11-09: learning curves on suites whose cases stand alone).
+func TestCarryModes(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		suite Suite
+		carry bool
+		ok    bool
+	}{
+		{"must, carried", Suite{CarryState: true}, true, true},
+		{"must, not carried", Suite{CarryState: true}, false, false},
+		{"may, carried", Suite{CarryAllowed: true}, true, true},
+		{"may, not carried", Suite{CarryAllowed: true}, false, true},
+		{"neither, carried", Suite{}, true, false},
+		{"neither, not carried", Suite{}, false, true},
+	} {
+		if err := checkCarry(c.suite, c.carry); (err == nil) != c.ok {
+			t.Errorf("%s: err %v, want ok %v", c.name, err, c.ok)
+		}
 	}
 }

@@ -103,3 +103,43 @@ func TestReplyWithholdsAnAnswerToASecretQuestion(t *testing.T) {
 		}
 	}
 }
+
+// The review of freeze 2 (A1-A3): over-withholding is restored. A plain word after a label is withheld whatever
+// follows it, and every word with a digit or a mark of a reply to a question naming a secret is withheld however long
+// the reply is. An apostrophe between letters is still no quote mark.
+func TestAPlainWordAfterALabelIsStillWithheld(t *testing.T) {
+	for in, want := range map[string]string{
+		"password: letmein then press login":               "password: [withheld] then press login",
+		"The password wasn't accepted, so I'll ask again.": "The password wasn't accepted, so I'll ask again.",
+		"the receiver's key - it's in the client's folder": "the receiver's key - [withheld] in the client's folder",
+		"OTP: 604217":                      "OTP: [withheld]",
+		"OTP: 604217 came just now":        "OTP: [withheld] came just now",
+		"password: Lift$2026":              "password: [withheld]",
+		"password: tiger.":                 "password: [withheld].",
+		"password: tiger, then sign in":    "password: [withheld], then sign in",
+		"pwd=x7#k":                         "pwd=[withheld]",
+		"password: 'Tom's9' then sign in":  "password: '[withheld]' then sign in",
+		"password: O'Brien7 then sign in":  "password: [withheld] then sign in",
+		"Password: Tiger and then sign in": "Password: [withheld] and then sign in",
+	} {
+		if got := Text(in); got != want {
+			t.Errorf("Text(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestEveryValueShapedWordOfAReplyToASecretQuestionIsWithheld(t *testing.T) {
+	cases := []struct{ question, reply, want string }{
+		{"What is the OTP the client received?", "552901", Marker},
+		{"What is the OTP?", "here it is: 552901", "here it is: [withheld]"},
+		{"What is the OTP?", "the OTP is 552901, go ahead", "the OTP is [withheld], go ahead"},
+		{"What is the OTP?", "552901\nand the next one comes tomorrow", "[withheld]\nand the next one comes tomorrow"},
+		{"What is the passphrase?", "it is correct-horse-battery, then press sign in",
+			"it is [withheld], then press sign in"},
+	}
+	for _, c := range cases {
+		if got := Reply(c.question, c.reply); got != c.want {
+			t.Errorf("Reply(%q, %q) = %q, want %q", c.question, c.reply, got, c.want)
+		}
+	}
+}

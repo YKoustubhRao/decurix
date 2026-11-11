@@ -201,6 +201,10 @@ type fakeSandbox struct {
 	execExit  func(argv []string) (int, []byte)
 	paused    map[string]bool
 	resets    int
+	// resetFails is how many ResetPractice calls fail before they succeed again (a Docker stall).
+	resetFails int
+	// settles counts SettlePractice calls (between a carry-state run's cases).
+	settles int
 	// home is the files in the desktop's home that outlive a case unless the reset clears them.
 	home     map[string]bool
 	onCreate func(n int)
@@ -255,8 +259,28 @@ func (f *fakeSandbox) ResetPractice(context.Context, string, []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resets++
+	if f.resetFails > 0 {
+		f.resetFails--
+		return errors.New("exec: context deadline exceeded")
+	}
 	for file := range f.home {
 		for _, root := range desktop.PracticeResetPaths() {
+			if file == root || strings.HasPrefix(file, root+"/") {
+				delete(f.home, file)
+			}
+		}
+	}
+	return nil
+}
+
+// SettlePractice is a stand-in: it drops from the fake home the paths the real settle is given
+// (desktop.PracticeSettlePaths), which keep what the worker learned.
+func (f *fakeSandbox) SettlePractice(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.settles++
+	for file := range f.home {
+		for _, root := range desktop.PracticeSettlePaths() {
 			if file == root || strings.HasPrefix(file, root+"/") {
 				delete(f.home, file)
 			}
@@ -339,7 +363,10 @@ func (f *fakeSandbox) CollectPractice(_ context.Context, id, caseID string, _ ma
 	}
 	return out, nil, nil, nil
 }
-func (f *fakeSandbox) RemovePractice(_ context.Context, ids ...string) error {
+func (f *fakeSandbox) RemovePractice(ctx context.Context, ids ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err // (as Docker's client does on a context already spent: nothing is removed)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, id := range ids {

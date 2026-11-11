@@ -133,13 +133,14 @@ def where_it_is(label, paths):
     return places[:3]
 
 
-def invented(fields, request, paths=()):
-    """[(label, value)] of the filled fields whose value looks like filler and is in no source."""
+def invented(fields, request, paths=(), said=()):
+    """[(label, value)] of the filled fields whose value looks like filler and is in no source. `said`: what the person
+    said in this task, as the control plane confirms it (records._answers_text) - their own words are a source."""
 
     found = [(label, value) for label, value in fields if looks_filler(value)]
     if not found:
         return []
-    texts = source_texts(request, paths)
+    texts = source_texts(request, paths) + [str(t) for t in said or () if t]
     return [(label, value) for label, value in found if not in_sources(value, texts)]
 
 

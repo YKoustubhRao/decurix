@@ -44,7 +44,7 @@ Stored in SQLite (`handoffs`, component `handoff`, append-only `Migrate` steps).
    same automated door every other sender uses (`SubmitTracked` / `SubmitTrackedWithFiles`: the per-desktop send lock
    and busy check). A busy receiver leaves the handoff `queued`; `Service.Run` tries again every 15 s, and one that no
    worker takes in 30 minutes fails. No holder at all fails it at once.
-3. The receiver works the request like any other request. Its own final gate (`verify.py`, `skill_task._gate`) judges
+3. The receiver works the request like any other request. Its own final gate (`verify.py`, `final_gate._gate`) judges
    it, and its final reply reaches the task records with `checked`.
 4. `GET /api/handoffs/get?id=` (and the runner) read the receiving task and turn it into the result.
 

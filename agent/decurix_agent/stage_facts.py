@@ -10,8 +10,10 @@ stage is long_task.CHECK_MATURITY's (docs/harness-audit.md): only domain-free in
 """
 
 import re
+from decimal import Decimal
 from pathlib import Path
 
+from decurix_agent import values as value_rules
 from decurix_agent.logging_utils import log
 from decurix_agent.provenance import _squash as _ref_key
 from decurix_agent.sources import _money as _fmt
@@ -28,6 +30,17 @@ def _number(text):
         return float(str(text).replace(",", "").strip())
     except (TypeError, ValueError):
         return None
+
+
+def _exact(cell):
+    """A figure as the Decimal of its written (or stored) form, or None: sums and differences of these carry no float
+    error, and values.same_figure compares them (review round 2: amounts here were floats rounded to 2 places)."""
+
+    found = _number(cell)
+    if found is None:
+        return None
+    read = value_rules.figure(found)
+    return read[0] if read else None
 
 
 def _header_at(rows, within=10):
@@ -101,9 +114,9 @@ def record_figures(reference, documents):
         if not text:
             continue
         for found in MONEY.findall(text):
-            value = _number(found)
+            value = _exact(found)
             if value and value >= 100:
-                figures.add(round(value, 2))
+                figures.add(value)
     return figures
 
 
@@ -144,12 +157,13 @@ def _column_sums(rows):
             categorical.append((i, h, values))
     sums = {}
     for i in numeric:
-        sums[(header[i], "")] = round(sum(_number(r[i]) or 0 for r in body if i < len(r)), 2)
+        sums[(header[i], "")] = sum((_exact(r[i]) or 0 for r in body if i < len(r)), Decimal(0))
         for k, h, values in categorical:
             for value in values:
                 chosen = [r for r in body if k < len(r) and str(r[k]).strip() == value]
                 if 2 <= len(chosen) < len(body):
-                    sums[(header[i], f"{h} = {value}")] = round(sum(_number(r[i]) or 0 for r in chosen if i < len(r)), 2)
+                    sums[(header[i], f"{h} = {value}")] = sum((_exact(r[i]) or 0 for r in chosen if i < len(r)),
+                                                              Decimal(0))
     return sums
 
 
@@ -229,11 +243,11 @@ def removed_residue(amendments, made, documents):
     for path, sheets in _table_files(made):
         if Path(str(path)).suffix.lower() in {".csv", ".tsv"}:
             sheets = [(name, _as_figures(rows)) for name, rows in sheets]
-        totals = {}
+        totals = []  # (sum, (sheet, column, kind)), in the order found
         for name, rows in sheets:
             for (column, kind), value in _column_sums(rows).items():
                 if value > 0:
-                    totals.setdefault(value, []).append((name, column, kind))
+                    totals.append((value, (name, column, kind)))
         for name, rows in sheets:
             header_at = _header_at(rows) or 0
             header = [str(c or "").strip() for c in rows[header_at]] if rows else []
@@ -242,11 +256,16 @@ def removed_residue(amendments, made, documents):
                 for i, cell in enumerate(row):
                     if isinstance(cell, str) or _number(cell) is None:
                         continue
-                    value = round(float(cell), 2)
+                    value = _exact(cell)
+                    if value is None:
+                        continue
                     column = header[i] if i < len(header) else ""
                     for figure, reference in figures.items():
-                        base = round(value - figure, 2)
-                        places = [w for w in totals.get(base, []) if w[0] != name or w[1] != column]
+                        base = value - figure
+                        # A total equal to the base, a float's noise aside (values.same_figure: a sheet's computed
+                        # total carries one).
+                        places = [w for t, w in totals if value_rules.same_figure(t, base, precision=False) is True
+                                  and (w[0] != name or w[1] != column)]
                         # The same column's total first (Tax A with Tax A), when two columns add up alike.
                         where = next((w for w in places if w[1].lower() == column.lower()), places[0] if places else None)
                         if where and base > 0:
@@ -764,9 +783,11 @@ def working_rows(made):
 
 
 def _matches(value, target):
-    """Whether a computed value gives the written result: to the paisa, or rounded to the rupee as written."""
+    """Whether a computed value gives the written result: within the result's written precision (values.same_figure
+    with a_computed, the one rule for a figure written rounded against the precise one: a whole result is the value
+    rounded to the unit, 1234.56 to the hundredth). Review round 2: this had its own slack (0.011)."""
 
-    return abs(value - target) <= 0.011 or (float(target).is_integer() and abs(round(value) - target) < 0.001)
+    return value_rules.same_figure(value, target, a_computed=True) is True
 
 
 def reproduces(work, target):
@@ -860,7 +881,7 @@ def stated_by_message(amount, row, messages):
     message = _tied_message(row, messages)
     if message is None:
         return None
-    return any(abs(amount - v) <= 0.005 for v in message["amounts"])
+    return any(value_rules.same_figure(amount, v, precision=False) is True for v in message["amounts"])
 
 
 def _stated_against_working(amount, row, refs, work):
@@ -883,7 +904,7 @@ def _stated_against_working(amount, row, refs, work):
                 continue
             for header in {h for w in narrowed for h in w["numbers"]}:
                 total = sum(w["numbers"].get(header) or 0 for w in narrowed)
-                if abs(total - amount) <= 0.011:
+                if value_rules.same_figure(total, amount, a_computed=True) is True:
                     return None
     candidates = [w for w in work if w["refs"] and set(w["refs"]) <= refset]
     if len(candidates) != 1:
@@ -892,8 +913,8 @@ def _stated_against_working(amount, row, refs, work):
     # Tied by its full key: no other working row carries the same references.
     if sum(1 for w in work if set(w["refs"]) == set(only["refs"])) != 1:
         return None
-    values = [v for _, v in only["results"]] + list(only["numbers"].values())
-    if any(abs(v - amount) <= 0.011 for v in values):
+    held = [v for _, v in only["results"]] + list(only["numbers"].values())
+    if any(value_rules.same_figure(v, amount, precision=False) is True for v in held):
         return None
     if only["unknown"]:
         return None  # (a working with columns of no known kind is not decided)
@@ -939,7 +960,8 @@ def working_problems(made, sources=(), messages=()):
                     if not all(r in cells for r in refs):
                         continue
                     theirs = [_number(row[i]) for i in pcols if i < len(row) and _number(row[i]) is not None]
-                    if theirs and not any(abs(a - b) <= 0.005 for a in theirs for b in prices):
+                    if theirs and not any(value_rules.same_figure(a, b, precision=False) is True
+                                          for a in theirs for b in prices):
                         out.append(f"{label}: {', '.join(refs)} uses a price of {_fmt(prices[0])}, but {t_label} "
                                    f"has {_fmt(theirs[0])}")
     for label, header, row, i, cell in _status_cells(made):

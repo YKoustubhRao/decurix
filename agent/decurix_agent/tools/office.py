@@ -433,8 +433,14 @@ def docx_structure(p):
             tables += 1
             lines.append(f"[Table {tables}]")
             for row in re.findall(r"<w:tr\b.*?</w:tr>", b, re.S):
-                cells = ["".join(x for x in _paragraph_runs(c) if x).strip()
-                         for c in re.findall(r"<w:tc\b.*?</w:tc>", row, re.S)]
+                # A cell's paragraphs are lines of it: joined by a space, never run together. Found live (2026-11-08):
+                # a bill's "Hampi Residency" / "12 Kunjibettu, Udupi" cell read as "Hampi Residency12 Kunjibettu", and
+                # the customer the worker typed was "never read" four times over.
+                cells = []
+                for c in re.findall(r"<w:tc\b.*?</w:tc>", row, re.S):
+                    paras = re.findall(r"<w:p\b[^>]*/>|<w:p\b[^>]*>.*?</w:p>", c, re.S) or [c]
+                    lines_of_cell = ["".join(x for x in _paragraph_runs(para) if x).strip() for para in paras]
+                    cells.append(" ".join(line for line in lines_of_cell if line))
                 lines.append(" | ".join(cells))
                 text_seen.extend(cells)
             continue

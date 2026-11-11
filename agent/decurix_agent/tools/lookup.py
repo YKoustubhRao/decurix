@@ -42,7 +42,7 @@ _SPACE = re.compile(r"[ \t\r\f\v]+")
 
 # What a question about an app must not carry: a person's data. A search engine is a third party: an identifier, a
 # client's name or an amount sent there has left the firm (review 2026-11-02: a GSTIN, a PAN and a client's name went
-# out in questions). Only the generic question goes - "how is a credit note shown in GSTR-1" - never whose it is.
+# out in questions). Only the generic question goes - "how is a credit note shown in a tax return" - never whose it is.
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _UPI = re.compile(r"\b[\w.-]{2,}@[a-z]{2,}\b", re.I)
 _LONG_NUMBER = re.compile(r"\d[\d ,./-]{5,}\d")

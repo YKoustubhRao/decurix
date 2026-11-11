@@ -44,6 +44,7 @@ through the broker (screen_call.py), like the agent's own calls.
 """
 
 import os
+import re
 import sys
 
 PROTOCOL = b"DXG1"
@@ -80,8 +81,13 @@ WORKER_COMMANDS = frozenset({"recordings", "recording", "records", "record", "sk
 TASK_SUFFIXES = ("", ".stage", ".request", ".files", ".since", ".continues", ".secrets", ".secrets.resume")
 STATE_FILES = ("withheld-secrets", "active-task.json", "filled-documents.json", "opened-files.json",
                "computer/worker_mode.json", "computer/guided-run.json")
+# The task's run context (task_context: the org's date order, the reply's judgement, and the questions a save waits on -
+# a date's order, a field's unit) goes both ways: the save path reads it and keeps its question there, which the agent
+# asks the person from (found live 2026-11-08: in broker mode the unit question stayed in the screen user's copy and
+# the person was never asked it).
 TASK_STATE = ("computer/evidence/%s.jsonl", "computer/evidence/%s.records.json", "computer/evidence/%s.files",
-              "computer/evidence/%s.outputs", "computer/evidence/%s.said", "recordings/task-%s/meta.json")
+              "computer/evidence/%s.outputs", "computer/evidence/%s.said", "recordings/task-%s/meta.json",
+              "runs/%s/context.json")
 MAX_CONTEXT_FILE = 8 * 1024 * 1024
 # The worker's launchers (its desktop's icons and its menu's apps, launchers.PLACES), sent the same way: "l" + the
 # place + "/" + the file's name. The screen side lists and opens them by name (`gui open "Excel (Host)"`, a replay
@@ -92,8 +98,18 @@ MAX_LAUNCHERS, MAX_LAUNCHER_FILE = 200, 64 * 1024
 # screen side reads them to check a chosen record against them (core._in_documents). At most this many.
 MAX_TASK_DOCUMENTS = 4
 
-# The parts of the caller's state folder the screen side writes into (save_state): recordings and evidence.
+# The parts of the caller's state folder the screen side writes into (save_state): recordings and evidence, and one
+# file of a task's run folder, its context (TASK_STATE).
 MIRRORED_ROOTS = ((b"recordings",), (b"computer", b"evidence"))
+MIRRORED_FILES = re.compile(rb"runs/t[0-9a-f]{16}/context\.json")
+
+
+def mirrored(rel):
+    """Whether `rel` (bytes, "/"-separated, relative to the state folder) is a part the screen side writes back."""
+
+    parts = tuple(rel.split(b"/"))
+    return (any(parts[:len(root)] == root and len(parts) > len(root) for root in MIRRORED_ROOTS)
+            or MIRRORED_FILES.fullmatch(rel) is not None)
 
 # At most this many files a command names are handed over as descriptors (input_files).
 MAX_INPUTS = 16
@@ -403,7 +419,7 @@ def state_target(rel):
     parts = rel.split(b"/")
     if not rel or rel.startswith(b"/") or any(p in (b"", b".", b"..") or b"\0" in p for p in parts):
         return None
-    if not any(tuple(parts[:len(root)]) == root and len(parts) > len(root) for root in MIRRORED_ROOTS):
+    if not mirrored(rel):
         return None
     return os.path.join(os.fsencode(state_dir()), rel)
 
@@ -426,14 +442,16 @@ def save_state(flags, rel, data):
             os.makedirs(os.path.dirname(target), exist_ok=True)
         finally:
             os.umask(mask)
+        # A run's context is the worker's alone, as task_context writes it (0600).
+        mode = 0o600 if MIRRORED_FILES.fullmatch(rel) else 0o644
         if flags & OUTPUT_APPEND:
             fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
-                         | getattr(os, "O_BINARY", 0), 0o644)
+                         | getattr(os, "O_BINARY", 0), mode)
             part = None
         else:
             part = target + b".%d.part" % os.getpid()
             fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0)
-                         | getattr(os, "O_BINARY", 0), 0o644)
+                         | getattr(os, "O_BINARY", 0), mode)
         try:
             view = memoryview(data)
             while view:

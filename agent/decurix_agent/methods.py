@@ -28,7 +28,9 @@ MAX_METHODS = 200
 # A number of two digits or more is one run's value (a serial, an amount, a year), never the method's.
 _VALUE = re.compile(r"\d[\d,./-]*\d")
 # What one method keeps of the person's words about its plan, newest last.
-MAX_SAID = 5
+MAX_SAID = 8
+# How much of the question a kept answer answered is kept with it.
+MAX_ASKED = 600
 
 _lock = threading.Lock()
 _run = {"plan": None}
@@ -113,7 +115,26 @@ def keep(request):
         "outputs": [_without_values(s) for s in plan.get("outputs") or [] if str(s).strip()],
         "commits": [_without_values(s) for s in plan.get("commits") or [] if str(s).strip()],
     }
-    said = _without_values(plan.get("personSaid"))
+    # The person's answer is kept with the question it answered (the plan as it was put to them): found live
+    # (2026-11-08), an answer kept alone - "I don't know that, so I can't give it to you ..." to the plan's question -
+    # reached the next task's worker and its review as the person's standing word about it, and the review called a
+    # value the person did give in that task made up.
+    # And every other answer of the run, each with its question: found live (2026-11-08), the plan's question got "I
+    # don't know", the layout came in answer to a later question, and the method kept only the first - with the plan's
+    # first idea of the output - so the next task of the kind wrote the wrong file and asked nothing.
+    said = []
+    first = _without_values(plan.get("personSaid"))
+    if first:
+        said.append({"asked": _without_values(plan.get("ask"))[:MAX_ASKED], "said": first})
+    try:
+        from decurix_agent import guidance
+        exchanges = guidance.exchanges_this_task()
+    except Exception:  # noqa: BLE001 - what cannot be read is not kept
+        exchanges = []
+    for asked, reply in exchanges:
+        entry = {"asked": _without_values(asked)[:MAX_ASKED], "said": _without_values(reply)}
+        if entry["said"] and all(entry["said"] != s["said"] for s in said):
+            said.append(entry)
     method = find(request)
     if method is None:
         if len(_all()) >= MAX_METHODS:
@@ -125,8 +146,9 @@ def keep(request):
             name, n = f"{base}-{n}", n + 1
         method = {"name": name, "shape": shape, "said": [], "runs": 0}
     method["plan"] = clean
-    if said and said not in method.get("said", []):
-        method["said"] = (method.get("said", []) + [said])[-MAX_SAID:]
+    for entry in said:
+        if entry not in method.get("said", []):
+            method["said"] = (method.get("said", []) + [entry])[-MAX_SAID:]
     method["runs"] = int(method.get("runs") or 0) + 1
     method["kept_at"] = time.time()
     try:
@@ -154,6 +176,14 @@ def context(request):
         lines.append("- It writes: " + "; ".join(plan["outputs"]))
     if plan.get("commits"):
         lines.append("- Then, each with the person's OK: " + "; then ".join(plan["commits"]))
+    if any(isinstance(s, dict) for s in method.get("said") or []):
+        lines.append("- What the person answered on those runs, each to its own question (where an answer differs from "
+                     "the plan above - what it writes, how it is laid out - the answer holds):")
     for said in method.get("said") or []:
-        lines.append(f'- The person said about this plan: "{said}"')
+        if isinstance(said, dict):
+            # Asked then, about that run: their answer is to that question, not about this request's values.
+            asked = said.get("asked") or "the plan of the work"
+            lines.append(f'- Asked on an earlier run: "{asked}" - the person answered: "{said.get("said")}"')
+        else:
+            lines.append(f'- The person said about this plan: "{said}"')
     return "\n".join(lines)

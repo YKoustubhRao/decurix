@@ -28,13 +28,19 @@
         "allocation",
         "cost code",
         "department",
-        "logistics",
+        "cc",
         "ledger",
         "expense head",
         "account head"
       ],
-      "answer": "From now on, for every bill you enter: courier and freight bills are charged to the cost centre Logistics, and every other bill to General.",
+      "answer": "From now on, for every bill you enter, the cost centre is set by the first two digits of the supplier's GSTIN (its state code): 29 goes to CC-14, 30 to CC-27, 33 to CC-52, and every other state code to CC-90.",
       "required": true
+    }
+  ],
+  "approves": [
+    {
+      "control": "Save bill",
+      "role": "button"
     }
   ],
   "expected": {
@@ -61,7 +67,7 @@
             "total": {
               "number": "4248.00"
             },
-            "cost_centre": "Logistics"
+            "cost_centre": "CC-14"
           }
         ]
       },
@@ -84,7 +90,7 @@
   },
   "oracle": [
     "office read bill.pdf | grep -q SC-24117",
-    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=SC-24117 --data-urlencode 'vendor=Swiftlark Couriers' --data-urlencode date=2026-04-03 --data-urlencode due=2026-05-03 --data-urlencode total=4,248.00 --data-urlencode cost_centre=Logistics --data-urlencode notes= http://records.example.test/bills/new"
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=SC-24117 --data-urlencode 'vendor=Swiftlark Couriers' --data-urlencode date=2026-04-03 --data-urlencode due=2026-05-03 --data-urlencode total=4,248.00 --data-urlencode cost_centre=CC-14 --data-urlencode notes= http://records.example.test/bills/new"
   ],
   "tags": [
     "teaching"

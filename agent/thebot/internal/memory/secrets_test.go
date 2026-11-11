@@ -130,6 +130,30 @@ func TestLooksSecretReadsValuesNotWords(t *testing.T) {
 	}
 }
 
+// A plain word after "password:" is withheld even where it runs on into its sentence (review of freeze 2, A1: a
+// running-word exemption let "password: letmein then press login" through). A word too many withheld is harmless.
+func TestAPlainWordAfterAPasswordLabelIsStillWithheld(t *testing.T) {
+	for in, want := range map[string]string{
+		"password: letmein then press login":           "password: [withheld] then press login",
+		"password: ask the client for it, never guess": "password: [withheld] the client for it, never guess",
+		"password: hunter then sign in":                "password: [withheld] then sign in",
+		"password: hunter.":                            "password: [withheld].",
+		"password: hunter":                             "password: [withheld]",
+		"password: hunter, then sign in":               "password: [withheld], then sign in",
+		"password: 'hunter' then sign in":              "password: '[withheld]' then sign in",
+		"password: Lift$2026 then sign in":             "password: [withheld] then sign in",
+		"one-time password is swordfish":               "one-time password is [withheld]",
+		"The OTP is 552910 and it expires":             "The OTP is [withheld] and it expires",
+	} {
+		if got := RedactSecrets(in); got != want {
+			t.Errorf("RedactSecrets(%q) = %q, want %q", in, got, want)
+		}
+		if !LooksSecret(in) {
+			t.Errorf("LooksSecret(%q) = false", in)
+		}
+	}
+}
+
 // A store an older soul wrote, holding a secret its check let in, is cleaned when it is opened.
 func TestOpeningL1PurgesSecretsAlreadyStored(t *testing.T) {
 	root := t.TempDir()

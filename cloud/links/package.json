@@ -1,0 +1,8 @@
+{
+  "name": "decurix-link-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test worker.test.js"
+  }
+}

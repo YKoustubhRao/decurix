@@ -90,7 +90,7 @@ CONSEQUENTIAL_CONTROL = re.compile(
     r"|file( [\w-]+)? with \w+|file now|e-?file( now)?"
     r"|submit (the )?(return|declaration|application|claim|filing)s?"
     r"|(offset|set[- ]off) (the )?liabilit(y|ies)"
-    # ...and the one return named: "File GSTR-1", "File return", "File the declaration" (review 2026-11-03: ungated). A
+    # ...and the one return named: "File the return", "File return", "File the declaration" (review 2026-11-03: ungated). A
     # form's name is a code with a digit in it; "File returns" (plural) stays the menu of returns it was.
     r"|file (?:the |this |my |your )?(?:return|declaration|claim|[a-z]+-?\d[\w-]*)(?= |$)"
     # Approving binds the person (a payment, a claim, a document's workflow); signing, by hand or electronically, is
@@ -103,12 +103,21 @@ CONSEQUENTIAL_CONTROL = re.compile(
 # More phrases that commit the person, read like CONSEQUENTIAL_CONTROL at any word of a label (consequential). Found in
 # review (2026-11-02): "Continue to payment", "Authorize", "Approve payment" passed a gate that read only the label's
 # first words.
+# The step that goes into a committing act ("Proceed to file", "Continue to payment"): the act is where it leads.
+_STEP_INTO_ACT = (r"(?:proceed|continue|go|move on|next|skip) (?:to|with) (?:the )?(?:checkout|payment|pay|paying|file|filing"
+                  r"|submit|submission|send|transfer|purchase)")
+STEP_INTO_ACT = re.compile(r"^\s*" + _STEP_INTO_ACT + r"\b", re.IGNORECASE)
+# The steps a link may take into a page where the act is then asked (only_steps_into_an_act): into a checkout or a
+# filing's own page. A step whose destination is itself an act - pay, payment, purchase, transfer, send, submit - is
+# asked wherever it leads (review of freeze 2, A6: "Proceed to pay", "Continue with purchase" passed).
+STEP_INTO_PAGE = re.compile(r"^\s*(?:proceed|continue|go|move on|next|skip) (?:to|with) (?:the )?(?:checkout|file|filing)\b",
+                            re.IGNORECASE)
+
 MORE_CONSEQUENTIAL = re.compile(
     r"^\s*(?:"
-    r"(?:proceed|continue|go|move on|next|skip) (?:to|with) (?:the )?(?:checkout|payment|pay|paying|file|filing|submit|submission"
-    r"|send|transfer|purchase)"
+    + _STEP_INTO_ACT +
     r"|authori[sz]e"
-    r"|(?:make|submit|confirm|complete|process|release|initiate|execute|approve|schedule|send|finali[sz]e|issue) "
+    r"|(?:make|create|submit|confirm|complete|process|release|initiate|execute|approve|schedule|send|finali[sz]e|issue) "
     r"(?:the |this |a |my |your )?(?:(?:" + "|".join(sorted(_MONEY_NOUNS)) + r") )?"
     r"(?:payments?|transfers?|transactions?|remittances?|wires?|purchases?|donations?|trades?|swaps?|refunds?"
     r"|disbursements?|payouts?)"
@@ -252,6 +261,31 @@ def consequential(name, goes_somewhere=False):
                 and not _only_reads(words, i, goes_somewhere):
             return True
     return bool(OTHER_LANGUAGES.search(" ".join(str(name or "").split())))
+
+
+def only_steps_into_an_act(name):
+    """
+    Whether a label commits only by naming where it goes: every place the gate's phrases (CONSEQUENTIAL_CONTROL,
+    MORE_CONSEQUENTIAL) find an act in it lies inside a step into a page (STEP_INTO_PAGE: "Proceed to file",
+    "Go to checkout"). A label that also names an act on its own ("Pay now", "Send", "Delete invoice", "Approve
+    payment"), or steps into an act ("Proceed to pay", "Continue to payment", "Continue with purchase"), is not. For a link the page says only navigates
+    (assess, context "navigates"): the act is on the page it leads to, and is gated there.
+    """
+
+    words = label_words(name).split()
+    found, inside = False, 0
+    for i in range(len(words)):
+        rest = " ".join(words[i:])
+        step = STEP_INTO_PAGE.match(rest)
+        if step:
+            found = True
+            inside = max(inside, i + len(rest[:step.end()].split()))
+            continue
+        if i < inside:
+            continue  # a word of the step itself ("checkout" in "Go to checkout")
+        if (CONSEQUENTIAL_CONTROL.match(rest) or MORE_CONSEQUENTIAL.match(rest)) and not _only_reads(words, i, True):
+            return False
+    return found and not OTHER_LANGUAGES.search(" ".join(str(name or "").split()))
 
 
 def _edits_the_form(words):
@@ -691,7 +725,15 @@ def assess(kind, element, text=None, keys=None, context=None):
 
     if kind in ("click", "double_click") and element is not None:
         name = element.get("name") or ""
-        if press_effect(element) == "asks":
+        # Not asked for a link the page says only goes to another page (context "navigates", core._only_navigates:
+        # an http(s) anchor, no form, no script that may act on the press) whose label names an act only as a step
+        # into a page (only_steps_into_an_act) - the act is gated on that page. A link that names an act on its own
+        # ("Pay now", "Proceed to pay") is asked: an older app may act on the address alone. A button is judged by its
+        # label alone: "Create Payment Order" in an app that submits by script sends no form the page can show (review
+        # of freeze 2, A5: a label-shaped "opens a new record" exemption let it through).
+        if press_effect(element) == "asks" \
+                and not (element.get("role") == "link" and context.get("navigates") is True
+                         and only_steps_into_an_act(name)):
             label = " ".join(name.split())[:60]
             return f'"{label}" sends, pays, buys or publishes something on your behalf'
 
@@ -1128,6 +1170,29 @@ def names_control(question, element):
     return any(asked[i:i + len(label)] == label for i in range(len(asked) - len(label) + 1))
 
 
+# The verbs of pressing a control, as a question asks for one ("may I click X", "before pressing X", "approve X").
+_PRESS_VERB = r"(?:click|clicking|clicked|press|pressing|tap|tapping|hit|hitting|submit|submitting|approve|approving)"
+# What may stand between the verb and the control's label: "on", "the", the control's kind, and a quote mark.
+_PRESS_BRIDGE = r"(?:\s+(?:on|the|a|its|this|that))*(?:\s+(?:button|link|tab|option|control))?\s*[\"'“”‘’]?\s*"
+
+
+def asks_to_press(question, element):
+    """
+    Whether a question asks to press this control: its whole label is the object of a press ("may I click Save to
+    portal?", 'before clicking "Save to portal" for ...', "press the File with EVC button"). A label that only stands
+    somewhere in the question - a client's name after "for", a field's label, a company it asks which of - is not what
+    it asks to press. Found live (2026-11-10): a question to press "Save to portal" for a client named the client in
+    full, and the client's breadcrumb link was held for the rest of the run.
+    """
+
+    label = " ".join(str((element or {}).get("name") or "").split())
+    if not label:
+        return False
+    text = " ".join(str(question or "").split())
+    pattern = r"\b" + _PRESS_VERB + _PRESS_BRIDGE + re.escape(label) + r"(?!\w)"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
 def _reply_bound(prior, element):
     """Whether the person's latest reply could be this action's yes: fresh, unused, and answering a question that
     named this very control (names_control). Its reading decides the rest (_reply_grants)."""
@@ -1469,6 +1534,10 @@ def _decide_local(fingerprint, description, reason, element, about):
             "action": description,
             "about": about or "",
             "created": time.time(),
+            # Which task and control it was, so a no to it holds that control for the rest of the task (_note_declined).
+            "task": _store_task(),
+            "control": {"role": str((element or {}).get("role") or ""),
+                        "name": " ".join(str((element or {}).get("name") or "").split())[:120]},
         }
         state["pending"] = request
 
@@ -1487,6 +1556,57 @@ def _local_pending():
 
     with _locked() as state:
         return state["pending"]
+
+
+MAX_DECLINED = 50
+
+
+def _store_task():
+    """The task an approval in this store belongs to: in the gate, the one the signed request named (_gate_task)."""
+
+    return (_gate_task.id if IN_GATE else "") or _task_now() or ""
+
+
+def _note_declined(state, request):
+    """
+    Keep that the person did not say yes to this request's control, for the rest of its task (declined_controls).
+    Found live (2026-11-10, a return-prep eval): "Save to portal" was put to the person, the reply did not say yes, and
+    the worker pressed it again a moment later - the hold had been the plan's, the plan was not in force after the
+    reply, and the write went out with no yes. A no only ever adds a hold; nothing here makes a grant.
+    """
+
+    control = request.get("control") or {}
+    if not request.get("task") or not str(control.get("name") or "").strip():
+        return
+    declined = [d for d in state.get("declined") or [] if isinstance(d, dict)]
+    declined.append({"task": request["task"], "control": control, "at": time.time()})
+    state["declined"] = declined[-MAX_DECLINED:]
+
+
+def _local_declined(task_id):
+    """The controls the person did not say yes to in this task ([{"role", "name"}]), in this store."""
+
+    if not task_id:
+        return []
+    with _locked() as state:
+        return [dict(d["control"]) for d in state.get("declined") or []
+                if isinstance(d, dict) and d.get("task") == task_id and isinstance(d.get("control"), dict)]
+
+
+def declined_controls(task_id=None):
+    """The controls the person did not say yes to when asked in this task: the gate's record, read only (it is the
+    gate's to keep; a caller can neither add nor remove one). [] when there is none or the gate does not answer."""
+
+    task_id = task_id or _task_now()
+    if not task_id:
+        return []
+    if not remote():
+        return _local_declined(task_id)
+    try:
+        found = gate_call("declined", task_id=task_id).get("declined")
+    except (OSError, ValueError):
+        return []
+    return [c for c in found or [] if isinstance(c, dict)]
 
 
 def _local_resolve_reply(reply, asked=""):
@@ -1527,6 +1647,7 @@ def _local_resolve_reply(reply, asked=""):
         state["reading"] = dict(said, reply=" ".join(str(reply or "").split()), at=time.time())
 
         if said["decision"] != "yes":
+            _note_declined(state, request)
             return "declined"
 
         state["grants"].append({

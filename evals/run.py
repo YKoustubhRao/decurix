@@ -4,9 +4,12 @@ Run an eval suite on the control plane's matrix runner, and read its results (do
 
     py -3 evals/run.py run    --suite evals/suites/core-v1 --arm default --arm fast+expert [--arm default@eb15981]
                               [--arm oracle] [--arm nothing] --repeats 5 [--cases a,b] [--cp http://127.0.0.1:8080]
-                              [--detach] [--carry-state]
+                              [--detach] [--carry-state] [--from-worker <desktop id>]
     py -3 evals/run.py run    --suite evals/suites/core-v1 --arm default+expert@eb15981 --arm default+expert --repeats 5
                               # old code against the image's, both answered by the expert (the L3 shape)
+    py -3 evals/run.py teach  --suite evals/suites/<suite> --case <case-id> --desktop <desktop id>
+                              # set a normal desktop up to record a demonstration of that case (below)
+    py -3 evals/run.py teach-stop --desktop <desktop id>
     py -3 evals/run.py status <run-id>
     py -3 evals/run.py table  <run-id>      # prints the markdown and writes evals/results/<id>/table.md
     py -3 evals/run.py rows   <run-id>      # writes evals/results/<id>/rows.jsonl
@@ -14,9 +17,11 @@ Run an eval suite on the control plane's matrix runner, and read its results (do
                               # the learning curve: per case in order, tokens in/out, calls, cached share, questions
                               # and pass; per kind, the later cases against the first. Writes evals/results/<id>/curve.md
 
-An arm is <model>[+expert][@<git-rev>], or oracle, nothing or ask:
+An arm is <model>[+expert][+soul][@<git-rev>], or oracle, nothing or ask:
   - <model> is default or fast (the hub's two deployments), on azure; claude:default (or claude:fast) uses claude;
   - +expert answers the worker's questions with the scripted expert;
+  - +soul turns on every decision soul words and reads in place of Python (plan rule 3, phase 2: the final check's
+    judge, the escalation ladder), so default+expert and default+expert+soul measure them before they default on;
   - @<rev> runs the agent tree of that git revision (git archive of agent/decurix_agent), not the image's; it combines
     with +expert (default+expert@<rev>). An arm whose rev is not lower-case (HEAD, a branch) is named
     <model>[+expert]@<first 12 of its commit id>, which the control plane accepts and the table shows;
@@ -28,6 +33,16 @@ An arm is <model>[+expert][@<git-rev>], or oracle, nothing or ask:
 --carry-state keeps the practice desktop's state from case to case (a learning curve): it is reset before each
 repeat's first case only. It runs only a suite whose suite.json says "carry_state": true, and such a suite only with
 it; the table says which mode ran. Never the default.
+
+--from-worker <desktop id> starts every case from that desktop's taught state (its skills, experience, playbooks and
+memory, as Simulate pins them) instead of an empty one, and every arm without its own @<rev> runs that desktop's agent
+tree: teach a worker once, then measure it on the suite. The run, its table, its curve and each run record name the
+worker and the fingerprints of what was copied.
+
+teach puts one case of a suite on a normal (running) desktop so a person can record a demonstration of it on the
+suite's own addresses: the case's inputs into ~/work/practice/<case>/, the case's mock started there as the worker with
+its fixture, and the suite's host names (reserved test names only: .test, .example, .invalid, .localhost) mapped to it in
+that desktop's browser from its next launch. teach-stop stops the mock and removes the mapping.
 
 Standard library only, Python 3.11+, run from the repository root. The control plane's eval routes are on its primary
 listener only (127.0.0.1:8080), never the gated one.
@@ -44,6 +59,7 @@ import sys
 import tarfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -57,7 +73,7 @@ ORACLE_AT = re.compile(r"^oracle@(?P<rev>[A-Za-z0-9._/~^-]{1,80})$")
 
 # The control plane's own rule for an arm's name (eval.armName).
 ARM_NAME = re.compile(r"^[a-z0-9][a-z0-9+@._:-]{0,63}$")
-ARM = re.compile(r"^(?:(?P<provider>azure|claude):)?(?P<model>default|fast)(?P<expert>\+expert)?(?:@(?P<rev>[A-Za-z0-9._/~^-]{1,80}))?$")
+ARM = re.compile(r"^(?:(?P<provider>azure|claude):)?(?P<model>default|fast)(?P<expert>\+expert)?(?P<soul>\+soul)?(?:@(?P<rev>[A-Za-z0-9._/~^-]{1,80}))?$")
 
 
 class Usage(SystemExit):
@@ -82,10 +98,13 @@ def parse_arm(text):
         return {"name": text, "kind": "oracle", "expert": False, "agent_tree_rev": m.group("rev")}
     m = ARM.match(text)
     if not m:
-        raise Usage(f"--arm {text!r}: an arm is <model>[+expert][@<git-rev>] (model default or fast, optionally "
+        raise Usage(f"--arm {text!r}: an arm is <model>[+expert][+soul][@<git-rev>] (model default or fast, optionally "
                     "claude: before it), or oracle, nothing or ask")
     arm = {"name": text, "kind": "model", "provider": m.group("provider") or "azure", "model": m.group("model"),
            "expert": bool(m.group("expert"))}
+    if m.group("soul"):
+        # Every decision soul words and reads in place of Python (plan rule 3, phase 2), on for this arm only.
+        arm["soul"] = True
     if m.group("rev"):
         arm["agent_tree_rev"] = m.group("rev")
     return arm
@@ -192,11 +211,14 @@ class ControlPlane:
         return json.loads(self.request(path, **kw) or b"{}")
 
 
-def start(cp, suite_dir, arms, repeats, cases, carry_state=False):
+def start(cp, suite_dir, arms, repeats, cases, carry_state=False, from_worker=""):
     fields = {"arms": json.dumps([{k: v for k, v in a.items() if k != "tree"} for a in arms]), "repeats": repeats,
               "cases": ",".join(cases)}
     if carry_state:
         fields["carry_state"] = "1"
+    if from_worker:
+        # Every case starts from that desktop's taught state, and arms without their own rev run its agent tree.
+        fields["from_worker"] = from_worker
     files = {"suite": ("suite.tar.gz", packed(suite_tar(suite_dir)))}
     for a in arms:
         if a.get("tree"):
@@ -205,11 +227,31 @@ def start(cp, suite_dir, arms, repeats, cases, carry_state=False):
     return cp.json("/api/evals/runs", data=body, content_type=content_type, timeout=600)["run"]
 
 
+def teach(cp, suite_dir, case_id, desktop):
+    """Set a normal desktop up to record a demonstration of one case: its inputs, its mock and the suite's host names
+    (POST /api/evals/teach). The case must be in the suite."""
+
+    cases, _ = suite_kinds(suite_dir)
+    if case_id not in cases:
+        raise Usage(f"the suite has no case {case_id!r} (it has {', '.join(cases)})")
+    content_type, body = multipart({"case": case_id, "desktop": desktop}, {"suite": ("suite.tar.gz", packed(suite_tar(suite_dir)))})
+    return cp.json("/api/evals/teach", data=body, content_type=content_type, timeout=300)
+
+
+def teach_stop(cp, desktop):
+    """Stop a desktop's teach mock and take the host mapping out of its browser (POST /api/evals/teach/stop)."""
+
+    body = urllib.parse.urlencode({"desktop": desktop}).encode()
+    return cp.json("/api/evals/teach/stop", data=body, content_type="application/x-www-form-urlencoded")
+
+
 def describe(status):
     run, p = status.get("run") or {}, status.get("progress") or {}
     line = f"{run.get('id')}: {run.get('status')}"
     if status.get("active"):
         line += f" - {p.get('done', 0)}/{p.get('total', 0)} rows; arm {p.get('arm')}, repeat {p.get('repeat')}, case {p.get('case')}"
+    if run.get("from_worker"):
+        line += f"; started from worker {run['from_worker']}"
     if run.get("note"):
         line += f" ({run['note']})"
     return line
@@ -276,6 +318,7 @@ def curve_cell(rows):
         "false_done": sum(1 for r in valid if r.get("false_done")),
         "q_required": sum(r.get("q_required") or 0 for r in valid) / n if n else 0,
         "q_other": sum(r.get("q_other") or 0 for r in valid) / n if n else 0,
+        "q_declined": sum(r.get("q_declined") or 0 for r in valid) / n if n else 0,
         "tokens_in": _median([r.get("tokens_in") or 0 for r in valid]),
         "tokens_out": _median([r.get("tokens_out") or 0 for r in valid]),
         "tokens": _median([(r.get("tokens_in") or 0) + (r.get("tokens_out") or 0) for r in valid]),
@@ -317,6 +360,11 @@ def curve(rows, order=None, kinds=None):
             missed = []
             if later_rate < first_rate:
                 missed.append(f"later cases pass {later_rate:.0%}, the first {first_rate:.0%}")
+            elif not later_rate:
+                # Cheaper at the same correctness needs some correctness: a kind no case passed is not a curve that
+                # met the bar, however few tokens its failures took (first live run, 2026-11-08: five bills, none
+                # passed, read as "met").
+                missed.append("no later case passed, so being cheaper says nothing")
             if later_tokens >= first["tokens"]:
                 missed.append(f"later cases' median tokens {_tokens(later_tokens)} are not below the first's "
                               f"{_tokens(first['tokens'])}")
@@ -339,6 +387,9 @@ def curve_markdown(run_id, rows, order=None, kinds=None, run=None):
     out = [f"# Learning curve {run_id}", ""]
     if run:
         out.append(f"- Suite: `{run.get('suite_name', '')}`; repeats: {run.get('repeats', '')}")
+        if run.get("from_worker"):
+            out.append(f"- Started from worker `{run['from_worker']}` (agent tree {(run.get('worker_tree_sha') or '-')[:12]}, "
+                       f"snapshot {(run.get('snapshot_sha') or '-')[:12]}): every case began from its taught state.")
         if not run.get("carry_state"):
             out.append("- **State was reset before every case: this run is not a learning curve** (run a carry_state "
                        "suite with --carry-state).")
@@ -349,7 +400,7 @@ def curve_markdown(run_id, rows, order=None, kinds=None, run=None):
             "is of the input tokens.", ""]
     for arm, series in points.items():
         out += [f"## {arm}", "",
-                "| # | case | kind | pass | false done | questions req / other | tokens in | tokens out | calls | cached | left out |",
+                "| # | case | kind | pass | false done | questions req / other / declined | tokens in | tokens out | calls | cached | left out |",
                 "|---|---|---|---|---|---|---|---|---|---|---|"]
         for i, (case, c) in enumerate(series, 1):
             kind = (kinds or {}).get(case, "")
@@ -357,7 +408,7 @@ def curve_markdown(run_id, rows, order=None, kinds=None, run=None):
                 out.append(f"| {i} | {case} | {kind} | - | - | - | - | - | - | - | {c['left_out']} |")
                 continue
             out.append(f"| {i} | {case} | {kind} | {c['pass']}/{c['n']} | {c['false_done']}/{c['n']} | "
-                       f"{c['q_required']:.1f} / {c['q_other']:.1f} | {_tokens(c['tokens_in'])} | "
+                       f"{c['q_required']:.1f} / {c['q_other']:.1f} / {c['q_declined']:.1f} | {_tokens(c['tokens_in'])} | "
                        f"{_tokens(c['tokens_out'])} | {c['calls']:g} | {c['cached_share']:.0%} | {c['left_out']} |")
         out.append("")
         for kind, v in verdicts[arm].items():
@@ -399,6 +450,13 @@ def wait(cp, run_id, poll=POLL_SECONDS, sleep=time.sleep):
 
 
 def main(argv=None):
+    # The tables and the curve quote the worker's own words; a console that cannot write a character (Windows' cp1252
+    # and an arrow) must not end the command after the file was written.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(prog="evals/run.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cp", default=DEFAULT_CP, help="the control plane's primary listener (default %(default)s)")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -410,7 +468,17 @@ def main(argv=None):
     r.add_argument("--detach", action="store_true", help="print the run id and return at once")
     r.add_argument("--carry-state", action="store_true",
                    help="keep the desktop's state between a repeat's cases (only for a suite that says carry_state)")
+    r.add_argument("--from-worker", default="",
+                   help="start every case from this desktop's taught state, and run its agent tree in arms without a rev")
     r.add_argument("--cp", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    t = sub.add_parser("teach", help="set a normal desktop up to record a demonstration of one case")
+    t.add_argument("--suite", required=True)
+    t.add_argument("--case", required=True)
+    t.add_argument("--desktop", required=True)
+    t.add_argument("--cp", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    ts = sub.add_parser("teach-stop", help="stop a desktop's teach mock and remove its host mapping")
+    ts.add_argument("--desktop", required=True)
+    ts.add_argument("--cp", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     for name in ("status", "table", "rows", "curve"):
         p = sub.add_parser(name)
         p.add_argument("run_id")
@@ -440,8 +508,11 @@ def main(argv=None):
             if len(set(names)) != len(names):
                 raise Usage("each --arm is named once (two revs name the same commit)")
             cases = [c.strip() for c in args.cases.split(",") if c.strip()]
-            run = start(cp, args.suite, arms, args.repeats, cases, carry_state=args.carry_state)
+            run = start(cp, args.suite, arms, args.repeats, cases, carry_state=args.carry_state,
+                        from_worker=args.from_worker.strip())
             mode = "; state carried from case to case" if run.get("carry_state") else ""
+            if run.get("from_worker"):
+                mode += f"; every case starts from worker {run['from_worker']} (snapshot {(run.get('snapshot_sha') or '')[:12]})"
             print(f"started {run['id']}: suite {run.get('suite_name')} ({run.get('suite_sha', '')[:12]}), "
                   f"{len(arms)} arm(s) x {args.repeats} repeat(s){mode}", flush=True)
             if args.detach:
@@ -452,6 +523,14 @@ def main(argv=None):
             _, rows_path = write_rows(cp, run["id"])
             print("\n" + md)
             print(f"written: {path} and {rows_path}")
+            return 0
+        if args.command == "teach":
+            said = teach(cp, args.suite, args.case, args.desktop)
+            print(said.get("say") or json.dumps(said))
+            return 0
+        if args.command == "teach-stop":
+            said = teach_stop(cp, args.desktop)
+            print(said.get("say") or json.dumps(said))
             return 0
         if args.command == "status":
             print(describe(cp.json(f"/api/evals/runs/{args.run_id}")))

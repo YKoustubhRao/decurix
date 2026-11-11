@@ -3,6 +3,8 @@ package skills
 import (
 	"strings"
 	"testing"
+
+	"thebot/internal/llm"
 )
 
 // Found live (2026-10-14): asked for a review deck, the operator had no tool
@@ -19,6 +21,45 @@ func TestOperatorContractTeachesMakingAndChangingADeck(t *testing.T) {
 		if !strings.Contains(operatorContract, want) {
 			t.Errorf("the operator's contract does not say %q", want)
 		}
+	}
+}
+
+// Found live (freeze 2.4, 2026-11-11): to re-check a JSON file it had exported, the worker piped it into inline
+// python3; the command guard holds code piped into an interpreter for the person, and the case ended there. The
+// contract sends a re-read to the read tools, in the fixed part every call starts with, and the missing-jq hint no
+// longer suggests the piped form.
+func TestOperatorContractReadsAFileWithItsReadTools(t *testing.T) {
+	for _, want := range []string{
+		"use your read tools: office read <file>, jq '.key' <file>, or cat, head and grep on the file",
+		"never pipe a file into an interpreter",
+	} {
+		if !strings.Contains(operatorContract, want) {
+			t.Errorf("the operator's contract does not say %q", want)
+		}
+	}
+	chat := &scriptedChat{replies: []string{"COMMAND:\nno_such_program_here", "DONE:\nnothing"}}
+	if _, err := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "check the export", Type: "operator"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.calls) < 2 {
+		t.Fatalf("only %d calls", len(chat.calls))
+	}
+	in := func(call []llm.Message) bool {
+		for _, m := range call {
+			if strings.Contains(m.Content, "never pipe a file into an interpreter") {
+				return true
+			}
+		}
+		return false
+	}
+	for i, call := range chat.calls {
+		if !in(call[:len(chat.calls[0])]) {
+			t.Errorf("call %d's fixed prefix does not carry the read-tools rule", i+1)
+		}
+	}
+	hint := missingProgramHint("bash: line 1: jq: command not found", "jq . out.json")
+	if strings.Contains(hint, "json,sys") || !strings.Contains(hint, "never pipe the file into python3") {
+		t.Errorf("jq hint = %q", hint)
 	}
 }
 

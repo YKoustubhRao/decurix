@@ -17,10 +17,10 @@ and what the tools saw.
 import json
 import os
 import re
-from decimal import Decimal
 from pathlib import Path
 
 from decurix_agent import attachments, config, progress, provenance, stage_facts, task_context
+from decurix_agent import values as value_rules
 from decurix_agent.logging_utils import log
 from decurix_agent.provenance import declared_unit, fact_value, identifier_like, parse_number, same_fact, same_figure
 from decurix_agent.stage_facts import _number
@@ -155,6 +155,14 @@ def run_inputs(request):
         found += [i["path"] for i in sources.inputs(request or "")]
     except Exception as exc:  # noqa: BLE001 - what cannot be found is not listed
         log(f"long_task: could not find the request's inputs: {exc}")
+    # Any file the request names by its path, of any kind - the documents a taught run's values were read from
+    # (binding.referenced_files). Found live (2026-11-08): a bill's PDF named in the request was no source, since only
+    # tables are found by name, and a code replay's save was refused for "invented" figures the PDF prints.
+    try:
+        from decurix_agent import binding
+        found += binding.referenced_files(request or "")
+    except Exception as exc:  # noqa: BLE001 - what cannot be found is not listed
+        log(f"long_task: could not find the files the request names: {exc}")
     out = []
     try:
         from decurix_agent import shared
@@ -645,9 +653,16 @@ def _formula_key(text):
     return re.sub(r"[\s$']", "", str(text)).upper().lstrip("=").replace("_XLFN.", "")
 
 
+def _date_order(day_first):
+    """values' date order of the request's convention: "day" (DD/MM), "month" (MM/DD) or None (not said)."""
+
+    return "day" if day_first is True else "month" if day_first is False else None
+
+
 def _scalar(value, day_first=None):
-    """A cell value by meaning: ("empty",), ("bool", b), ("date", (y, m, d, seconds)), ("number", Decimal, step) or
-    ("text", folded)."""
+    """A cell value by meaning: ("empty",), ("bool", b), ("date", (y, m, d, seconds)), ("undated", folded) for a digit
+    date its order cannot decide, ("number", value as given) or ("text", folded). Dates and numbers are read by
+    values.py under the request's date order (review round 2: this read a > 12 as day first even under MM/DD)."""
 
     if value is None or (isinstance(value, str) and not value.strip()):
         return ("empty",)
@@ -655,17 +670,17 @@ def _scalar(value, day_first=None):
         return ("bool", value)
     if isinstance(value, str) and value.strip().upper() in ("TRUE", "FALSE"):
         return ("bool", value.strip().upper() == "TRUE")
+    if isinstance(value, (int, float)):
+        return ("number", value)
     text = str(value).strip()
-    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?", text)
-    if m and not isinstance(value, (int, float)):
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        seconds = int(m.group(4) or 0) * 3600 + int(m.group(5) or 0) * 60 + int(m.group(6) or 0)
-        return ("date", (y, mo, d, seconds))
-    fact = fact_value(text, day_first)
-    if fact[0] == "date":
-        return ("date", tuple(fact[1]) + (0,))
-    if fact[0] == "number":
-        return ("number", fact[1][0], fact[1][1])
+    day = value_rules.parse_date(text, _date_order(day_first))
+    if day:
+        if day.kind != "date":
+            return ("undated", " ".join(text.split()).lower())
+        h, mi, sec = day.time or (0, 0, 0)
+        return ("date", tuple(day.parts) + (h * 3600 + mi * 60 + sec,))
+    if isinstance(value_rules.parse_amount(text), value_rules.Amount):
+        return ("number", text)
     return ("text", " ".join(text.split()).lower())
 
 
@@ -683,18 +698,28 @@ def _serial_date(number):
     return (moment.year, moment.month, moment.day, moment.hour * 3600 + moment.minute * 60 + moment.second)
 
 
-def _same_value(a, b, day_first=None):
+def _same_value(a, b, day_first=None, computed=""):
+    """Whether two cell values are one: dates as values reads them under the request's order (a date and its serial
+    alike), numbers by values within their written precision - the deliberate tolerance of a kept cell and its computed
+    value, values' own parameter (`computed`: "a" when `a` is a formula's computed value and `b` a written one, "both"
+    when both are computed: then equal, a float's noise aside) - and anything else as written. A digit date its order
+    cannot decide is the same only as written."""
+
     sa, sb = _scalar(a, day_first), _scalar(b, day_first)
     if sa[0] == "date" or sb[0] == "date":
         if sa[0] == "number":
-            sa = ("date", _serial_date(sa[1]))
+            sa = ("date", _serial_date(value_rules.figure(sa[1])[0] if value_rules.figure(sa[1]) else None))
         if sb[0] == "number":
-            sb = ("date", _serial_date(sb[1]))
+            sb = ("date", _serial_date(value_rules.figure(sb[1])[0] if value_rules.figure(sb[1]) else None))
     if sa[0] != sb[0]:
         return False
     if sa[0] == "number":
-        tolerance = max(sa[2], sb[2]) / 2 + Decimal("0.000001")
-        return abs(sa[1] - sb[1]) <= tolerance
+        read = [value_rules.parse_amount(v) if isinstance(v, str) else None for v in (sa[1], sb[1])]
+        marked = any(isinstance(r, value_rules.Amount) and (r.unit or r.currency) for r in read)
+        if marked:  # (a figure with a unit or a currency: values.compare reads those)
+            return value_rules.compare(sa[1], sb[1], precision=True).same is True
+        same = value_rules.same_figure(sa[1], sb[1], precision=computed != "both", a_computed=computed == "a")
+        return same is True
     return sa == sb
 
 
@@ -719,12 +744,12 @@ def same_cell(before, after, day_first=None):
     if fa and fb:
         if _formula_key(wa) == _formula_key(wb):
             return True
-        return ca is not None and cb is not None and _same_value(ca, cb, day_first)
+        return ca is not None and cb is not None and _same_value(ca, cb, day_first, "both")
     if fa or fb:
         computed, plain = (ca, wb) if fa else (cb, wa)
         if computed is None:
             return True  # (no computed value kept to compare: not a change anyone can see)
-        return _same_value(computed, plain, day_first)
+        return _same_value(computed, plain, day_first, "a")
     return _same_value(wa, wb, day_first)
 
 
@@ -1740,8 +1765,13 @@ def invented_typing(typed, request, chosen=()):
     # (A failure raises: the caller makes it a check not made - never a pass.)
     from decurix_agent import filler
     texts = filler.source_texts(request, [i.split(" (= ")[0] for i in run_inputs(request)])
-    # Hygiene: a placeholder (test, n/a, 9999999999) that no source holds.
-    made_up = [repr(v) for v in typed if filler.looks_filler(v) and not filler.in_sources(v, texts)]
+    # Hygiene: a placeholder (test, n/a, 9999999999) that no source holds - never an entry the application's own list
+    # held (evidence.listed_picks; found live 2026-11-09, a portal's "NA" unit chosen as the demonstration did).
+    from decurix_agent.computer import evidence, records
+    listed = {" ".join(v.split()).casefold() for v in evidence.listed_picks()}
+    texts = texts + [records._answers_text()]  # (the person's confirmed answers in this task are a source too)
+    made_up = [repr(v) for v in typed if filler.looks_filler(v) and not filler.in_sources(v, texts)
+               and " ".join(str(v).split()).casefold() not in listed]
     # Provenance: a fact typed (an address, a date, a code, a figure of 100 or more) that no source holds.
     sources = work_sources(request)
     # A figure worked out in one step from another value typed in this work and a source figure is held: the tax of

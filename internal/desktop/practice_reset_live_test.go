@@ -149,6 +149,91 @@ func TestPracticeResetLive(t *testing.T) {
 	workerOwns("after a bundle pull and the next reset")
 }
 
+// TestPracticeSettleLive runs the settle between a carry-state run's cases on a real desktop image: the open task (its
+// record, a request queued behind its question, the gate's pending request) goes, what the worker learned and the work
+// folder stay, and the agent answers again. Set DECURIX_PRACTICE_IMAGE as for TestPracticeResetLive.
+func TestPracticeSettleLive(t *testing.T) {
+	image := os.Getenv("DECURIX_PRACTICE_IMAGE")
+	if image == "" {
+		t.Skip("set DECURIX_PRACTICE_IMAGE to an installed desktop image to run the practice settle on a real container")
+	}
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	if _, err := cli.Ping(ctx); err != nil {
+		t.Skipf("no Docker here: %v", err)
+	}
+	m := NewManager(cli)
+	memory := int64(1800 << 20)
+	created, err := cli.ContainerCreate(ctx, &container.Config{
+		Image:  image,
+		Env:    []string{"VNC_PW=settle-live-only", "DESKTOP_ID=settle-live", "DECURIX_AGENT_TOKEN=settle-live-token-0123456789abcdef"},
+		Labels: map[string]string{PracticeLabel: "true"},
+	}, &container.HostConfig{Resources: container.Resources{Memory: memory, MemorySwap: memory}}, nil, nil,
+		fmt.Sprintf("decurix-settle-live-%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := created.ID
+	defer func() {
+		_ = cli.ContainerRemove(context.Background(), id, container.RemoveOptions{Force: true, RemoveVolumes: true})
+	}()
+	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	health := `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/health`
+	waitHealthy := func(when string) {
+		deadline := time.Now().Add(4 * time.Minute)
+		for time.Now().Before(deadline) {
+			if out, _ := liveExec(ctx, cli, id, "headless", health); out == "200" {
+				return
+			}
+			time.Sleep(3 * time.Second)
+		}
+		t.Fatalf("the agent did not answer /health %s", when)
+	}
+	waitHealthy("after the first start")
+
+	// What a case that ended at a question leaves: a method it kept, its work, its task in hand, a request queued
+	// behind the question (not yet handled), a handled one, and a pending request in the gate's store.
+	plant := `mkdir -p ~/.decurix/methods ~/.decurix/command ~/work/x && echo m > ~/.decurix/methods/m.json && ` +
+		`echo w > ~/work/x/out.txt && echo '{"task_id":"t1"}' > ~/.decurix/active-task.json && ` +
+		`echo queued > ~/.decurix/command/20260101_000000_ab.t2.txt && echo old > ~/.decurix/command/20260101_000000_cd.t1.txt.done && ` +
+		`echo t > /tmp/decurix-current-task && echo ok`
+	if out, err := liveExec(ctx, cli, id, "headless", plant); out != "ok" {
+		t.Fatalf("could not plant a case's leftovers: %q %v", out, err)
+	}
+	gate := "absent"
+	if out, _ := liveExec(ctx, cli, id, "root", `[ -d /var/lib/decurix-gate ] && mkdir -p /var/lib/decurix-gate/computer && echo '{}' > /var/lib/decurix-gate/computer/approval.json && echo planted`); out == "planted" {
+		gate = "planted"
+	}
+	if err := m.SettlePractice(ctx, id); err != nil {
+		t.Fatalf("the settle failed on a real desktop: %v", err)
+	}
+	waitHealthy("after the settle")
+	for path, want := range map[string]string{
+		"/home/headless/.decurix/methods/m.json":                         "there",
+		"/home/headless/work/x/out.txt":                                  "there",
+		"/home/headless/.decurix/command/20260101_000000_cd.t1.txt.done": "there",
+		"/home/headless/.decurix/active-task.json":                       "gone",
+		"/home/headless/.decurix/command/20260101_000000_ab.t2.txt":      "gone",
+		"/tmp/decurix-current-task":                                      "gone",
+	} {
+		if out, _ := liveExec(ctx, cli, id, "root", fmt.Sprintf("[ -e %s ] && echo there || echo gone", path)); out != want {
+			t.Errorf("%s is %s after the settle, want %s", path, out, want)
+		}
+	}
+	if gate == "planted" {
+		if out, _ := liveExec(ctx, cli, id, "root", "[ -e /var/lib/decurix-gate/computer/approval.json ] && echo there || echo gone"); out != "gone" {
+			t.Error("the gate's pending request survived the settle")
+		}
+	}
+}
+
 // liveExec runs a shell line in a container as user and returns its trimmed standard output.
 func liveExec(ctx context.Context, cli *client.Client, id, user, line string) (string, error) {
 	exec, err := cli.ContainerExecCreate(ctx, id, container.ExecOptions{User: user, Cmd: []string{"/bin/sh", "-c", line}, AttachStdout: true, AttachStderr: true,

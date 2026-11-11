@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import test_long_requests as base
 import test_skills as ts
 
-from decurix_agent import guidance, long_task, skill_task, state, verify
+from decurix_agent import final_gate, guidance, long_task, skill_task, state, verify
 from decurix_agent.computer import evidence, recording
 from decurix_agent.tools import outbox
 
@@ -79,7 +79,7 @@ class AtTheGate(ts.TeachingBase):
         for p in (mock.patch.object(skill_task.verify, "available", lambda: True),
                   mock.patch.object(skill_task.verify, "judge",
                                     lambda *a, **k: (self.judged.append(k), dict(SEEN))[1]),
-                  mock.patch.object(skill_task, "_did_screen_work", lambda: False),
+                  mock.patch.object(final_gate, "_did_screen_work", lambda: False),
                   mock.patch.object(skill_task.produced, "files", lambda report="", **kw: ["/work/result.xlsx"]),
                   mock.patch.object(skill_task.produced, "text", lambda paths, focus=(): "A2=1250.00"),
                   mock.patch.object(skill_task.produced, "missing_on_host", lambda request: ""),

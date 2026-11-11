@@ -348,7 +348,48 @@ def _fresh(ts, nonce, now=None):
         if nonce in _nonces:
             return "replayed"
         _nonces[nonce] = now + 2 * SKEW_SECONDS
+        path, floor = _nonce_store["path"], _nonce_store["floor"]
+        if path is None:
+            return ""
+        if sent <= floor:
+            # The store could not be read at start: what was seen before it is unknown, so a body signed before the
+            # gate started may be a replay (fail closed; a body signed since is decided as ever).
+            return "replayed"
+        try:
+            _write_private(path, {"nonces": dict(_nonces)})
+        except OSError as exc:
+            log(f"the seen nonces could not be kept ({exc}): the signed body is refused")
+            return "nonce not kept"
     return ""
+
+
+# The nonces the gate has seen, kept in its own directory (0700, files 0600, written whole) so a restart does not forget
+# them: a body signed less than SKEW_SECONDS before a restart was otherwise accepted again after it. Set by main() (in
+# the gate's process only); with no path they are kept in memory alone (a test of the signatures).
+NONCES_FILE = "gate-nonces.json"
+_nonce_store = {"path": None, "floor": 0.0}
+
+
+def use_nonce_store(path, now=None):
+    """Keep the seen nonces at `path` from now on, and take in those it holds that are not past their expiry. One that
+    is there and cannot be read is written over at the next nonce, and every body signed before now is refused: what
+    it held is unknown."""
+
+    from pathlib import Path
+    now = time.time() if now is None else now
+    path = Path(path)
+    floor = 0.0
+    try:
+        held = _read_store(path).get("nonces")
+        held = held if isinstance(held, dict) else {}
+    except StoreUnreadable as exc:
+        log(f"the seen nonces are unknown ({exc}): bodies signed before this start are refused")
+        held, floor = {}, now
+    with _lock:
+        for nonce, until in held.items():
+            if isinstance(until, (int, float)) and until >= now:
+                _nonces[str(nonce)] = max(float(until), _nonces.get(str(nonce), 0.0))
+        _nonce_store["path"], _nonce_store["floor"] = path, floor
 
 
 def _record(text, request_id, outcome, reading):
@@ -461,6 +502,10 @@ def handle(call):
         # From the gate's own copy of the signed request only (approval.site_known in the gate).
         return {"known": approval.site_known(str(call.get("host") or ""), task_id=str(call.get("task_id") or ""),
                                              url=str(call.get("url") or "") or None)}
+    if op == "declined":
+        # Read only: the controls the person did not say yes to in a task, which the caller holds again. Nothing a
+        # caller sends adds to or removes from it (only a settled reply does, approval._note_declined).
+        return {"declined": approval._local_declined(str(call.get("task_id") or ""))}
     if op == "pending":
         return {"pending": with_question(approval._local_pending())}
     if op == "has_grant":
@@ -622,6 +667,7 @@ def main():
         return 1
     ReplyHandler.key = key
     _key["value"] = key
+    use_nonce_store(os.path.join(os.environ.get("DECURIX_DIR") or "/var/lib/decurix-gate", NONCES_FILE))
     sock_path = approval.GATE_SOCKET
     try:
         os.unlink(sock_path)

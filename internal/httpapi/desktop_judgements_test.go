@@ -258,3 +258,55 @@ func TestAFieldUnitStandsOnThePersonsNumberedReply(t *testing.T) {
 		t.Fatalf("another desktop read box's rows: %s", rec.Body)
 	}
 }
+
+// A desktop reads the person's own answers on any of its tasks with ?scope=worker, newest first and bounded: a rule
+// taught on an earlier task backs a value on a later one (person_record.worker_words). Never another desktop's, never a
+// secret one, never a row derived from an answer (a field_answer), and never from the host.
+func TestADesktopReadsThePersonsWordsOnItsEarlierTasks(t *testing.T) {
+	s := chatServer(t)
+	_, first := personsAnswer(t, s, "Which project code?", "From now on, every bill from a print shop goes to PX-7.", false)
+	task, second := personsAnswer(t, s, "Which payment terms?", "Net 45", false)
+	_, secret := personsAnswer(t, s, "The portal PIN?", "Plum7Orbit", true)
+	text, _ := json.Marshal(fieldAnswer{Label: "Payment terms", Host: "erp.example.test", Option: "Net 45"})
+	if rec := postLearned(t, s, "box", map[string]any{"task_id": task, "kind": "field_answer", "derived_from": second, "text": string(text)}); rec.Code != http.StatusCreated {
+		t.Fatalf("a field_answer: %d %s", rec.Code, rec.Body)
+	}
+	other, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "eve", Name: "eve"}, "eve's own", tasks.Origin{Kind: tasks.OriginPerson})
+	_, _ = s.Tasks.RecordOutcome("eve", other.TaskID, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "Which code?"})
+
+	read := func(from, target string) (int, []desktopJudgement, string) {
+		rec := getAsDesktop(s, s.desktopJudgementsHandler, from, target)
+		var got struct{ Judgements []desktopJudgement }
+		_ = json.Unmarshal(rec.Body.Bytes(), &got)
+		return rec.Code, got.Judgements, rec.Body.String()
+	}
+	code, rows, body := read("box", "/api/desktops/judgements?scope=worker&kind=answer")
+	if code != http.StatusOK || len(rows) != 2 || rows[0].ID != second || rows[1].ID != first ||
+		rows[1].Text != "From now on, every bill from a print shop goes to PX-7." || rows[1].Actor.Kind != tasks.ActorPerson ||
+		rows[1].Asked != "Which project code?" {
+		t.Fatalf("box's words: %d %s", code, body)
+	}
+	if strings.Contains(body, secret) || strings.Contains(body, "Plum7Orbit") || strings.Contains(body, `"kind":"field_answer"`) {
+		t.Fatalf("a secret or derived row was sent: %s", body)
+	}
+	if code, rows, _ := read("box", "/api/desktops/judgements?scope=worker&limit=1"); code != http.StatusOK || len(rows) != 1 || rows[0].ID != second {
+		t.Fatalf("limit 1: %d %+v", code, rows)
+	}
+	if code, rows, body := read("eve", "/api/desktops/judgements?scope=worker&kind=answer"); code != http.StatusOK || len(rows) != 0 {
+		t.Fatalf("eve read box's words: %d %s", code, body)
+	}
+	for name, target := range map[string]string{
+		"another scope":      "/api/desktops/judgements?scope=org",
+		"another kind":       "/api/desktops/judgements?scope=worker&kind=verdict",
+		"a limit too large":  "/api/desktops/judgements?scope=worker&limit=500",
+		"a limit of nothing": "/api/desktops/judgements?scope=worker&limit=x",
+		"with a task":        "/api/desktops/judgements?scope=worker&task=" + task,
+	} {
+		if code, _, body := read("box", target); code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s", name, code, body)
+		}
+	}
+	if code, _, _ := read("", "/api/desktops/judgements?scope=worker"); code != http.StatusForbidden {
+		t.Errorf("from the host: %d", code)
+	}
+}

@@ -58,7 +58,8 @@ type Actor struct {
 	Kind  string   `json:"kind"`
 }
 
-// Actor kinds.
+// Actor kinds. ActorScripted is the eval's scripted expert, standing in for a person on a practice desktop (its
+// replies are a person's words there; internal/practice broker.go KeepReply); nothing on the worker's side makes one.
 const (
 	ActorPerson   = "person"
 	ActorWorker   = "worker"

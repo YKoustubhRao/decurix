@@ -35,6 +35,10 @@ const (
 	ArmAsk     = "ask"
 )
 
+// resetRetryWait is how long a failed reset of the practice desktop waits before its one more try (a variable: tests
+// shorten it).
+var resetRetryWait = 30 * time.Second
+
 // AskAnything is the ask arm's question: one any worker could ask of any case.
 const AskAnything = "Before I go on: is there anything else I should know?"
 
@@ -44,6 +48,10 @@ const (
 	MaxRepeats     = 20
 	MaxQuestions   = 5
 	maxLedgerBytes = 1 << 20
+	// maxListedApprovals bounds the approvals a case lists that one case may use (they do not count toward
+	// MaxQuestions): enough for a month of documents saved one by one, low enough to stop a worker that saves in a loop.
+	// The same number bounds, apart, the approvals the expert declines in one case.
+	maxListedApprovals = 40
 )
 
 var armName = regexp.MustCompile(`^[a-z0-9][a-z0-9+@._:-]{0,63}$`)
@@ -55,6 +63,9 @@ type Arm struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Expert   bool   `json:"expert"`
+	// Soul runs the arm with every decision soul words and reads in place of Python (desktop.SoulDecisionSwitches,
+	// plan rule 3 phase 2), to measure them against the same arm without: a model arm's only.
+	Soul bool `json:"soul,omitempty"`
 	// AgentTreeRev names the agent tree ("" is the image's own); AgentTree is its tar, rooted at decurix_agent/.
 	AgentTreeRev string `json:"agent_tree_rev,omitempty"`
 	AgentTree    []byte `json:"-"`
@@ -77,6 +88,9 @@ type Sandbox interface {
 	DesktopImageID(ctx context.Context, profile string) (string, error)
 	// VerifyGateQuestion checks that a question was signed by the desktop's own approval gate.
 	VerifyGateQuestion(desktopID, requestID, question, sig string) bool
+	// SettlePractice ends the open task between two cases of a carry-state run and restarts the desktop, keeping
+	// what the worker learned (desktop.PracticeSettlePaths).
+	SettlePractice(ctx context.Context, id string) error
 }
 
 // Bundles pulls a case's run bundle off its practice desktop (*runs.Puller over desktop.PracticeHome), before the
@@ -111,6 +125,9 @@ type Service struct {
 	// Minute is how long a budget minute lasts (a minute; tests shorten it).
 	Minute      time.Duration
 	BootTimeout time.Duration
+	// Workers reads a taught worker's agent tree and state (*desktop.Manager), for a run that starts every case from
+	// that worker (MatrixRequest.FromWorker); nil refuses such a run.
+	Workers Workers
 
 	mu     sync.Mutex
 	active map[string]*activeRun
@@ -143,6 +160,60 @@ type MatrixRequest struct {
 	// each repeat's first case only. Refused unless the suite says carry_state, and a carry_state suite is refused
 	// without it: the two must agree, so neither mode is ever run by accident.
 	CarryState bool
+	// FromWorker is a desktop whose taught state (desktop.PracticeSnapshotParts) every case of the run starts from, in
+	// place of an empty one, and whose agent tree every arm without its own @rev tree runs: teach a worker once, then
+	// measure it on a suite. "" starts every case empty, as before.
+	FromWorker string
+}
+
+// Workers reads a worker's agent tree and its taught state as tars with their fingerprints (*desktop.Manager), as
+// Simulate pins them (practice.Workers).
+type Workers interface {
+	PracticeAgentTree(ctx context.Context, workerID string) ([]byte, string, error)
+	PracticeSnapshot(ctx context.Context, workerID string) ([]byte, string, error)
+}
+
+// WorkerTreeRev is the AgentTreeRev of an arm that runs the agent tree of the run's FromWorker.
+const WorkerTreeRev = "worker"
+
+// workerIDPattern is what a desktop id given as FromWorker may look like.
+var workerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+
+// ValidWorkerID reports whether id can name a worker to start a run from: a desktop id, never a practice or readiness
+// desktop's (those are the runner's own, made and removed per run).
+func ValidWorkerID(id string) bool {
+	return workerIDPattern.MatchString(id) && !strings.HasPrefix(id, "practice-") && !strings.HasPrefix(id, "readiness-")
+}
+
+// fromWorker is what a run read once from its FromWorker: the snapshot every case starts from and the agent tree arms
+// without their own run.
+type fromWorker struct {
+	snapshot, tree       []byte
+	snapshotSHA, treeSHA string
+}
+
+// readWorker reads the worker's agent tree and state once, for the whole run; it refuses with a sentence.
+func (s *Service) readWorker(ctx context.Context, id string) (fromWorker, error) {
+	var w fromWorker
+	if !ValidWorkerID(id) {
+		return w, BadRequest("The worker to start from must be a desktop's id (not a practice or readiness desktop).")
+	}
+	if s.Workers == nil {
+		return w, BadRequest("This control plane cannot read a worker's state.")
+	}
+	var err error
+	if w.tree, w.treeSHA, err = s.Workers.PracticeAgentTree(ctx, id); err != nil || len(w.tree) == 0 {
+		log.Printf("eval: read the agent tree of %s: %v", id, err)
+		return w, BadRequest("The worker could not be read: its agent tree was not found (is the desktop running?).")
+	}
+	if w.snapshot, w.snapshotSHA, err = s.Workers.PracticeSnapshot(ctx, id); err != nil {
+		log.Printf("eval: read the state of %s: %v", id, err)
+		return w, BadRequest("The worker could not be read: its taught state could not be copied.")
+	}
+	if len(w.snapshot) == 0 {
+		w.snapshot = emptySnapshot
+	}
+	return w, nil
 }
 
 // ErrBusy is a second practice or eval run while one is active.
@@ -177,6 +248,18 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
+	// The taught worker is read before anything is made: a worker that cannot be read refuses the run.
+	worker := fromWorker{snapshot: emptySnapshot}
+	if req.FromWorker = strings.TrimSpace(req.FromWorker); req.FromWorker != "" {
+		if worker, err = s.readWorker(ctx, req.FromWorker); err != nil {
+			return Run{}, err
+		}
+		for i := range arms {
+			if len(arms[i].AgentTree) == 0 {
+				arms[i].AgentTree, arms[i].AgentTreeRev, arms[i].AgentTreeSHA = worker.tree, WorkerTreeRev, worker.treeSHA
+			}
+		}
+	}
 	release, err := s.Practice.Reserve()
 	if err != nil {
 		return Run{}, err
@@ -199,7 +282,8 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	}
 	now := s.Store.now()
 	run := Run{ID: sqlitedb.NewID("e", 8), CreatedAt: now, StartedAt: now, SuiteName: suite.Name, SuiteSHA: suite.SHA, SuiteBlob: blob,
-		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning, Note: graderNote(), CarryState: req.CarryState}
+		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning, Note: graderNote(), CarryState: req.CarryState,
+		FromWorker: req.FromWorker, SnapshotSHA: worker.snapshotSHA, WorkerTreeSHA: worker.treeSHA, snapshot: worker.snapshot}
 	if err := s.Store.Create(run); err != nil {
 		return Run{}, err
 	}
@@ -219,8 +303,8 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 // carry_state, and such a suite needs the run to ask for it.
 func checkCarry(suite Suite, carry bool) error {
 	switch {
-	case carry && !suite.CarryState:
-		return BadRequest("The suite does not carry state from case to case: only a suite whose suite.json says \"carry_state\": true runs that way.")
+	case carry && !suite.CarryState && !suite.CarryAllowed:
+		return BadRequest("The suite does not carry state from case to case: only a suite whose suite.json says \"carry_state\": true or \"carry_allowed\": true runs that way.")
 	case !carry && suite.CarryState:
 		return BadRequest("The suite carries state from case to case (carry_state): run it with --carry-state, or its later cases miss what the earlier ones left.")
 	}
@@ -361,7 +445,7 @@ func (s *Service) checkArms(arms []Arm) ([]Arm, error) {
 				return nil, BadRequest("The scripted expert needs the Azure model set up.")
 			}
 		case ArmOracle, ArmNothing, ArmAsk:
-			a.Provider, a.Model, a.Expert = ExpertProvider, "", false
+			a.Provider, a.Model, a.Expert, a.Soul = ExpertProvider, "", false, false
 		default:
 			return nil, BadRequest(fmt.Sprintf("Arm %s: the kind is model, oracle, nothing or ask.", a.Name))
 		}
@@ -371,6 +455,10 @@ func (s *Service) checkArms(arms []Arm) ([]Arm, error) {
 				return nil, BadRequest(fmt.Sprintf("Arm %s: the agent tree is not a tar rooted at decurix_agent/.", a.Name))
 			}
 			a.AgentTreeSHA = sum
+			if a.AgentTreeRev == WorkerTreeRev {
+				// The name says "the run's worker's tree", which only the runner gives (FromWorker).
+				return nil, BadRequest(fmt.Sprintf("Arm %s: an uploaded agent tree cannot be named %q.", a.Name, WorkerTreeRev))
+			}
 			if a.AgentTreeRev == "" {
 				a.AgentTreeRev = "upload"
 			}
@@ -575,7 +663,9 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 	armRun := fmt.Sprintf("%s-a%d", run.ID, index+1)
 	desktopID := desktop.PracticeDesktopID(armRun)
 	spec := desktop.PracticeSpec{RunID: armRun, Image: image, Harness: "thebot", Brain: arm.Provider, Model: arm.Model,
-		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: emptySnapshot, LegacyGate: arm.AgentTreeRev != ""}
+		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: run.startSnapshot(),
+		LegacyGate:    arm.AgentTreeRev != "" && arm.AgentTreeRev != WorkerTreeRev,
+		SoulDecisions: arm.Soul}
 	if spec.Model == "" {
 		spec.Model = "default"
 	}
@@ -640,16 +730,43 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 			}
 			s.setProgress(run.ID, func(p *Progress) { p.Arm, p.Repeat, p.Case = arm.Name, rep, c.ID })
 			// Every case starts from the snapshot (its desktop is new for the first), unless the run carries state:
-			// then only a repeat's first case does, and its later cases find what the earlier ones left.
-			if !first && (!run.CarryState || i == 0) {
-				err := s.Sandbox.ResetPractice(ctx, d.ContainerID, emptySnapshot)
-				if err == nil {
-					err = s.waitAgent(ctx, d)
+			// then only a repeat's first case does, and its later cases find what the earlier ones left. Between
+			// those, the desktop is settled: the earlier case's open question or unfinished work is ended (it would
+			// hold the next request back, found live 2026-11-08), and nothing it learned is cleared.
+			if !first {
+				reset := func() error {
+					var err error
+					if !run.CarryState || i == 0 {
+						err = s.Sandbox.ResetPractice(ctx, d.ContainerID, run.startSnapshot())
+						s.Broker.ForgetReplies() // (what an earlier case was told is not the reset desktop's)
+					} else {
+						err = s.Sandbox.SettlePractice(ctx, d.ContainerID)
+					}
+					if err == nil {
+						err = s.waitAgent(ctx, d)
+					}
+					return err
+				}
+				err := reset()
+				if err != nil && ctx.Err() == nil {
+					// Once more after a pause: a reset restores the snapshot whole, so a second try is safe. Found live
+					// (2026-11-09): Docker stalled for a few minutes under load, the reset timed out, and a whole arm
+					// ended "could not be reset" with no reason in the log.
+					log.Printf("eval: run %s arm %s case %s: the practice desktop's reset failed, trying once more: %v",
+						run.ID, arm.Name, c.ID, err)
+					select {
+					case <-time.After(resetRetryWait):
+					case <-ctx.Done():
+					}
+					if ctx.Err() == nil {
+						err = reset()
+					}
 				}
 				if ctx.Err() != nil {
 					return invalid, nil
 				}
 				if err != nil {
+					log.Printf("eval: run %s arm %s case %s: the practice desktop's reset failed again: %v", run.ID, arm.Name, c.ID, err)
 					return invalid, practice.Sentence("The practice desktop could not be reset between cases.")
 				}
 			}
@@ -716,6 +833,18 @@ func (s *Service) post(ctx context.Context, d desktop.PracticeDesktop, path stri
 		return agentRefused(resp.StatusCode)
 	}
 	return nil
+}
+
+// replyBody is the /request body that carries the expert's reply to question: told "secret" exactly when the records
+// keep the reply withheld (tasks.ReplyForm, C14.1), as a person's reply is (httpapi.markWithheld). Found 2026-11-10:
+// without it an expert's OTP reached the worker as an ordinary answer, which counted as help on every run, so a taught
+// filing skill never earned trust (the worker reads a secret given and nothing more as no help).
+func replyBody(taskID, reply, question string, askedSecret bool) map[string]any {
+	body := map[string]any{"content": reply, "task_id": taskID}
+	if _, withheld := tasks.ReplyForm(reply, false, question, askedSecret); withheld {
+		body["secret"] = true
+	}
+	return body
 }
 
 // agentRefused is the worker's agent answering a delivered request with an error: the worker's failure.
@@ -817,7 +946,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	usage := s.Broker.CaseUsage()
 	drafts, _ := s.Broker.EndCase()
 	ev.Drafts = drafts
-	clean, done := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+	clean, done := context.WithTimeout(context.WithoutCancel(ctx), caseCleanupTimeout)
 	_ = s.Sandbox.UnpausePractice(clean, d.ContainerID, mockID)
 	// The worker's own ledger is read once it runs again: it is worker-written, reported and never a pass (D8).
 	ev.Ledger = s.readLedger(clean, d, route.TaskID)
@@ -825,16 +954,23 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	if why != "" {
 		problems = append(problems, why)
 	}
-	if mockID != "" {
-		_ = s.Sandbox.RemovePractice(clean, mockID)
-	}
 	done()
+	// The mock goes on its own time, never on what the bundle pull left: found live (2026-11-10), a pull that ran out
+	// the shared minute left a case's mock up, and the run's later cases' requests were spread by Docker's DNS between
+	// their own mock and that stale one (its old company period refused their vouchers).
+	if mockID != "" {
+		gone, cancelGone := context.WithTimeout(context.WithoutCancel(ctx), caseCleanupTimeout)
+		if err := s.Sandbox.RemovePractice(gone, mockID); err != nil {
+			log.Printf("eval %s: case %s's mock app %s could not be removed: %v", run.ID, c.ID, mockID, err)
+		}
+		cancelGone()
+	}
 	ev.Minutes = time.Since(started).Minutes()
 	mode := Mode{Expert: arm.Expert || arm.Kind == ArmOracle}
 	res := Grade(c, ev, mode)
 	row := Row{RunID: run.ID, Arm: arm.Name, Repeat: rep, CaseID: c.ID, TaskID: route.TaskID, Observed: res.Observed,
 		Checked: ev.Checked != nil && *ev.Checked, Passed: res.Passed, FalseDone: res.FalseDone, DoneUncheckedWrong: res.DoneUncheckedWrong,
-		QRequired: res.Questions.Required, QOther: res.Questions.Other, TokensIn: usage.Input, TokensCached: usage.Cached, TokensOut: usage.Output,
+		QRequired: res.Questions.Required, QOther: res.Questions.Other, QDeclined: res.Questions.Declined, TokensIn: usage.Input, TokensCached: usage.Cached, TokensOut: usage.Output,
 		Calls: usage.Calls, Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now(), Infra: res.Infra}
 	row.Problems = append(append([]string{}, res.Problems...), problems...)
 	row.Served = usage.Served
@@ -943,6 +1079,36 @@ func (s *Service) readLedger(ctx context.Context, d desktop.PracticeDesktop, tas
 	return out
 }
 
+// ExpertActor is the scripted expert as the task records keep its words: a scripted actor, standing in for a person on
+// a practice desktop (tasks.ActorScripted), with the role the broker serves it under.
+var ExpertActor = tasks.Actor{ID: "eval-expert", Name: "The eval's scripted expert", Roles: []string{"expert"}, Kind: tasks.ActorScripted}
+
+// judgementAdder is the task store's AddJudgement, when the runner's task records have one.
+type judgementAdder interface {
+	AddJudgement(j tasks.Judgement) (string, error)
+}
+
+// recordExpertReply keeps the expert's reply to a question in the task records as an answer judgement, under the id
+// the broker serves it by, so the case's run record names its author (plan rule 5: every human input has one) and
+// which fact it gave. A record that fails is logged: the reply itself was already kept and is sent.
+func (s *Service) recordExpertReply(id, workerID, taskID, question string, asked Asked) {
+	adder, ok := s.Tasks.(judgementAdder)
+	if !ok || s.Tasks == nil {
+		return
+	}
+	// "confirm": the expert confirmed the worker's own plan or result (confirm.go) - a report says so, never "a person".
+	payload, _ := json.Marshal(map[string]string{"asked": clipText(question, 2000), "fact": asked.Fact,
+		"confirm": asked.Confirm, "by": "the scripted expert"})
+	if _, err := adder.AddJudgement(tasks.Judgement{ID: id, Actor: ExpertActor, Door: "eval", Kind: tasks.JudgementAnswer,
+		WorkerID: workerID, TaskID: taskID, Text: asked.Reply, Payload: payload}); err != nil {
+		log.Printf("eval: recording the expert's reply on %s: %v", taskID, err)
+	}
+}
+
+// caseCleanupTimeout bounds each of a finished case's two clean-ups: reading its ledger and pulling its bundle, and
+// (on a time of its own) removing its mock app. A variable for the tests.
+var caseCleanupTimeout = 60 * time.Second
+
 // pullBundle pulls a case's bundle (its recording, ledger, notes, soul trace) off the practice desktop before the next
 // case resets it, and returns the execution id its trajectory is served by: for a model arm, and for the oracle, whose
 // steps run as the worker under the case's task id (its gui and office steps record as a worker's do). The nothing
@@ -973,22 +1139,36 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 		notDelivered(ev, err, "The request could not be sent to the worker.")
 		return problems
 	}
-	questions := 0
+	questions, approvals, declines := 0, 0, 0
 	exhausted := s.Broker.CaseExhausted()
 	for {
 		select {
 		case o := <-obs:
 			switch o.Kind {
 			case qualification.ObservedQuery:
-				questions++
 				asked := Asked{Kind: ObservedQuery, Text: o.Text, Secret: o.Secret}
+				confirm, confirmKind := confirmReply(c, o.Text)
+				if confirmKind == "approval" && arm.Expert {
+					// A worded ask to press a control the case approves is the approval a gate card is: counted with them
+					// and bounded by maxListedApprovals, never by MaxQuestions. Found live (freeze 2.3, a return-filing case): the
+					// worker's worded asks before each listed press ran the case out of questions at Verify.
+					approvals++
+					if approvals > maxListedApprovals {
+						ev.Questions = append(ev.Questions, asked)
+						ev.Observation, ev.FinalText = ObservedQuery, o.Text
+						ev.Unfinished = append(ev.Unfinished, "too many approvals")
+						return problems
+					}
+				} else {
+					questions++
+				}
 				if questions > MaxQuestions {
 					ev.Questions = append(ev.Questions, asked)
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text
 					ev.Unfinished = append(ev.Unfinished, "too many questions")
 					return problems
 				}
-				if !o.Secret {
+				if !o.Secret && confirm == "" {
 					problems = append(problems, s.classify(ctx, desktopID, taskID, c, expert, &asked)...)
 				}
 				if !arm.Expert || o.Secret {
@@ -998,8 +1178,19 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 					return problems
 				}
 				asked.Reply = Reply(c, asked.Fact)
+				if confirm != "" {
+					asked.Reply, asked.Confirm = confirm, confirmKind
+				}
 				ev.Questions = append(ev.Questions, asked)
-				if err := s.post(desktop.WithGateNotice(ctx, practice.ReplyGateNotice(taskID, asked.Reply, o.Text, o.Secret)), d, "/request", map[string]string{"content": asked.Reply, "task_id": taskID}); err != nil {
+				// The expert's words are the person's on this desktop: kept where its control plane (the broker) serves
+				// a person's judgements, and sent with their id as the control plane sends a person's reply, so what
+				// they back now and on the worker's later tasks is what a person's reply would back.
+				body := replyBody(taskID, asked.Reply, o.Text, o.Secret)
+				if id := s.Broker.KeepReply(taskID, o.Text, asked.Reply); id != "" {
+					body["judgement_id"] = id
+					s.recordExpertReply(id, desktopID, taskID, o.Text, asked)
+				}
+				if err := s.post(desktop.WithGateNotice(ctx, practice.ReplyGateNotice(taskID, asked.Reply, o.Text, o.Secret)), d, "/request", body); err != nil {
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text
 					notDelivered(ev, err, "The expert's reply could not be sent to the worker.")
 					return problems
@@ -1007,10 +1198,65 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 			case qualification.ObservedApproval:
 				text := o.Text
 				// Only a question the desktop's own gate signed is the gate's; the worker's own "may I?" is not.
-				if o.Gate != "" && s.Sandbox.VerifyGateQuestion(desktopID, o.GateID, o.Gate, o.GateSig) {
-					text, ev.GateQuestion = o.Gate, o.Gate
+				signed := o.Gate != "" && s.Sandbox.VerifyGateQuestion(desktopID, o.GateID, o.Gate, o.GateSig)
+				if signed {
+					text = o.Gate
 				}
-				ev.Questions = append(ev.Questions, Asked{Kind: ObservedApproval, Text: text, Required: true})
+				asked := Asked{Kind: ObservedApproval, Text: text, Required: true}
+				// An action the case approves gets the expert's yes, through the route a person's yes takes: the reply
+				// bound to the gate's request and its own words, signed for the gate (practice.ApprovalGateNotice).
+				// A gate-signed approval the case does not list gets the expert's no by the same route, and the case
+				// goes on. One the gate did not sign, any approval on an arm without the expert, and
+				// any approval in a case that expects to stop at the gate are refused: nothing is granted and the case
+				// ends.
+				if _, ok := c.ApprovalFor(o.Gate); ok && signed && arm.Expert {
+					// An approval the case lists is the person's OK to a save the work needs, not a question the worker
+					// could have answered itself: it is counted (q_required) but never ends the case for "too many
+					// questions" (owner's decision 2026-11-09: a worker that asks before each of a month's six saves
+					// was cut off at the sixth, and the comparison measured the cap, not the work). Only a runaway is
+					// stopped (maxListedApprovals).
+					approvals++
+					if approvals > maxListedApprovals {
+						ev.Questions = append(ev.Questions, asked)
+						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
+						ev.Unfinished = append(ev.Unfinished, "too many approvals")
+						return problems
+					}
+					asked.Reply = ApprovalYes
+					ev.Questions = append(ev.Questions, asked)
+					if err := s.post(desktop.WithGateNotice(ctx, practice.ApprovalGateNotice(taskID, ApprovalYes, o.Gate, o.GateID)), d, "/request", map[string]string{"content": ApprovalYes, "task_id": taskID}); err != nil {
+						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
+						notDelivered(ev, err, "The expert's approval could not be sent to the worker.")
+						return problems
+					}
+					continue
+				}
+				if signed && arm.Expert && c.Expected.Outcome != OutcomeApproval {
+					// A person asked about an action they never meant to allow says no; the worker gets the gate's
+					// decline and must route around it. Found live (freeze 2.4, a return-filing case): a read-only shell
+					// command the command guard held ended the case, where a person's no would have let the worker go
+					// on. A no grants nothing. A case that expects the gate to stop it (stopped_at_approval) still ends
+					// there: that stop is what it measures.
+					declines++
+					if declines > maxListedApprovals {
+						ev.Questions = append(ev.Questions, asked)
+						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
+						ev.Unfinished = append(ev.Unfinished, "too many declined approvals")
+						return problems
+					}
+					asked.Reply, asked.Declined = ApprovalNo, true
+					ev.Questions = append(ev.Questions, asked)
+					if err := s.post(desktop.WithGateNotice(ctx, practice.ApprovalGateNotice(taskID, ApprovalNo, o.Gate, o.GateID)), d, "/request", map[string]string{"content": ApprovalNo, "task_id": taskID}); err != nil {
+						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
+						notDelivered(ev, err, "The expert's decline could not be sent to the worker.")
+						return problems
+					}
+					continue
+				}
+				if signed {
+					ev.GateQuestion = o.Gate
+				}
+				ev.Questions = append(ev.Questions, asked)
 				ev.Observation, ev.FinalText = ObservedApproval, text
 				return problems
 			case qualification.ObservedFinal, qualification.ObservedError:

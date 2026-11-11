@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from decurix_agent import config
-from decurix_agent.computer import experience, recording, replay
+from decurix_agent.computer import constraints, experience, recording, replay
 
 
 def _rename_file(text, old, new):
@@ -75,6 +75,9 @@ DRAFT = "draft"
 # item of a list given at run time. Items are separated by ";" or a new line.
 ITEM_SPLIT = re.compile(r"\s*(?:;|\n)\s*")
 MAX_LOOP_ITEMS = 200
+# The item of a list for a document that shows that field's place empty: the step that types it is left out for that
+# item (expand), the rest replays.
+EMPTY_ITEM = constraints.EMPTY_ITEM
 
 
 def slug(text):
@@ -352,6 +355,59 @@ def _picks_from_list(step, following):
             and ((following.get("target") or {}).get("role") or "") in LIST_ENTRY_ROLES)
 
 
+# The roles of a labelled field a value is typed or chosen into (skill_task.FIELD_ROLES).
+LABELLED_ROLES = ("textbox", "combobox", "searchbox", "spinbutton")
+
+
+def field_label(skill, param):
+    """The label of the field a value goes into: its step's field as the demonstration found it, else the value's own
+    label."""
+
+    steps = {s.get("n"): s for s in skill.get("steps") or []}
+    target = (steps.get(param.get("step")) or {}).get("target") or {}
+    label = target.get("name") if target.get("role") in LABELLED_ROLES else ""
+    return " ".join(str(label or param.get("label") or param["name"]).split())
+
+
+def may_leave(skill, param):
+    """Whether a value no document gives may be left as the application fills it in (left_alone): one field's value,
+    typed or chosen into it - not a list, a row of a repeated part, a secret, a file or an address."""
+
+    from decurix_agent.computer import learning  # (learning imports this module)
+    if param.get("list") or param.get("secret") or param.get("file") or learning._is_address(param.get("example")):
+        return False
+    group = repeated_rows(skill)
+    if param["name"] in {name for row in (group or {"rows": []})["rows"] for name in row}:
+        return False
+    return any(s.get("param") == param["name"] and s.get("kind") in ("type", "select") for s in skill.get("steps") or [])
+
+
+def left_alone(steps, names):
+    """
+    Copies of `steps` without what enters the values `names` - fields a run leaves as the application fills them in:
+    each step that types or chooses one, with the click on a list entry that its typing found (a pick), and every check
+    of another step that looks for one of them. Nothing else changes.
+    """
+
+    def about(check):
+        return check.get("param") in names or any(
+            "{" + name + "}" in str(v) for v in check.values() if isinstance(v, str) for name in names)
+
+    out, skip = [], False
+    for i, step in enumerate(steps):
+        if skip:
+            skip = False
+            continue
+        if step.get("param") in names and step.get("kind") in ("type", "select"):
+            skip = _picks_from_list(step, steps[i + 1] if i + 1 < len(steps) else {})
+            continue
+        each = copy.deepcopy(step)
+        if each.get("expect"):
+            each["expect"] = [check for check in each["expect"] if not about(check)]
+        out.append(each)
+    return out
+
+
 def repeated_rows(skill):
     """
     The part of a task that was entered once per entry of something - one row
@@ -405,6 +461,96 @@ def list_params(skill):
     return [p for p in skill.get("params") or [] if p.get("list")]
 
 
+# A value that reads as an identifier a record is found by: letters and digits, at least one of each, 10 to 20 long (a
+# tax or registration number, an account code). The same shape as core._IDENTIFIER without its emails.
+IDENTIFIER_SHAPE = re.compile(r"(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{10,20}")
+
+
+def _plain(text):
+    return " ".join(str(text if text is not None else "").split()).casefold()
+
+
+def made_before(skill, start):
+    """
+    The records the person made in the steps before the per-item block (which begins at step `start`) that the block
+    later picks by name: [{"pick": the list parameter whose step chooses it, "name": the parameter the making typed
+    its name with, "identifier": the parameter it typed an identifier into (None when it typed none), "steps": the
+    making's step numbers, from the first after the commit before it through its own commit}]. A making is the run of
+    steps up to and including a press that commits (replay._step_commits) that typed, as recorded, one of the items the
+    block's choosing step chose when it was taught. Nothing is guessed: no commit, no name typed as one of those
+    items - no making. Found live (2026-11-10): a person created a new customer's ledger before entering the month's
+    bills; the next month's new customer was not in the list and the replay stopped, with nothing telling the model
+    that the lesson itself makes such a record.
+    """
+
+    if not start:
+        return []
+    steps = sorted(skill.get("steps") or [], key=lambda s: s.get("n") or 0)
+    params = {p["name"]: p for p in skill.get("params") or []}
+    before = [s for s in steps if (s.get("n") or 0) < start]
+    # (A link that reads like an act - "Create ledger" - opens the form: it begins a making, never ends one.)
+    commits = [s["n"] for s in before if (s.get("consequential") or replay._step_commits(s))
+               and (s.get("target") or {}).get("role") != "link"]
+    out = []
+    for pick in list_params(skill):
+        chooser = next((s for s in steps if s.get("param") == pick["name"]), None)
+        if chooser is None or (chooser.get("n") or 0) < start or chooser.get("kind") != "select":
+            continue
+        chosen = {_plain(x) for x in pick.get("examples") or [] if _plain(x)}
+        for step in before:
+            param = params.get(step.get("param") or "")
+            if step.get("kind") != "type" or param is None or param.get("list"):
+                continue
+            typed = _plain(param.get("example") if param.get("example") is not None else param.get("default"))
+            if not typed or typed not in chosen:
+                continue
+            end = next((n for n in commits if n > step["n"]), None)
+            if end is None:
+                continue
+            begin = max([n for n in commits if n < step["n"]], default=0) + 1
+            span = [s for s in before if begin <= s["n"] <= end]
+            ident = next((params[s["param"]]["name"] for s in span
+                          if s.get("kind") == "type" and s.get("param") in params
+                          and IDENTIFIER_SHAPE.fullmatch(str(params[s["param"]].get("example")
+                                                             or params[s["param"]].get("default") or "").strip())),
+                         None)
+            out.append({"pick": pick["name"], "name": param["name"], "identifier": ident,
+                        "steps": [s["n"] for s in span]})
+            break
+    return out
+
+
+def identifier_in(example, text, others=()):
+    """
+    The one token of `text` (a document's) with the shape of the identifier `example` (the same length, letters and
+    digits in nearly the same places) that the texts of the run's other documents, `others`, do not ALL hold too (a
+    token every one of them holds is their sender's): what this document gives as the identifier a record of its own
+    is found by, where the documents of one run share their sender's. None when there is not exactly one - and with no
+    other document, since which of a document's identifiers is its sender's own cannot then be told (a bill to an
+    unregistered customer holds only the sender's).
+    """
+
+    example = str(example or "").strip()
+    if not IDENTIFIER_SHAPE.fullmatch(example) or not others:
+        return None
+    # (Of the same length, letters and digits mixed, and the same kind of character in all but a fifth of its places:
+    # a check character or an entity's number is a letter in one identifier of a kind and a digit in another.)
+    loose = len(example) // 5
+
+    def alike(word):
+        return (len(word) == len(example) and IDENTIFIER_SHAPE.fullmatch(word) is not None
+                and sum(a.isdigit() != b.isdigit() for a, b in zip(word, example)) <= loose)
+
+    def tokens(t):
+        return {w.upper() for w in re.findall(r"[A-Za-z0-9]+", str(t or "")) if alike(w)}
+
+    found = tokens(text)
+    others = [tokens(t) for t in others]
+    if others:
+        found = {w for w in found if not all(w in o for o in others)}
+    return next(iter(found)) if len(found) == 1 else None
+
+
 def list_problem(skill, values):
     """What is wrong with the lists a run was given, in words for a person, or None."""
 
@@ -439,6 +585,19 @@ def expand(skill, values):
 
     flat = dict(values)
     lists = {p["name"]: p for p in list_params(skill)}
+
+    # A value given as EMPTY_ITEM that is no list: a field the person left as the application fills it in (no document
+    # gives it - skill_task's "left to the application"). No step types or chooses into it, and no check looks for it.
+    blank = {p["name"] for p in skill.get("params") or [] if not p.get("list") and flat.get(p["name"]) == EMPTY_ITEM}
+    if blank:
+        steps = left_alone(skill.get("steps") or [], blank)
+        for n, step in enumerate(steps, 1):
+            step["n"] = n
+        at = {step["param"]: step["n"] for step in steps if step.get("param")}
+        skill = dict(skill, steps=steps, params=[dict(p, step=at.get(p["name"], p.get("step")))
+                                                 for p in skill.get("params") or [] if p["name"] not in blank])
+        for name in blank:
+            flat.pop(name, None)
 
     if not lists:
         return fit(skill, program(skill), flat), flat
@@ -484,6 +643,9 @@ def expand(skill, values):
                         if check.get("param") == name:
                             check["param"] = renamed
 
+                    if items[name][n] == EMPTY_ITEM and each.get("kind") in ("type", "select"):
+                        # This document gives the field nothing: nothing is typed or chosen into it for this item.
+                        continue
                     each["param"] = renamed
                     flat[renamed] = items[name][n]
                     params.append(dict(lists[name], name=renamed, list=False, default=None))

@@ -8,6 +8,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { setupMobileAccess } = require('./mobile-access');
+const { namedLink } = require('./public-name');
 const { lanPort } = require('./gated-port');
 const { ensureLanForward } = require('./windows-lan');
 const windowsRuntime = require('./windows-runtime');
@@ -124,6 +125,17 @@ function tunnelCommand(port, provider = 'cloudflare') {
   return { file: cloudflared(), args: ['tunnel', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`] };
 }
 
+// permanentTunnelCommand runs cloudflared for this install's permanent name
+// (public-name.js). The token goes in the environment, never on the command
+// line, where any process on the computer could read it.
+function permanentTunnelCommand(token) {
+  return {
+    file: cloudflared(),
+    args: ['tunnel', '--no-autoupdate', '--protocol', 'http2', 'run'],
+    env: { ...process.env, TUNNEL_TOKEN: token },
+  };
+}
+
 // The public link is a tunnel from the internet to the gated listener. It is
 // off until the person turns it on in the Mobile menu (preload.js): a firm
 // that never asked for phone access should not have an internet-reachable
@@ -166,7 +178,11 @@ function startMobileAccess() {
   if (!publicLinkEnabled()) return;
   // No cloudflared, no tunnel: the dashboard works without one.
   if (!cloudflared()) return;
-  mobileAccessPromise = setupMobileAccess(dataDir(), tunnelCommand, { log: logLine }).then(async (access) => {
+  mobileAccessPromise = setupMobileAccess(dataDir(), tunnelCommand, {
+    log: logLine,
+    permanent: (port) => namedLink(dataDir(), port, { log: logLine }),
+    permanentCommand: permanentTunnelCommand,
+  }).then(async (access) => {
     if (closing) await access?.stop();
     else mobileAccess = access;
   }).catch((error) => console.warn('Mobile access setup failed:', error.message));
@@ -648,6 +664,19 @@ function restartedSinceAsked(reason) {
   } catch { return false; }
 }
 
+// installerRestartPending: the installer turned Windows' features on and asked
+// for a restart that has not happened yet (wsl/prepare-windows.ps1 notes it).
+// WSL missing or Linux not starting is then that restart's to fix, not another
+// administrator prompt's.
+function installerRestartPending() {
+  try {
+    const asked = JSON.parse(fs.readFileSync(restartFile(), 'utf8'));
+    return asked.reason === 'installer' && !restartedSinceAsked('installer');
+  } catch { return false; }
+}
+
+const RESTART_AFTER_INSTALL = 'Decurix\'s installer turned on what Windows needs to run Linux. Restart Windows to finish, then open Decurix again.';
+
 function askForRestart(reason, message) {
   try {
     fs.mkdirSync(dataDir(), { recursive: true });
@@ -737,6 +766,7 @@ async function importDistro() {
   if (first.code === 0) return;
   const said = first.said.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 2).join(' ').slice(0, 300);
   if (!NO_VIRTUALIZATION.test(first.said)) throw new Error(`Could not set up Linux for Decurix${said ? ` (WSL says: ${said})` : ''}. Check ${logFile()}`);
+  if (installerRestartPending()) throw new Error(RESTART_AFTER_INSTALL);
 
   // Already restarted once for this: another prompt and another restart
   // change nothing, so say what is left to do.
@@ -801,6 +831,7 @@ async function linuxReady() {
   const hasWsl = await wslInstalled();
   if (!hasWsl || !await distroExists()) {
     checkThisComputer();
+    if (!hasWsl && installerRestartPending()) throw new Error(RESTART_AFTER_INSTALL);
     if (!hasWsl) await installWsl();
     await importDistro();
   }

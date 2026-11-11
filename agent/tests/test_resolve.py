@@ -17,7 +17,7 @@ from unittest import mock
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 
-from decurix_agent.computer import cli, core, evidence, resolve
+from decurix_agent.computer import cli, core, evidence, resolve, selecting
 from decurix_agent.computer.errors import ComputerError
 
 TASK = "t0123456789abcdef"
@@ -92,10 +92,10 @@ class Notes(unittest.TestCase):
         self.tmp = Path(tmp.name)
         for p in (mock.patch.object(evidence, "NOTES_DIR", self.tmp / "evidence"),
                   mock.patch.object(core, "ID_REFUSALS_DIR", self.tmp / "id-refusals"),
-                  mock.patch.object(core, "FAILED_SEARCH_FILE", self.tmp / "failed.json"),
+                  mock.patch.object(selecting, "FAILED_SEARCH_FILE", self.tmp / "failed.json"),
                   mock.patch("decurix_agent.task_context.current", lambda: TASK),
-                  mock.patch.object(core, "CUSTOM_OPTIONS_SECONDS", 0), mock.patch.object(core, "CUSTOM_OPEN_SECONDS", 0),
-                  mock.patch.object(core, "MIN_LIST_ANSWER", 0), mock.patch("time.sleep", lambda s: None)):
+                  mock.patch.object(selecting, "CUSTOM_OPTIONS_SECONDS", 0), mock.patch.object(selecting, "CUSTOM_OPEN_SECONDS", 0),
+                  mock.patch.object(selecting, "MIN_LIST_ANSWER", 0), mock.patch("time.sleep", lambda s: None)):
             p.start()
             self.addCleanup(p.stop)
 

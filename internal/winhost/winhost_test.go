@@ -61,6 +61,7 @@ dolaunch() { [ -n "` + o.slow + `" ] && sleep ` + o.slow + `; echo "` + o.launch
 send() { printf 'FRAME 20 10 %s %s %s %s %s %s\n%s' "$2" "$3" "$4" "$5" "$1" "${#6}" "$6"; }
 while IFS= read -r l; do
   printf '%s\n' "$l" >> "$FAKE_LOG"
+  printf '%s %s\n' "$$" "$l" >> "$FAKE_LOG.byhelper"
   case "$l" in
     launchr*) if [ "` + moved + `" = 1 ]; then echo "ERR Not found on this computer: gone"; else dolaunch; fi;;
     launch*)  dolaunch;;
@@ -529,14 +530,25 @@ func TestTheHelpersCaptureFollowsTheViewers(t *testing.T) {
 	v1.Close()
 	v2.Close()
 	time.Sleep(100 * time.Millisecond)
-	var counts []string
-	for _, l := range received(t) {
-		if strings.HasPrefix(l, "viewers ") {
-			counts = append(counts, strings.TrimPrefix(l, "viewers "))
+	// Only the session's own helper's lines (the one that launched the app): the replacement warm helper's readiness
+	// ping ("viewers 0") went to the same log and, landing between the two viewers, read as the count falling to 0
+	// with a viewer watching (CI, 2026-11-08: 1,0,2,1,0).
+	time.Sleep(50 * time.Millisecond)
+	out, _ := exec.Command("cat", getenv("FAKE_LOG")+".byhelper").Output()
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	session := ""
+	for _, l := range lines {
+		if pid, rest, ok := strings.Cut(l, " "); ok && strings.HasPrefix(rest, "launch") {
+			session = pid
 		}
 	}
-	// The start holds the capture on while the window appears and lets go; then two viewers come and both go. The
-	// replacement warm helper's own readiness ping ("viewers 0") lands in the same log, so look for the sequence, not the end.
+	var counts []string
+	for _, l := range lines {
+		if pid, rest, ok := strings.Cut(l, " "); ok && pid == session && strings.HasPrefix(rest, "viewers ") {
+			counts = append(counts, strings.TrimPrefix(rest, "viewers "))
+		}
+	}
+	// The start holds the capture on while the window appears and lets go; then two viewers come and both go.
 	if got := "," + strings.Join(counts, ",") + ","; !strings.Contains(got, ",1,2,1,0,") {
 		t.Errorf("viewer counts sent to the helper = %s, want them to rise with each viewer and fall to 0 so the helper stops capturing", got)
 	}

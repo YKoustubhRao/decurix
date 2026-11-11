@@ -38,6 +38,7 @@ type Cell struct {
 	DoneUncheckedWrong int      `json:"done_unchecked_wrong"`
 	QRequired          float64  `json:"q_required_mean"`
 	QOther             float64  `json:"q_other_mean"`
+	QDeclined          float64  `json:"q_declined_mean"`
 	TokensMedian       int64    `json:"tokens_median"`
 	TokensP90          int64    `json:"tokens_p90"`
 	CachedShare        float64  `json:"cached_share"`
@@ -72,13 +73,17 @@ type Table struct {
 	Infra int `json:"infra"`
 	// CarryState is a run that kept the desktop's state between a repeat's cases (Run.CarryState).
 	CarryState bool `json:"carry_state"`
+	// FromWorker, SnapshotSHA and WorkerTreeSHA are the run's (Run.FromWorker): the taught worker every case started from.
+	FromWorker    string `json:"from_worker,omitempty"`
+	SnapshotSHA   string `json:"snapshot_sha,omitempty"`
+	WorkerTreeSHA string `json:"worker_tree_sha,omitempty"`
 }
 
 // Summarise builds a run's table from its rows, cases in the run's order and arms as the run named them.
 func Summarise(run Run, rows []Row) Table {
 	t := Table{RunID: run.ID, Suite: run.SuiteName, SuiteSHA: run.SuiteSHA, Repeats: run.Repeats, Status: run.Status, Note: run.Note,
 		Date: run.CreatedAt, Arms: run.Arms, Rows: []TableRow{}, Totals: map[string]Cell{}, NotResult: run.Repeats < MinRepeats,
-		CarryState: run.CarryState}
+		CarryState: run.CarryState, FromWorker: run.FromWorker, SnapshotSHA: run.SnapshotSHA, WorkerTreeSHA: run.WorkerTreeSHA}
 	cases := append([]string{}, run.Cases...)
 	known := map[string]bool{}
 	for _, c := range cases {
@@ -154,13 +159,14 @@ func cell(all []Row) Cell {
 		}
 		c.QRequired += float64(r.QRequired)
 		c.QOther += float64(r.QOther)
+		c.QDeclined += float64(r.QDeclined)
 		tokens = append(tokens, r.TokensIn+r.TokensOut)
 		minutes = append(minutes, r.Minutes)
 		in += r.TokensIn
 		cached += r.TokensCached
 	}
 	n := float64(len(rows))
-	c.QRequired, c.QOther = c.QRequired/n, c.QOther/n
+	c.QRequired, c.QOther, c.QDeclined = c.QRequired/n, c.QOther/n, c.QDeclined/n
 	c.PassLo, _ = Wilson(c.Pass, c.N, Z95)
 	_, c.FalseDoneHi = Wilson(c.FalseDone, c.N, Z95)
 	sort.Slice(tokens, func(i, j int) bool { return tokens[i] < tokens[j] })
@@ -202,6 +208,10 @@ func (t Table) Markdown() string {
 			"first case only, so a repeat's cases are a sequence, not independent samples\n")
 	} else {
 		b.WriteString("- State: reset to the snapshot before every case (independent samples)\n")
+	}
+	if t.FromWorker != "" {
+		fmt.Fprintf(&b, "- Started from worker `%s` (agent tree %s, snapshot %s): every case began from its taught state\n",
+			t.FromWorker, orDash(clipText(t.WorkerTreeSHA, 12)), orDash(clipText(t.SnapshotSHA, 12)))
 	}
 	if t.Note != "" {
 		fmt.Fprintf(&b, "- Note: %s\n", t.Note)
@@ -250,11 +260,11 @@ func (t Table) Markdown() string {
 		}
 		return fmt.Sprintf("%d/%d (hi %.2f); %d", c.FalseDone, c.N, c.FalseDoneHi, c.DoneUncheckedWrong) + infraNote(c)
 	})
-	section("Questions per run (required / other)", func(c Cell) string {
+	section("Questions per run (required / other / declined approvals)", func(c Cell) string {
 		if c.N == 0 {
 			return "-"
 		}
-		return fmt.Sprintf("%.1f / %.1f", c.QRequired, c.QOther)
+		return fmt.Sprintf("%.1f / %.1f / %.1f", c.QRequired, c.QOther, c.QDeclined)
 	})
 	section("Tokens per run (median, p90; cached share of input)", func(c Cell) string {
 		if c.N == 0 {

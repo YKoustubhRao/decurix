@@ -1,5 +1,7 @@
 import os
 import socket
+import stat
+import sys
 from pathlib import Path
 
 
@@ -76,16 +78,66 @@ AGENT_PORT = int(os.environ.get("DECURIX_AGENT_PORT", "8081"))
 
 # The secret the control plane gave this desktop at creation (internal/desktop/agenttoken.go): it sends it as
 # "Authorization: Bearer <token>" on every call to :8081 and to soul, and http_api.py refuses a call without it.
-# What it keeps out is other desktops on the shared Docker network and web pages in this desktop's browser - not this
-# desktop's own worker, whose shell runs as the same user and can read this environment. Empty on a desktop created
-# before tokens existed (desktop state is fixed at creation); such a desktop is served as before.
+# It keeps out other desktops on the shared Docker network and web pages in this desktop's browser, and the worker
+# itself: the entrypoint takes it out of the environment and leaves it in a file for this process alone
+# (DECURIX_AGENT_TOKEN_FILE), which take_agent_token reads and deletes once this process is non-dumpable, so the
+# worker's commands (the same Linux user) cannot read it from its /proc or memory. The environment is still read
+# first: a desktop started without the entrypoint (a test container) and the tests set it there.
 AGENT_TOKEN_ENV = "DECURIX_AGENT_TOKEN"
+AGENT_TOKEN_FILE_ENV = "DECURIX_AGENT_TOKEN_FILE"
+_TOKEN_MAX = 4096
+_taken_token = ""
+
+
+def no_dump():
+    """Make this process non-dumpable (prctl PR_SET_DUMPABLE 0): its /proc files and memory become root's, so another
+    process of this user cannot read its environment or memory, ptrace it or dump it. Not inherited by what it runs
+    (a new program is dumpable again). True when done; False off Linux or when the call failed."""
+
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        return libc.prctl(4, 0, 0, 0, 0) == 0     # PR_SET_DUMPABLE, SUID_DUMP_DISABLE
+    except (OSError, AttributeError):
+        return False
+
+
+def take_agent_token(path=None):
+    """Read this process's token from its file (DECURIX_AGENT_TOKEN_FILE), delete the file, and keep the token for
+    agent_token(). Called once at start, after no_dump(). A link, a file that is not a regular one, or an unreadable
+    one gives no token (the API then refuses every call but /health), and the file is deleted all the same. Returns
+    whether a token was taken."""
+
+    global _taken_token
+    path = path if path is not None else os.environ.get(AGENT_TOKEN_FILE_ENV, "")
+    if not path:
+        return False
+    token = ""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                token = os.read(fd, _TOKEN_MAX).decode("ascii", "replace").strip()
+        finally:
+            os.close(fd)
+    except OSError:
+        token = ""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    _taken_token = token
+    return bool(token)
 
 
 def agent_token():
-    """This desktop's agent token, or "" when it was created without one. Read each time, so a test can set it."""
+    """This desktop's agent token, or "" when it was created without one. The environment's (read each time, so a test
+    can set it), else the one take_agent_token took."""
 
-    return os.environ.get(AGENT_TOKEN_ENV, "").strip()
+    return os.environ.get(AGENT_TOKEN_ENV, "").strip() or _taken_token
 
 
 def agent_auth_headers():

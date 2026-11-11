@@ -285,7 +285,7 @@ def take_context(context):
 
 def state_relative(path):
     """`path` relative to this side's DECURIX_DIR, as bytes with "/", when it is in a part the caller keeps too
-    (gui_client.MIRRORED_ROOTS); else None."""
+    (gui_client.mirrored); else None."""
 
     state = os.environ.get("DECURIX_DIR", "")
     if not state:
@@ -295,8 +295,7 @@ def state_relative(path):
     if not full.startswith(root + os.sep):
         return None
     rel = os.fsencode(full[len(root) + 1:]).replace(os.fsencode(os.sep), b"/")
-    parts = tuple(rel.split(b"/"))
-    if not any(parts[:len(r)] == r and len(parts) > len(r) for r in gui_client.MIRRORED_ROOTS):
+    if not gui_client.mirrored(rel):
         return None
     return rel
 

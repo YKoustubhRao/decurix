@@ -31,8 +31,8 @@ import test_watcher_restart  # noqa: E402
 from test_long_requests import LONG, LongRunBase  # noqa: E402
 from test_round9_false_done import NOT_BACKED_REPORT, TASK, Ledger  # noqa: E402
 
-from decurix_agent import (guidance, ledger_checks, lessons, long_task, person_record, replay_task, skill_task,  # noqa: E402
-                           state, task_context, verify, watchers)
+from decurix_agent import (final_gate, guidance, ledger_checks, lessons, long_task, person_record, replay_task,  # noqa: E402
+                           skill_task, state, task_context, verify, watchers)
 from decurix_agent.computer import approval, audit, core, evidence, privacy, records  # noqa: E402
 from decurix_agent.computer.errors import ComputerError  # noqa: E402
 
@@ -299,11 +299,11 @@ class B4_AReplyThatSettlesNothing(ts.TeachingBase):
                 return
             out["finals"].append((text, kind, k))
         with mock.patch.object(skill_task, "write_final_reply", write_final_reply), \
-                mock.patch.object(skill_task, "_retry_engine", side_effect=AssertionError("the work was run again")), \
+                mock.patch.object(final_gate, "_retry_engine", side_effect=AssertionError("the work was run again")), \
                 mock.patch.object(skill_task, "_by_model", side_effect=AssertionError("the run was run again")), \
                 mock.patch.object(skill_task, "_correct", side_effect=AssertionError("kept as a correction")), \
-                mock.patch.object(skill_task.lessons, "note", side_effect=AssertionError("kept as a lesson")), \
-                mock.patch.object(skill_task, "_done_reading",
+                mock.patch.object(final_gate.lessons, "note", side_effect=AssertionError("kept as a lesson")), \
+                mock.patch.object(final_gate, "_done_reading",
                                   lambda reply, doubt="": {"choice": "unclear", "instruction": ""}), \
                 mock.patch.object(skill_task, "_engine_can_drive", lambda: True), \
                 mock.patch.object(skill_task.guidance, "begin") as begun:
@@ -334,8 +334,8 @@ class B4_AReplyThatSettlesNothing(ts.TeachingBase):
         retried = []
         state.current_task = "Enter bill.pdf"
         skill_task._rechecks.clear()
-        with mock.patch.object(skill_task, "_retry_engine", lambda guided, note: retried.append(note)), \
-                mock.patch.object(skill_task, "_done_reading",
+        with mock.patch.object(final_gate, "_retry_engine", lambda guided, note: retried.append(note)), \
+                mock.patch.object(final_gate, "_done_reading",
                                   lambda reply, doubt="": {"choice": "redo", "instruction": ""}), \
                 mock.patch.object(skill_task, "_engine_can_drive", lambda: True):
             skill_task._confirm_reply(self.paused(), "retry")
@@ -346,9 +346,9 @@ class B4_AReplyThatSettlesNothing(ts.TeachingBase):
         retried = []
         state.current_task = "Enter bill.pdf"
         skill_task._rechecks.clear()
-        with mock.patch.object(skill_task, "_retry_engine", lambda guided, note: retried.append(note)), \
+        with mock.patch.object(final_gate, "_retry_engine", lambda guided, note: retried.append(note)), \
                 mock.patch.object(skill_task, "write_final_reply", side_effect=AssertionError("checked again")), \
-                mock.patch.object(skill_task, "_done_reading",
+                mock.patch.object(final_gate, "_done_reading",
                                   lambda reply, doubt="": {"choice": "unclear", "instruction": ""}), \
                 mock.patch.object(skill_task, "_engine_can_drive", lambda: True):
             skill_task._confirm_reply(self.paused(why="the total is not on the page"), "I don't know that.")

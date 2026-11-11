@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Marker replaces a withheld value.
@@ -119,11 +120,15 @@ func replaceGroup(text string, re *regexp.Regexp, g int, secret func(string) boo
 	return b.String()
 }
 
-// withholdLabelled withholds the value after every secret's label.
+// withholdLabelled withholds the value after every secret's label. An apostrophe between two letters is part of its
+// word, never a quote mark ("the password wasn't accepted", "the receiver's GSTIN": maskApostrophes), "is" or "was"
+// running on into more letters is no separator ("isn't"). A plain word after the label is withheld whatever follows
+// it ("password: letmein then press login"; review of freeze 2, A1): a word too many withheld is harmless.
 func withholdLabelled(text string) string {
+	masked := maskApostrophes(text)
 	var b strings.Builder
 	last := 0
-	for _, m := range labelled.FindAllStringSubmatchIndex(text, -1) {
+	for _, m := range labelled.FindAllStringSubmatchIndex(masked, -1) {
 		if m[0] > 0 && isWordByte(text[m[0]-1]) {
 			continue
 		}
@@ -135,13 +140,20 @@ func withholdLabelled(text string) string {
 				vs, ve, quoted = m[2*g], m[2*g+1], true
 			}
 		}
-		value := text[vs:ve]
+		if sep != "" && isWordByte(sep[len(sep)-1]) && vs < len(masked) {
+			if r, _ := utf8.DecodeRuneInString(masked[vs:]); unicode.IsLetter(r) || r == apostropheMask {
+				continue // "the password wasn't accepted": "was" is part of a word here
+			}
+		}
+		value := masked[vs:ve]
 		trimmed := value
 		if !quoted {
 			// Punctuation that ends the value ("hunter2," "x9y8z7);") is the sentence's, not the secret's.
 			trimmed = strings.TrimRight(value, ".,;:!?)]")
 		}
-		if trimmed == "" || strings.HasPrefix(value, Marker) || !labelledSecret(label, sep, trimmed, quoted) {
+		// A word's own apostrophe is no mark of a value: "password hunter's" is a word, "password O'Brien7" a value.
+		shape := strings.ReplaceAll(trimmed, string(apostropheMask), "")
+		if shape == "" || strings.HasPrefix(value, Marker) || !labelledSecret(label, sep, shape, quoted) {
 			continue
 		}
 		b.WriteString(text[last:vs])
@@ -150,6 +162,30 @@ func withholdLabelled(text string) string {
 	}
 	b.WriteString(text[last:])
 	return b.String()
+}
+
+// apostropheMask stands in for an apostrophe between two letters while labels are matched: one byte, as the
+// apostrophe is, so every index found is the text's own.
+const apostropheMask = '\x01'
+
+// maskApostrophes is text with every ASCII apostrophe between two letters replaced by apostropheMask, so it is never
+// read as a quote mark (found live 2026-11-10: possessives in a lesson - "receiver's", "client's" - read as quotes).
+func maskApostrophes(text string) string {
+	if !strings.Contains(text, "'") {
+		return text
+	}
+	out := []byte(text)
+	for i := 0; i < len(text); i++ {
+		if text[i] != '\'' || i == 0 || i == len(text)-1 {
+			continue
+		}
+		before, _ := utf8.DecodeLastRuneInString(text[:i])
+		after, _ := utf8.DecodeRuneInString(text[i+1:])
+		if unicode.IsLetter(before) && unicode.IsLetter(after) {
+			out[i] = apostropheMask
+		}
+	}
+	return string(out)
 }
 
 // labelledSecret reports whether value, after label and sep (quoted or not), is a secret's value. A dash is as
@@ -358,11 +394,14 @@ var asksForSecret = regexp.MustCompile(`(?i)\b(?:password|passcode|passphrase|ot
 var postalAsked = regexp.MustCompile(`(?i)\bpin[\s_-]*code\b|\bpincode\b|\bpostal\b|\bzip\b`)
 
 // Reply is a person's answer to a question the worker asked, as the records keep it: Text, and when the question
-// asked for a secret (a password, an OTP, a PIN), every word of the answer with a digit or a mark in it withheld too,
-// so a bare "552901" answering "What is the OTP?" is not kept (review 2026-11-03: only a labelled value was).
+// names a secret (a password, an OTP, a PIN), every word of the answer with a digit or a mark in it withheld too,
+// however long the answer: "the OTP is 552901, go ahead" keeps no code (review 2026-11-03: only a labelled value was;
+// review of freeze 2, A3: a five-word limit let a code in a sentence through). This over-withholds the records of a
+// long reply that names a secret while explaining the work; what the desktop is told is a secret rests on structure
+// instead (the person's mark, a question asked for a secret: tasks.Store.MarksSecret), so a lesson is not garbled.
 func Reply(question, reply string) string {
 	reply = Text(reply)
-	if reply == "" || !asksForSecret.MatchString(question) || (postalAsked.MatchString(question) && !secretAsked(question)) {
+	if reply == "" || reply == Secret || !asksForSecret.MatchString(question) || (postalAsked.MatchString(question) && !secretAsked(question)) {
 		return reply
 	}
 	fields := strings.Fields(reply)

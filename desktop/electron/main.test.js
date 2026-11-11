@@ -101,6 +101,7 @@ async function boot(initialState, {
   const ipcHandlers = new Map();
   ipcMain.handle = (name, handler) => ipcHandlers.set(name, handler);
   let tunnel = null;
+  let permanentTunnel = null;
   let quits = 0;
   const blockers = [];
   const home = '/Users/ana';
@@ -320,9 +321,11 @@ async function boot(initialState, {
     },
     './gated-port': loadGatedPort(fileSystem, http),
     './windows-lan': { ensureLanForward: async (dir, address, port) => { lanCalls.push({ dir, address, port }); return lanForwards; } },
-    './mobile-access': { setupMobileAccess: async (_dir, tunnelCommand) => {
+    './public-name': { namedLink: async () => null },
+    './mobile-access': { setupMobileAccess: async (_dir, tunnelCommand, options = {}) => {
       mobileCalls.push('start');
       tunnel = tunnelCommand(8090);
+      permanentTunnel = options.permanentCommand?.('tok-secret') || null;
       return { stop: async () => { mobileCalls.push('stop'); if (stopFails) throw new Error('connect ECONNREFUSED 127.0.0.1:8080'); } };
     } },
   };
@@ -380,7 +383,7 @@ async function boot(initialState, {
     // One tick of the watch, and time for what it starts.
     tick: async (times = 1) => { for (let i = 0; i < times; i += 1) { await Promise.all(intervals.map((run) => run())); await settle(40); } },
     setState: (next) => { state = next; },
-    get tunnel() { return tunnel; }, get quits() { return quits; },
+    get tunnel() { return tunnel; }, get permanentTunnel() { return permanentTunnel; }, get quits() { return quits; },
   };
 }
 
@@ -500,6 +503,30 @@ test('goes on when turning WSL on needs no restart', async () => {
   const result = await boot('absent', { wsl: { installed: false, installedAfterAsking: true, distro: false, daemon: false } });
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   assert.ok(result.wsl.some((w) => w.startsWith('--import')));
+});
+
+// ---- what the installer already did (wsl/prepare-windows.ps1) ----
+
+test('a restart the installer asked for and Windows has not had yet is said, with no administrator prompt', async () => {
+  for (const options of [
+    { wsl: { installed: false } },
+    { wsl: { distro: false, daemon: false, importSays: 'WSL2 is not supported with your current machine configuration. Please enable the "Virtual Machine Platform" optional component' } },
+  ]) {
+    const result = await boot('absent', { ...options, restartAsked: 'installer', restartedSince: false });
+    assert.equal(result.window.lastStatus.value.failed, true);
+    assert.match(result.window.lastStatus.value.message, /installer turned on what Windows needs.*Restart Windows to finish/);
+    assert.ok(!result.spawns.some((s) => Array.from(s.args).join(' ').includes('--install')));
+    assert.deepEqual(result.docker, []);
+  }
+});
+
+test('after the installer\'s restart, a first start sets up as before', async () => {
+  const result = await boot('absent', { restartAsked: 'installer', wsl: { distro: false, daemon: false } });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(result.wsl.some((w) => w.startsWith('--import')));
+  // And WSL missing after it is turned on by the app, as it always was.
+  const missing = await boot('absent', { restartAsked: 'installer', wsl: { installed: false } });
+  assert.ok(missing.spawns.some((s) => Array.from(s.args).join(' ').includes('--install')));
 });
 
 // ---- a computer that never had Decurix: said in plain words, before anything is set up ----
@@ -744,6 +771,10 @@ test('runs the shipped cloudflared for the phone link and stops it when the app 
   assert.deepEqual(result.mobileCalls, ['start']);
   assert.equal(result.tunnel.file, path.join('/installed/resources', 'cloudflared.exe'));
   assert.equal(result.tunnel.args.at(-1), 'http://127.0.0.1:8090');
+  // The permanent name's connector: the same cloudflared, its token only in the environment.
+  assert.equal(result.permanentTunnel.file, path.join('/installed/resources', 'cloudflared.exe'));
+  assert.equal(result.permanentTunnel.args.join(' ').includes('tok-secret'), false);
+  assert.equal(result.permanentTunnel.env.TUNNEL_TOKEN, 'tok-secret');
   result.window.emit('closed');
   result.app.emit('window-all-closed');
   await result.settle(3);

@@ -11,6 +11,12 @@
 # directly, not by an autostart of a session this user does not run.
 
 set -u
+# Commands are looked up on the system's PATH: the container's puts the worker's ~/.local/bin first, and this script
+# runs before the agent has taken its token (decurix-entrypoint.sh). The parts it starts get the container's back.
+WORKER_PATH=$PATH
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+AGENT_TOKEN_DIR=/run/decurix-agent
 LOG=/tmp/decurix-startup.log
 exec >> "$LOG" 2>&1 < /dev/null
 echo "[$(date)] worker session starting (uid $(id -u))"
@@ -55,7 +61,14 @@ fi
 # or ~/.cache (0700).
 LAUNCH_DIR=${DECURIX_LAUNCH_DIR:-/tmp/decurix-launch-$(id -u)}
 mkdir -p "$LAUNCH_DIR/at-spi" && chmod 711 "$LAUNCH_DIR" "$LAUNCH_DIR/at-spi"
-eval "$(env -u DISPLAY -u XAUTHORITY XDG_RUNTIME_DIR="$LAUNCH_DIR" dbus-launch --sh-syntax)"
+# The bus's own configuration (/opt/decurix-session-bus.conf) is the system's session one without this user's service
+# folders (~/.local/share/dbus-1/services): a service file the worker left there would otherwise start, as the bus
+# starts it, before the agent has taken its token.
+BUS_CONFIG=
+[ -f /opt/decurix-session-bus.conf ] && BUS_CONFIG=--config-file=/opt/decurix-session-bus.conf
+# shellcheck disable=SC2086 # BUS_CONFIG is one option or none
+eval "$(/usr/bin/env -u DISPLAY -u XAUTHORITY XDG_RUNTIME_DIR="$LAUNCH_DIR" PATH="$WORKER_PATH" /usr/bin/dbus-launch \
+    $BUS_CONFIG --sh-syntax)"
 export DBUS_SESSION_BUS_ADDRESS
 a11y=$(env -u DISPLAY dbus-send --session --print-reply=literal --dest=org.a11y.Bus /org/a11y/bus \
     org.a11y.Bus.GetAddress 2>/dev/null | tr -d ' \n')
@@ -75,16 +88,36 @@ case "$a11y" in
     *) echo "[$(date)] no accessibility bus: the screen broker sees no widget of this user's apps" ;;
 esac
 
+# The agent, as XFCE's autostart (~/.config/autostart/decurix-agent.desktop) starts it in the default mode; and here
+# before any part below, each of which reads this user's own settings: the agent and soul take their token first
+# (start_agent_terminal.sh waits for that, at most 30 s, and this waits for the files to be gone, a little longer).
+/usr/bin/env PATH="$WORKER_PATH" /usr/bin/setsid /opt/start_agent_terminal.sh < /dev/null >> "$LOG" 2>&1 &
+echo "[$(date)] agent start script started (pid $!)"
+i=0
+while [ -e "$AGENT_TOKEN_DIR/agent.token" ] || [ -e "$AGENT_TOKEN_DIR/soul.token" ]; do
+    [ $i -ge 400 ] && { echo "[$(date)] the agent's token files are still there after 40 s"; break; }
+    i=$((i + 1))
+    sleep 0.1
+done
+
 # Not xfdesktop: an untrusted client may not set the root window's properties or see its events, and it exits at
 # its first (BadAccess). The screen user draws the wallpaper (computer/wallpaper.py); there are no desktop icons in
 # this mode - run as the screen user, xfdesktop's menus would start programs as that user, past the gate.
 which xdg-user-dirs-update >/dev/null 2>&1 && xdg-user-dirs-update
+
+# The panel without its window list: as an untrusted client it cannot see the windows, so the list stayed empty. The
+# screen user's window list (decurix_agent/computer/windowlist.py, started by the screen session) sits between this
+# layout's two bars instead. Put in place of the image's layout while that one still holds a window list (a panel a
+# person changed otherwise is left alone), before anything starts the settings daemon that reads it.
+PANEL_XML="$HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"
+if [ -f /opt/decurix-panel-broker.xml ] && { [ ! -e "$PANEL_XML" ] || grep -q 'value="tasklist"' "$PANEL_XML"; }; then
+    mkdir -p "$(dirname "$PANEL_XML")" \
+        && cp /opt/decurix-panel-broker.xml "$PANEL_XML.new" && mv -f "$PANEL_XML.new" "$PANEL_XML" \
+        && echo "[$(date)] the panel's layout is broker mode's (no window list)"
+fi
+
 for part in xfsettingsd xfce4-panel "Thunar --daemon"; do
     # shellcheck disable=SC2086 # a part is a program and its arguments
-    setsid $part < /dev/null >> "$LOG" 2>&1 &
+    /usr/bin/env PATH="$WORKER_PATH" /usr/bin/setsid $part < /dev/null >> "$LOG" 2>&1 &
     echo "[$(date)] started $part (pid $!)"
 done
-
-# The agent, as XFCE's autostart (~/.config/autostart/decurix-agent.desktop) starts it in the default mode.
-setsid /opt/start_agent_terminal.sh < /dev/null >> "$LOG" 2>&1 &
-echo "[$(date)] agent start script started (pid $!)"

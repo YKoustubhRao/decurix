@@ -74,7 +74,7 @@ class GroupedValuesQuestion(unittest.TestCase):
 
         # Kept per step, so a lesson resumed later asks only about the rest.
         self.assertEqual(sum(1 for k in self.skill["answers"] if k.startswith("variable:")), 3)
-        self.assertEqual(learning.next_question(self.skill)["kind"], "approval")
+        self.assertEqual(learning.next_question(self.skill)["kind"], "gates")  # (which steps need an OK, then start)
 
     def test_named_ones_change_and_the_rest_stay(self):
         question = learning.next_question(self.skill)
@@ -195,8 +195,12 @@ class RunFilledFromTheDocument(TeachingBase):
             skill_task.perform(f"/skill {skill['name']}\nsee ~/work/PO.pdf")
 
         self.assertTrue(self.asked, "the missing PO number was not asked for")
-        self.assertIn(names["Customer Reference"], self.asked[-1][0])
-        self.assertNotIn(names["Customer"] + " (", self.asked[-1][0])
+        # (Owner's ruling 2026-11-10: a field the documents lack is asked about alone, by its label, with leaving it to
+        # the application as one answer - skill_task's `lacking` question, never the whole run to the model.)
+        self.assertIn("Customer Reference", self.asked[-1][0])
+        self.assertIn("as the application fills it in", self.asked[-1][0])
+        self.assertNotIn("Customer (", self.asked[-1][0])
+        self.assertNotIn("Customer\"", self.asked[-1][0])
 
     def test_a_model_doing_the_task_is_not_stopped_by_what_the_documents_do_not_have(self):
         # One demonstration fixes the shape it showed (two lines); a bill of one line has no second item to give.

@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from decurix_agent import skill_task
+from decurix_agent import final_gate, skill_task
 from decurix_agent.computer import approval
 
 
@@ -108,7 +108,7 @@ class ADoneThatIsNotDone(unittest.TestCase):
         with mock.patch.object(skill_task.approval, "read_choice",
                                return_value={"choice": "correction", "instruction": "fix the total"}), \
                 mock.patch.object(skill_task, "_engine_can_drive", return_value=True), \
-                mock.patch.object(skill_task, "_retry_engine") as retry, \
+                mock.patch.object(final_gate, "_retry_engine") as retry, \
                 mock.patch.object(skill_task, "write_final_reply") as final:
             skill_task._confirm_reply(paused, "correct except the total, fix that")
         final.assert_not_called()
@@ -122,6 +122,13 @@ if __name__ == "__main__":
 class WhatThePersonSaidReachesTheFinalCheck(unittest.TestCase):
     """Found live (2026-10-25): told "every bill must have its rows (454 two rows)", the worker reported done with one
     row and the final check, shown only the request, passed it."""
+
+    def setUp(self):
+        # (This task's words alone; the earlier tasks' are TheEarlierTasksWords'.)
+        from decurix_agent import guidance
+        patcher = mock.patch.object(guidance, "said_on_earlier_tasks", return_value="")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_the_tasks_questions_and_answers_go_with_the_request(self):
         from decurix_agent import guidance
@@ -163,3 +170,66 @@ class WhatThePersonSaidReachesTheFinalCheck(unittest.TestCase):
             self.assertIn(answer, request)
             self.assertIn("stand over the check's note", request)
             self.assertEqual(skill_task._with_said(request).count(answer), 1)   # never twice
+
+
+class TheEarlierTasksWords(unittest.TestCase):
+    """Found live (2026-11-08, a reconciliation): the final check, shown none of what the person taught on an earlier
+    task ("one row per statement line"), failed a file laid out that way for lacking a row they never asked for; the
+    worker added it, and the second check passed the wrong file."""
+
+    RULE = "One row per statement line; a book entry the statement does not show gets no row."
+
+    def rows(self, task="t-current"):
+        from decurix_agent import person_record
+        return [
+            {"id": "j_aaaaaaaaaaaaaaaa", "task_id": "t-earlier", "kind": "answer", "actor": {"kind": "person"},
+             "text": self.RULE, "asked": "How should the reconciliation be laid out?", "derived_from": "", "secret": False},
+            {"id": "j_bbbbbbbbbbbbbbbb", "task_id": task, "kind": "answer", "actor": {"kind": "person"},
+             "text": "this task's own answer", "asked": "q", "derived_from": "", "secret": False},
+        ], person_record
+
+    def test_they_go_to_the_check_with_their_questions(self):
+        from decurix_agent import guidance
+        rows, person_record = self.rows()
+        person_record.clear_cache()
+        with mock.patch.object(guidance.task_context, "current", return_value="t-current"), \
+                mock.patch.object(person_record.task_context, "current", return_value="t-current"), \
+                mock.patch.object(person_record, "_get", return_value={"judgements": rows}):
+            guidance._exchanges.update(task=None, said=[])
+            judged = skill_task._with_said("Reconcile the bank book")
+        self.assertIn("What the person told this worker on its earlier tasks", judged)
+        self.assertIn("asked: How should the reconciliation be laid out? - they answered: " + self.RULE, judged)
+        self.assertIn("holds on this task too", judged)
+        self.assertNotIn("this task's own answer", judged)   # this task's are said_this_task's
+
+    def test_an_answer_given_again_is_shown_once_and_an_older_rule_is_not_crowded_out(self):
+        from decurix_agent import guidance, person_record
+
+        def row(i, task, asked, text):
+            return {"id": f"j_{i:016x}", "task_id": task, "kind": "answer", "actor": {"kind": "scripted"},
+                    "text": text, "asked": asked, "derived_from": "", "secret": False}
+        repeated = [row(i, f"t-{i}", "Which cost centre?", "Use CC- and the supplier's state code.") for i in range(1, 30)]
+        oldest = row(99, "t-99", "Which layout?", self.RULE)
+        person_record.clear_cache()
+        with mock.patch.object(person_record, "_get", return_value={"judgements": repeated + [oldest]}), \
+                mock.patch.object(person_record.task_context, "current", return_value="t-current"):
+            shown = guidance.said_on_earlier_tasks()
+        self.assertEqual(shown.count("Use CC- and the supplier's state code."), 1)
+        self.assertIn(self.RULE, shown)
+
+    def test_none_or_an_unreadable_control_plane_adds_nothing(self):
+        from decurix_agent import guidance, person_record
+        person_record.clear_cache()
+        with mock.patch.object(person_record, "_get", return_value=None):
+            self.assertEqual(guidance.said_on_earlier_tasks(), "")
+        with mock.patch.object(person_record, "worker_said", side_effect=OSError("down")):
+            self.assertEqual(guidance.said_on_earlier_tasks(), "")
+
+    def test_a_workers_own_row_is_not_the_persons(self):
+        from decurix_agent import guidance, person_record
+        rows, _ = self.rows()
+        rows[0]["actor"] = {"kind": "worker"}
+        person_record.clear_cache()
+        with mock.patch.object(person_record, "_get", return_value={"judgements": rows}), \
+                mock.patch.object(person_record.task_context, "current", return_value="t-current"):
+            self.assertEqual(guidance.said_on_earlier_tasks(), "")

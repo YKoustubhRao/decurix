@@ -112,7 +112,40 @@ type RunContext struct {
 	// PlanAgreed is the host's word (a flag in the job request, never text in it) that this request is a stage of a
 	// plan the person already agreed: the goal puts no plan of its own to them (plan.go).
 	PlanAgreed bool
+	// EarlierSaid is the person's replies on this task before this job, each with the question it answered, as the
+	// host's control plane confirms them (Python's person_record.answers): a later job of the task - one the final
+	// check sent back - starts a goal of its own, and without them its review had no "what the person said".
+	EarlierSaid []Said
+	// PickedFields is the fields of the taught task this job does that are filled by picking an existing entry from
+	// the application's own list, each with the words that searched for it, as the host's skill records them
+	// (Python's skill_task._chosen_for): the record holds the entry's own name, not those words. Data, never prompt.
+	PickedFields []string
+	// CollectOnly is the host's word (a flag, never text) that this job is a phase of a taught task whose rule is to
+	// collect the documents and enter nothing: the review asks no document's figures to be entered (coverageIssues).
+	CollectOnly bool
+	// EnteredEarlier is what earlier jobs of this task typed into forms the application then saved (the host's
+	// recording of the task): a later job's review counts it as entered, so a document an earlier job already
+	// entered is not "read; none of its figures went into what was entered". Data, never prompt.
+	EnteredEarlier []string
 }
+
+// Said is one reply of the person's with the question it answered.
+type Said struct {
+	Asked string `json:"asked"`
+	Said  string `json:"said"`
+}
+
+// Bounds on the replies a job is sent (EarlierSaid).
+const (
+	MaxEarlierSaid     = 20
+	MaxEarlierSaidText = 4000
+	// Bounds on the picked fields a job is sent (PickedFields).
+	MaxPickedFields    = 40
+	MaxPickedFieldText = 300
+	// Bounds on the values a job is told were entered earlier in its task (EnteredEarlier).
+	MaxEnteredEarlier     = 400
+	MaxEnteredEarlierText = 300
+)
 
 // Reading is what the host read a reply to an approval as - the one reading every part of the worker acts on (the
 // agent's approval.reading): Decision "yes" (granted now), "if" (granted only once Condition holds), "no", or

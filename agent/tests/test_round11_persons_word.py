@@ -136,7 +136,7 @@ class B1_AKeptFieldAnswerIsTheControlPlanes(ThePersonsWord):
         self.control_plane(person_record.JUDGEMENTS_PATH, {"task": TASK}, {"judgements": [person("General, please.")]})
         posted = []
         with mock.patch.object(person_record, "keep_field_answer",
-                               lambda task_id, judgement_id, label, host, option, asked="":
+                               lambda task_id, judgement_id, label, host, option, asked="", **kept:
                                posted.append((task_id, judgement_id, label, host, option))):
             ledger_checks.findings(TASK)
             self.assertEqual(posted, [], "a check keeps nothing")

@@ -1,0 +1,3 @@
+# Wrangler's local state and build output for the link service Worker.
+.wrangler/
+node_modules/

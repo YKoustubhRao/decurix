@@ -53,6 +53,12 @@ gone with that folder.
    given backs), on every route that can say done, planned runs included; a run whose every declared record was read
    back earns the "ledger" trust basis (`records.all_read_back`). Coverage is "a document read with no record declared
    from it" (the soul's `coverageGaps`). The eval grader `ledger_readback` reads the same file.
+   A form field the readers could read only in part (longer than `cdp.FORM_VALUE_CHARS`) is compared only as far as
+   it was read, never called different for the rest (2026-11-08). A choice left in its "no selection" state (a select at
+   its empty-valued option or with none selected, an empty combobox - by structure, never its words) that the record
+   does not declare is a point naming the field: declare it from a source or ask the person. ADVISORY
+   (`records.UNSET_CHOICE_BLOCKS = False`): shown with the save (`records.readback`) and in `gui records` for the
+   reviewer, never blocking until it passes the replay gate and a clean live round.
 3. **Scope on the record** (built: `records.scope_missing`, checked at the save in `core.py`) - the intent's `scope`
    words (the entity/book/period the request names) must appear in the window title or page words at the save; absent,
    the save is refused once per scope with what the window shows instead, then let through with an advisory line.

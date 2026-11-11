@@ -311,6 +311,21 @@ func TestTwoStartsDoNotCountTheSameMemoryTwice(t *testing.T) {
 	}
 }
 
+// TestARestartDoesNotCountItsOwnEarlierStart: a desktop started again (a practice desktop settled between the cases
+// of a learning curve, every few seconds) is not refused on reservations of its own earlier boots, which the restart
+// ended; another desktop's start still counts.
+func TestARestartDoesNotCountItsOwnEarlierStart(t *testing.T) {
+	c := roomChecker(newRoomFake(), &fakeTasks{}, &fakeMemory{base: 1300})
+	for i := 0; i < 5; i++ {
+		if err := c.MakeRoom(context.Background(), "practice", 700); err != nil {
+			t.Fatalf("restart %d was refused on its own earlier starts: %v", i+1, err)
+		}
+	}
+	if err := c.MakeRoom(context.Background(), "two", 700); !errors.Is(err, desktop.ErrNoRoom) {
+		t.Fatalf("another desktop's start was let through on the restarted one's memory: %v", err)
+	}
+}
+
 // TestARequestHoldingTheLockWinsOverMakingRoom: a desktop whose lifecycle lock is held (a request being delivered to
 // it) is passed over, not waited for, and the next one is stopped instead.
 func TestARequestHoldingTheLockWinsOverMakingRoom(t *testing.T) {

@@ -9,12 +9,24 @@ Three reads, each of what the control plane keeps as a human judgement (H-PY-18 
   question it answered. A reply the watcher kept in `<task>.said` backs a pick only when its judgement id is one of
   these and its text's hash is that judgement's: the text used is the control plane's, never the file's.
 - taught(skill): the person's own judgements on this desktop's tasks that taught or ran that skill.
+- worker_words(task): the person's own answers on any task of this desktop's worker, newest first and bounded
+  (?scope=worker): a rule taught in an earlier task ("region 07 goes to fund FND-3") backs the value the worker
+  derives from it in a later one, since the value stands in the rule's words. Read once per task. Never the worker's
+  files or notes.
 - field_answers(): what a person answered about which entry a field takes, kept as the control plane's learned rows
   (kind "field_answer", derived from that answer's judgement), each with the judgement's own text - an option backs a
   later pick only when it is picked out by that text (records._kept_answer).
 - field_units(): what a person answered about whether a field takes its figures in a unit (kind "field_unit", derived
   from their reply to the save's numbered unit question), each with that judgement's text and question - the answer
   is used only when that question holds the question's sentence and the reply is the row's option (unit_answers).
+- left_to_app(): what a person decided about a field a taught task's documents do not give - leave it as the
+  application fills it in - kept as a field answer marked LEFT_TO_APP (its option is their reply itself, which the
+  control plane holds to their judgement's text), for that skill's field (skill_task._kept_left). Never a pick:
+  field_answers() leaves such rows out.
+
+Who counts as the person: a judgement whose actor kind is "person", or "scripted" - the eval's scripted expert, whose
+replies a practice desktop's control plane (the practice broker) keeps and serves in a person's place. Never a worker's
+or a program's, never one derived from another (what a desktop kept), never a secret one.
 
 Fail closed: a control plane that cannot be read, or that has no such read yet, confirms nothing, and a pick that
 rested only on the person's word is then not backed - the person is asked. Never raises.
@@ -35,11 +47,21 @@ JUDGEMENTS_PATH = "/api/desktops/judgements"
 LEARNED_PATH = "/api/desktops/learned"
 FIELD_ANSWER = "field_answer"
 FIELD_UNIT = "field_unit"
+# The mark of a field answer that keeps a field left as the application fills it in (left_to_app), not an entry picked.
+LEFT_TO_APP = "left_to_app"
+# The longest reply kept as such a row's option (the control plane's own bound on a field answer's option).
+MAX_LEFT_OPTION = 500
 TIMEOUT_SECONDS = 5
 # How long one read is reused: one task's checks read it many times; a failed read is kept as long, so a control plane
 # that does not answer costs one wait, not one per pick.
 CACHE_SECONDS = 60
 MAX_ANSWER_BYTES = 2 * 1024 * 1024
+# The actor kinds whose own words are the person's (above).
+PERSON_KINDS = frozenset({"person", "scripted"})
+# How many of the worker's earlier answers are read (newest first): the control plane's default for the read.
+WORKER_WORDS_LIMIT = 100
+# The earlier tasks' answers the final check is shown (worker_said), newest first.
+WORKER_SAID_LIMIT = 20
 
 _cache = {}
 _lock = threading.Lock()
@@ -80,6 +102,7 @@ def _get(path, query, fresh=False):
 def clear_cache():
     with _lock:
         _cache.clear()
+        _worker_read["task"] = None
 
 
 def _persons(rows, task_id=None):
@@ -90,7 +113,7 @@ def _persons(rows, task_id=None):
         if not isinstance(row, dict) or not isinstance(row.get("text"), str) or not row.get("id"):
             continue
         actor = row.get("actor") if isinstance(row.get("actor"), dict) else {}
-        if actor.get("kind") != "person" or row.get("derived_from") or row.get("secret"):
+        if actor.get("kind") not in PERSON_KINDS or row.get("derived_from") or row.get("secret"):
             continue
         if task_id and row.get("task_id") != task_id:
             continue
@@ -143,6 +166,58 @@ def taught(skill):
     return [row["text"] for row in rows if not row.get("skill_name") or row.get("skill_name") == skill]
 
 
+_worker_read = {"task": None}
+
+
+def worker_words(task_id=None):
+    """
+    The person's own answers on any task of this desktop's worker - a reply to a question, one that taught a rule or
+    confirmed a lesson - as the control plane keeps them (texts, newest first, at most WORKER_WORDS_LIMIT; [] when none
+    or unread). Read again when the task changes (else the read is reused for CACHE_SECONDS), so a later task sees
+    what an earlier one was told. Only the control plane's record: never a file or note the worker's user can write.
+    """
+
+    return [row["text"] for row in _worker_rows(task_id)]
+
+
+def _worker_rows(task_id=None):
+    """The rows worker_words reads (the person's own answers on any task of this worker, newest first, bounded)."""
+
+    task = task_id or task_context.current() or ""
+    query = {"scope": "worker", "kind": "answer", "limit": str(WORKER_WORDS_LIMIT)}
+    with _lock:
+        fresh, _worker_read["task"] = _worker_read["task"] != task, task
+    answer = _get(JUDGEMENTS_PATH, query, fresh=True) if fresh else _get(JUDGEMENTS_PATH, query)
+    rows = _persons((answer or {}).get("judgements") if isinstance(answer, dict) else None)
+    return rows[:WORKER_WORDS_LIMIT]
+
+
+def worker_said(task_id=None, limit=WORKER_SAID_LIMIT):
+    """
+    [{"asked", "text", "task_id"}]: the person's answers on this worker's EARLIER tasks (never this one's: the task's
+    own are said_this_task's), each with the question it answered, newest first, at most `limit`. For the final check:
+    a rule the person taught on an earlier task holds on this one, and an answer is read with its question. Found
+    live (2026-11-08): the check, shown none of them, failed a file laid out as the person had taught for lacking a
+    row they never asked for; the worker added it, and the second check passed the wrong file.
+    """
+
+    task = task_id or task_context.current() or ""
+    out, said = [], set()
+    for row in _worker_rows(task_id):
+        if row.get("task_id") == task:
+            continue
+        # The same answer given again (the same question, the same words) is one: a rule repeated on every task of a
+        # kind would otherwise crowd the older, different ones out of the few shown.
+        key = (" ".join(str(row.get("asked") or "").split()).lower(), " ".join(row["text"].split()).lower())
+        if key in said:
+            continue
+        said.add(key)
+        out.append({"asked": str(row.get("asked") or ""), "text": row["text"], "task_id": str(row.get("task_id") or "")})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def field_answers():
     """[{"label", "host", "option", "source_text", "source_asked", "judgement"}]: the field answers the control plane
     keeps for this desktop, each with the text of the person's judgement it was derived from and the question that
@@ -156,27 +231,102 @@ def field_answers():
             continue
         source = row.get("source") if isinstance(row.get("source"), dict) else {}
         actor = source.get("actor") if isinstance(source.get("actor"), dict) else {}
-        if actor.get("kind") != "person" or not isinstance(source.get("text"), str):
+        if actor.get("kind") not in PERSON_KINDS or not isinstance(source.get("text"), str):
             continue
         try:
             said = json.loads(row.get("text") or "")
         except ValueError:
             continue
-        if not isinstance(said, dict) or not said.get("label") or not said.get("option"):
-            continue
+        if not isinstance(said, dict) or not said.get("label") or not said.get("option") or said.get(LEFT_TO_APP):
+            continue  # (a field left to the application is no entry picked: left_to_app reads it)
         out.append({"label": str(said["label"]), "host": str(said.get("host") or ""), "option": str(said["option"]),
+                    "party": str(said.get("party") or ""), "confirmed": said.get("confirmed") is True,
                     "source_text": source["text"], "source_asked": str(source.get("asked") or ""),
                     "judgement": str(row["derived_from"])})
     return out
 
 
-def keep_field_answer(task_id, judgement_id, label, host, option, asked=""):
+def keep_field_answer(task_id, judgement_id, label, host, option, asked="", party="", confirmed=False):
     """Keep on the control plane that the person's judgement `judgement_id` answered which entry `label` takes in the
-    application at `host`: a learned row derived from it (messaging.post_learned). The thread, or None."""
+    application at `host`: a learned row derived from it (messaging.post_learned). `party`: for whom the task's work
+    was (records.form_party: the record's own) - the answer backs only that party's later picks; `confirmed`: the judgement was the
+    person's yes to a question naming this field and entry (records.confirm_picks). The thread, or None."""
 
     from decurix_agent import messaging
-    text = json.dumps({"label": label, "host": host, "option": option}, ensure_ascii=False, sort_keys=True)
+    said = {"label": label, "host": host, "option": option}
+    if party:
+        said["party"] = party
+    if confirmed:
+        said["confirmed"] = True
+    text = json.dumps(said, ensure_ascii=False, sort_keys=True)
     return messaging.post_learned(FIELD_ANSWER, "", 0, asked, text, task_id=task_id, derived_from=judgement_id)
+
+
+def left_to_app():
+    """[{"skill", "param", "label", "source_text", "source_asked", "judgement"}]: the fields a person decided to leave
+    as the application fills them in when a taught task's documents do not give them, kept by the control plane as
+    field answers derived from their reply (keep_left_to_app), each with that reply's text and the question it answered
+    ([] when none or unread). skill_task._kept_left holds each to its question again."""
+
+    out = []
+    for row, said, source in _learned(FIELD_ANSWER):
+        if said.get(LEFT_TO_APP) is not True or not said.get("skill") or not said.get("param") or not said.get("label"):
+            continue
+        out.append({"skill": str(said["skill"]), "param": str(said["param"]), "label": str(said["label"]),
+                    "source_text": source["text"], "source_asked": str(source.get("asked") or ""),
+                    "judgement": str(row["derived_from"])})
+    return out
+
+
+def keep_left_to_app(task_id, judgement_id, skill, param, label, reply, asked=""):
+    """Keep on the control plane that the person's judgement `judgement_id` (their reply, `reply`) left the field
+    `label` (the skill's value `param`) as the application fills it in, for later runs of `skill` whose documents do
+    not give it: a field answer marked LEFT_TO_APP, its option the reply itself - which the control plane keeps only when
+    it stands in that judgement's text, and only when the question it answered names the field. The thread, or None."""
+
+    from decurix_agent import messaging
+    option = " ".join(str(reply or "").split())[:MAX_LEFT_OPTION].strip()
+    if not option:
+        return None
+    text = json.dumps({"label": label, "host": "", "option": option, LEFT_TO_APP: True, "skill": skill, "param": param},
+                      ensure_ascii=False, sort_keys=True)
+    thread = messaging.post_learned(FIELD_ANSWER, skill, 0, asked, text, task_id=task_id, derived_from=judgement_id)
+    with _lock:
+        # (Read again next time: this decision is the newest.)
+        for url in [u for u in _cache if LEARNED_PATH in u]:
+            _cache.pop(url, None)
+    return thread
+
+
+def leave_sentence(label):
+    """The sentence of the question that offers leaving the field `label` as the application fills it in
+    (skill_task._ask_lacking): a decision is taken as one only where the question the person answered holds it."""
+
+    return f'Reply 1 to leave the field "{" ".join(str(label or "").split())}" as the application fills it in'
+
+
+def left_decision(skill, param, label, task_id=None, judgement=""):
+    """
+    The judgement id of the person's decision to leave the field `label` (the skill's value `param`) as the application
+    fills it in, or "": a decision kept for `skill` on an earlier run (left_to_app), or - given `judgement`, the one a
+    run of this task read as that decision (skill_task's run["left_to_app"], handed on through guidance) - that person's
+    judgement on this task. Either way only where the question they answered, as the control plane recorded it, offered
+    exactly that (leave_sentence). Read from any process; what cannot be read decides nothing (fail closed).
+    """
+
+    sentence = leave_sentence(label)
+    label = " ".join(str(label or "").split())
+    for row in reversed(left_to_app()):
+        if (row["skill"] == skill and row["param"] == param and " ".join(row["label"].split()) == label
+                and sentence in " ".join(row["source_asked"].split())):
+            return row["judgement"]
+    if judgement and task_id:
+        # (Read again, not from the cache, when the cached read predates the reply.)
+        for fresh in (False, True):
+            for row in judgements(task_id, fresh=fresh):
+                if row["id"] == judgement and sentence in " ".join(str(row.get("asked") or "").split()):
+                    return judgement
+    return ""
 
 
 def _learned(kind):
@@ -190,7 +340,7 @@ def _learned(kind):
             continue
         source = row.get("source") if isinstance(row.get("source"), dict) else {}
         actor = source.get("actor") if isinstance(source.get("actor"), dict) else {}
-        if actor.get("kind") != "person" or not isinstance(source.get("text"), str):
+        if actor.get("kind") not in PERSON_KINDS or not isinstance(source.get("text"), str):
             continue
         try:
             said = json.loads(row.get("text") or "")

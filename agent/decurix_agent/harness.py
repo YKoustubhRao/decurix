@@ -11,7 +11,7 @@ from decurix_agent import config, state
 # module exports.
 
 from decurix_agent.logging_utils import log
-from decurix_agent.ollama_client import ask_once as _ask_once
+from decurix_agent.ollama_client import ask_decided as _ask_decided, ask_once as _ask_once
 from decurix_agent.thebot_harness import (
     perform_task,
     continue_after_query,
@@ -75,6 +75,30 @@ def ask_model(system, prompt, *, purpose):
     return _ask_once(system, prompt, purpose=purpose)
 
 
+def ask_decided(system, prompt, via_soul, *, purpose):
+    """
+    ask_model for a question soul words and reads itself (plan rule 3, phase 2: the escalation ladder's, behind
+    DECURIX_SOUL_ESCALATION): (text, decision). `via_soul(brain, **call)` asks soul's decision route on that brain
+    (skill_task._ask_decided: soul_call.escalation with the question's evidence). The same chain as ask_model - the
+    hosted model when the control plane has one, never a local model on a desktop whose brain is hosted, else the
+    local one - and, wherever soul cannot make the call, today's question (`system`, `prompt`) asked as ask_model asks
+    it, with no decision: the caller reads the text itself.
+    """
+
+    from decurix_agent import llm_client
+
+    if llm_client.available():
+        try:
+            return llm_client.ask_decided(
+                system, prompt, lambda max_tokens: via_soul("hosted", max_tokens=max_tokens,
+                                                            timeout=llm_client.TIMEOUT_SECONDS), purpose=purpose)
+        except llm_client.LLMError as exc:
+            if config.HOSTED_BRAIN:
+                raise RuntimeError(str(exc)) from exc
+
+    return _ask_decided(system, prompt, via_soul, purpose=purpose)
+
+
 # Start the next durable stage only after the previous engine call has returned
 # and released its per-turn state. This also handles stages paused on a query.
 _engine_perform_task = perform_task
@@ -115,4 +139,4 @@ def cancel_running():
     return thebot_harness.cancel_current()
 
 
-__all__ = ["perform_task", "continue_after_query", "wait_for_backend", "ask_model", "cancel_running"]
+__all__ = ["perform_task", "continue_after_query", "wait_for_backend", "ask_model", "ask_decided", "cancel_running"]

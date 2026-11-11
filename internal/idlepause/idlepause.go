@@ -128,6 +128,11 @@ func (c *Checker) sweep(ctx context.Context) {
 	var wg sync.WaitGroup
 
 	for _, d := range desktops {
+		if !d.Owned {
+			// Another control plane's desktop, or one made before desktops carried their creator (desktop.OwnerLabel).
+			desktop.LogNotOwned("idlepause", d.ID)
+			continue
+		}
 		check := c.checkOne
 		switch {
 		case d.Status == "running":
@@ -219,7 +224,7 @@ func (c *Checker) FastPauseAfter(desktopID string, delay time.Duration) {
 			return
 		}
 		for _, d := range desktops {
-			if d.ID == desktopID && d.Status == "running" {
+			if d.ID == desktopID && d.Status == "running" && d.Owned {
 				c.checkFastPause(ctx, d, delay)
 				return
 			}

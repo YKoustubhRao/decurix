@@ -83,7 +83,7 @@ def teach(case, session):
             break
         answers = {"goal": "the page shows Result ready", "start": "no", "variable": "changes",
                    "variables": "all change", "confirm": "yes", "optional": "always", "coordinates": "keep",
-                   "unsupported": "manual", "loop": "fixed", "approval": "go ahead"}
+                   "unsupported": "manual", "loop": "fixed", "approval": "go ahead", "gates": "yes"}
         response = learning.answer(learned, question, answers[question["kind"]])
         if response.get("decision"):
             break

@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -136,7 +137,9 @@ func TestOperatorDeliversASecondQueryAndCanResumeWithTheReply(t *testing.T) {
 }
 
 // A command repeated past the nudge ends the loop with what it printed - put
-// to the person as not checked, because no DONE check ran.
+// to the person as not checked, because no DONE check ran. The question is the
+// worker's own; the output is only quoted under it (found live 2026-11-09: the
+// output itself went out as the question, five times in one goal).
 func TestOperatorEndsARepeatLoopWithTheRealOutput(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\necho 6.6.87.2",
@@ -144,8 +147,12 @@ func TestOperatorEndsARepeatLoopWithTheRealOutput(t *testing.T) {
 		"COMMAND:\necho 6.6.87.2",
 	}}
 	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "kernel version?", Type: "operator"})
-	if res.Verified || res.Meta["needsUserInput"] != true || !strings.Contains(res.Output, "6.6.87.2") || !strings.Contains(res.Output, "Not checked") {
-		t.Errorf("result = %+v, want the command's own output put to the person as not checked", res)
+	if res.Verified || res.Meta["needsUserInput"] != true || !strings.Contains(res.Output, "> 6.6.87.2") || !strings.Contains(res.Output, "not checked") {
+		t.Errorf("result = %+v, want the command's own output quoted to the person as not checked", res)
+	}
+	if !strings.HasPrefix(res.Output, "I kept running the same command, `echo 6.6.87.2`") ||
+		strings.HasPrefix(strings.TrimSpace(res.Output), "`echo") {
+		t.Errorf("the question is not the worker's own: %q", res.Output)
 	}
 	if len(chat.calls) != 3 {
 		t.Errorf("made %d model calls, want 3 (run, nudge, stop)", len(chat.calls))
@@ -662,5 +669,18 @@ func TestOperatorNeverTakesACutOffReply(t *testing.T) {
 	}
 	if chat.calls < 2 {
 		t.Errorf("made %d model call(s), want the cut-off reply asked for again", chat.calls)
+	}
+}
+
+// A repeat loop asked about once in a goal ends the goal when it comes back, never with the same question again.
+func TestARepeatLoopIsAskedAboutOncePerGoal(t *testing.T) {
+	q := repeatedCommandQuestion("gui scroll down 5", "Scrolled the focused window.\nWhat changed: 13%")
+	if !strings.HasPrefix(q, "I kept running the same command") || !strings.Contains(q, "> Scrolled the focused window.\n> What changed: 13%") {
+		t.Fatalf("question = %q", q)
+	}
+	st := &operatorState{RepeatAsked: true}
+	b, err := json.Marshal(st)
+	if err != nil || !strings.Contains(string(b), `"RepeatAsked":true`) {
+		t.Fatalf("the flag does not survive the goal's checkpoint: %s %v", b, err)
 	}
 }

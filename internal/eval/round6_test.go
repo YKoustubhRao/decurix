@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/runs"
 )
@@ -142,4 +143,39 @@ type failAll struct{ *fakeBundles }
 func (f failAll) Pull(ctx context.Context, ref runs.ExecutionRef) (runs.Bundle, error) {
 	_, _ = f.fakeBundles.Pull(ctx, ref)
 	return runs.Bundle{}, runs.ErrNothingFound
+}
+
+// stallPulls answers every pull only when its context runs out (a bundle pull under a stalled host).
+type stallPulls struct{}
+
+func (stallPulls) Pull(ctx context.Context, _ runs.ExecutionRef) (runs.Bundle, error) {
+	<-ctx.Done()
+	return runs.Bundle{}, ctx.Err()
+}
+
+// A case's mock app is removed even when the bundle pull spent the whole clean-up time. Found live (2026-11-10): the
+// pull ran out the shared minute, the removal ran on a spent context and failed silently, and the run's later cases
+// were served in part by that stale mock under the run's one mock name.
+func TestACaseMockIsRemovedEvenWhenItsBundlePullTimesOut(t *testing.T) {
+	saved := caseCleanupTimeout
+	caseCleanupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { caseCleanupTimeout = saved })
+	s, sb, _, _, _ := newService(t, diligent)
+	s.Tasks = &evalTasks{}
+	s.Bundles = stallPulls{}
+	run, err := s.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t), Repeats: 1, Arms: []Arm{{Name: "default", Kind: ArmModel}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, s, run.ID)
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	if len(sb.mocks) == 0 {
+		t.Fatal("no case started a mock app; the test proves nothing")
+	}
+	for id := range sb.mocks {
+		if sb.live[id] {
+			t.Fatalf("mock %s outlived its case after a bundle pull that timed out (live: %v)", id, sb.live)
+		}
+	}
 }

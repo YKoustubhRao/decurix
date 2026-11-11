@@ -919,6 +919,7 @@ type Session struct {
 	stderr      bytes.Buffer
 	viewers     map[*Viewer]struct{}
 	holding     bool
+	viewersSend sync.Mutex // held across counting the viewers and sending the count (syncViewers)
 	w, h        int
 	first       chan struct{}
 	gotFirst    bool
@@ -1235,7 +1236,13 @@ func (s *Session) holdWatching(on bool) {
 }
 
 // syncViewers tells the helper how many people are watching, which is all it needs to know to capture or to rest.
+// The count and its send are one step (viewersSend): counted under the lock and sent after it, two changes at once (the
+// start letting go of its hold, a viewer arriving) sent their counts in either order, and the helper could be left
+// told 0 with a person watching - its capture stopped and their screen froze (a race seen in reading the code; the
+// CI sequence 1,0,2,1,0 that led to it was the test's shared log, TestTheHelpersCaptureFollowsTheViewers).
 func (s *Session) syncViewers() {
+	s.viewersSend.Lock()
+	defer s.viewersSend.Unlock()
 	s.mu.Lock()
 	n := len(s.viewers)
 	if s.holding {
@@ -1433,7 +1440,7 @@ func (s *Session) Type(text string) error {
 // SetKeyedText says how the app takes typed text. An app whose controls Windows describes (Office) takes characters
 // as characters: a key going down is turned into a character by the app itself, after anything already queued, so
 // spaces and line breaks sent as keys landed among the next letters and twice ("replacemen tlamp"). An app that draws
-// its own screen (TallyPrime) dropped spaces sent as characters, and takes them as keys. Sent only when it changes.
+// its own screen (a desktop accounting app) dropped spaces sent as characters, and takes them as keys. Sent only when it changes.
 func (s *Session) SetKeyedText(keyed bool) {
 	s.mu.Lock()
 	if s.keyedSet && s.keyedText == keyed {

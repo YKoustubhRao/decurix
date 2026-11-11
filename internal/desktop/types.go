@@ -2,7 +2,9 @@ package desktop
 
 // Desktop represents a managed desktop container: its identity, profile, backing Docker resources, status, and resource allocation.
 type Desktop struct {
-	ID      string `json:"id"`
+	ID string `json:"id"`
+	// Owned: this control plane created it (OwnerLabel): only then may a sweep pause, stop or rest it.
+	Owned   bool   `json:"-"`
 	Name    string `json:"name"`
 	Profile string `json:"profile"`
 	Harness string `json:"harness"`

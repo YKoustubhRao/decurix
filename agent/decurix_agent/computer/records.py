@@ -14,6 +14,7 @@ book open - was decided nowhere in code. The ledger makes each a fact a check ca
 """
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -24,9 +25,18 @@ from decurix_agent.computer.errors import ComputerError
 
 LEDGER_DIR = config.DECURIX_DIR / "computer" / "evidence"
 MAX_FIELDS = 60
-MAX_VALUE = 400
+# The longest value a record declares. Never cut: a longer one is refused (declare). Found live (2026-11-08): a value
+# kept cut can never equal what the form holds, and that save is refused at every try. Well above what the form
+# readers keep whole (cdp.FORM_VALUE_CHARS), so a field read whole always meets its declared value whole.
+MAX_VALUE = 4000
 # How much of a look's text the read-back searches (fields in view or not, and the page's words).
 MAX_PAGE_TEXT = 60000
+# A record's lines (the rows of its table): at most this many are declared, each with at least MIN_ROW_CELLS values
+# that stand in its document - one value alone could stand on any line of the page.
+MAX_ROWS = 60
+MIN_ROW_CELLS = 2
+# A piece of a page taller than this (pixels) is not one line of text but a box around several: never a line's cell.
+LINE_MAX_HEIGHT = 60
 # A label's words that say nothing about which field it is.
 # ("to" is not one: "To Date" is another field than "Date" - _LABEL_QUALIFIERS.)
 _LABEL_FILLER = {"of", "the", "a", "an", "in", "rs", "inr", "usd", "per", "dd", "mm", "yyyy", "yy", "and"}
@@ -56,15 +66,21 @@ def as_date(value, order=None):
     return values.as_iso(value, task_context.source_date_order() if order is None else order)
 
 
-def compare_shown(shown, wanted, source_order=None, label="", units=()):
+def compare_shown(shown, wanted, source_order=None, label="", units=(), date_format=""):
     """values.compare of what the application shows (`shown`, read under the application's date order) against what
     the record wants (`wanted`, read under its source's order: `source_order`, else the task's) - two orders, never one
     for both (review round 2, B4). `label`: the form field's label, whose stated unit a bare figure carries
     (values.field_units, review round 3, R5). `units`: more units the field takes, as the person said
-    (unit_answers.answered)."""
+    (unit_answers.answered). `date_format`: the field's placeholder when it writes a date format (cdp.FORM_FIELDS).
+    The application's order for `shown` is the one the field's own label or placeholder states for it
+    (values.stated_date_order: "Date (DD-MM-YYYY)"), else the task's (task_context.app_date_order)."""
 
-    return values.compare(shown, wanted, task_context.app_date_order(),
-                          source_order or task_context.source_date_order(),
+    # (The same digits are not the same day when the two sides write dates in different orders: identical text is no
+    # answer to which day it is - test_values, "the source's own digits". A record keeps a date the document writes
+    # with its month named as the document writes it (declare), which settles it.)
+    app = (values.stated_date_order(" ".join(p for p in (str(label or ""), str(date_format or "")) if p), shown)
+           or task_context.app_date_order())
+    return values.compare(shown, wanted, app, source_order or task_context.source_date_order(),
                           values.field_units(label) | frozenset(units or ()))
 
 
@@ -84,6 +100,13 @@ def stands_in(value, text, value_order=None, text_order=None):
 
     if not text:
         return False
+    amount = values.parse_amount(value)
+    if isinstance(amount, values.Amount) and amount.unit and any(
+            unit == amount.unit for unit, _ in values.units_beside(value, text)):
+        # A figure with its unit ("5%", "15 kg") stands where the text writes that figure with that same unit, however
+        # short (values.units_beside: by structure, never a list of units). Found live (2026-11-08): "5%" from "rate
+        # 5%." was refused every time - it is no bare number, and its one digit fell under the floor below.
+        return True
     n = as_number(value)
     if n is not None:
         for tok in _NUMBER_TOKEN.findall(text):
@@ -283,6 +306,27 @@ def saved_record(records, key=None, text=None):
     return None
 
 
+def saved_by_number(records, key):
+    """
+    The record of this task already saved whose own number is `key`: a declared field whose label names a number, a
+    reference or an id (identifier_field) holds it - or None. A declaration keyed by a saved record's own number is
+    that record, whatever key it was saved under. Found live (2026-11-08): a bill saved under the key "bill" was
+    declared again under its bill number, to add the one field the save left undeclared; taken as a new record, the
+    edit's save made the ledger hold two records for the application's one, and the declaration was first stopped as
+    "may be entered already" by the task's own saved record on the page. A key with no digit names no number here.
+    """
+
+    key = " ".join(str(key or "").split())
+    if not re.search(r"\d", key):
+        return None
+    for rec in reversed([r for r in records if r.get("saved_at")]):
+        for label, f in (rec.get("fields") or {}).items():
+            if (isinstance(f, dict) and f.get("intent") and identifier_field(label)
+                    and same_value(str(f["intent"]), key, order="")):
+                return rec
+    return None
+
+
 def saved_on_form(records, form_fields):
     """The record of this task already saved whose own key field - the declared field whose intent is its key - holds
     its key on this form (`form_fields`: (label, value) pairs), or None. Only that field: a payment's "Against bill"
@@ -296,6 +340,90 @@ def saved_on_form(records, form_fields):
                for label in own for flabel, fvalue in form_fields):
             return rec
     return None
+
+
+def same_source(a, b):
+    """Whether two sources name one document (a path written with ~ or with ./ parts is the same file)."""
+
+    def norm(source):
+        text = str(source or "").strip()
+        return os.path.normpath(os.path.expanduser(text)) if text else ""
+
+    return bool(norm(a)) and norm(a) == norm(b)
+
+
+def saved_from_same_document(records, source, fields):
+    """
+    The record of this task already saved from the same document `source` whose own key field (the declared field
+    whose intent is its key) is given the same value under the same label in `fields` ({label: value}) - or None.
+    One document, one number in the record's own number field: the same record, whatever key it is declared under.
+    Found live (2026-11-10, a month of bills): a replay declared and saved bill "1072"; the model that took over at
+    the next bill declared "V1072" from the same file, entered it again, and the books held the bill twice.
+    """
+
+    given = {tuple(label_words(label)): " ".join(str(value if value is not None else "").split())
+             for label, value in (fields or {}).items()}
+    for rec in reversed([r for r in records if r.get("saved_at")]):
+        if not same_source(rec.get("source"), source):
+            continue
+        key = rec.get("key") or ""
+        for label, f in (rec.get("fields") or {}).items():
+            if not (isinstance(f, dict) and f.get("intent") and same_value(f["intent"], key, order=_source_order(rec))):
+                continue
+            value = given.get(tuple(label_words(label)))
+            if value and same_value(value, key, order=""):
+                return rec
+    return None
+
+
+def read_back_whole(rec):
+    """Whether a saved record was read back whole off the page its save left: every declared value and line seen."""
+
+    rb = rec.get("readback") or {}
+    return bool(rec.get("saved_at") and rb.get("seen") and not rb.get("absent") and not _rows_unread(rec))
+
+
+def person_asked_again(rec, task_id=None):
+    """
+    Whether the person said, in this task, to save record `rec` again although it is saved: an answer the control
+    plane confirms as theirs (person_record.answers) to a question that named the record's key, read as a yes. Never
+    the worker's own files or words; nothing is confirmed when the control plane cannot be read. Never raises.
+    """
+
+    key = " ".join(str(rec.get("key") or "").split())
+    if not key:
+        return False
+    try:
+        from decurix_agent import person_record
+        from decurix_agent.computer import approval
+        for answer in person_record.answers(task_id):
+            if stands_in(key, answer.get("asked") or "") and approval.says_yes(answer.get("text") or "",
+                                                                                answer.get("asked") or ""):
+                return True
+    except Exception:  # noqa: BLE001 - what cannot be confirmed lets nothing through
+        return False
+    return False
+
+
+def ledger_lines(task_id=None, limit=40):
+    """
+    What this task's record ledger holds, for a worker taking the work over part way (a replay that stopped): one line
+    per record - each saved one ("saved: KEY - never enter it again"), whether it was read back whole, and each
+    declared one not saved yet ("left: KEY"). [] when nothing was declared.
+    """
+
+    lines = []
+    for rec in load(task_id)[:limit]:
+        key = " ".join(str(rec.get("key") or "").split())
+        name = Path(str(rec.get("source") or "")).name or str(rec.get("source") or "")
+        where = f" (from {name})" if name else ""
+        if rec.get("saved_at"):
+            how = ("saved and read back off its page" if read_back_whole(rec)
+                   else "saved, not read back whole - open it and look at it")
+            lines.append(f"- saved: {key}{where} - {how} - never enter it again")
+        else:
+            lines.append(f"- left: {key}{where} - declared from its document, not saved yet")
+    return lines
 
 
 def _shown_now(task_id=None):
@@ -340,15 +468,20 @@ def _add_to_saved(task_id, records, done, kept):
             rb["absent"] = list(dict.fromkeys(rb["absent"]))
             r["undeclared"] = [u for u in r.get("undeclared") or []
                                if not any(label_matches(l, u.split("=", 1)[0]) for l in new)]
+            r["unset"] = [u for u in r.get("unset") or [] if not any(label_matches(l, u) for l in new)]
             rec = r
     _save(task_id, records)
     lines = [f"Record {done.get('key')} is saved already; its declaration now also covers: "
              + ", ".join(f"{l}={f['intent']}" for l, f in new.items())]
     missing = [l for l in new if l not in seen]
     if missing:
-        lines.append("NOT shown on the page the task looked at last: " + ", ".join(missing) + ". Open the saved record, "
-                     "look at it, and declare those again to read them back; correct the saved record if they are "
-                     "wrong - never enter it again.")
+        # Found live (2026-11-08, a bill in an eval run): told only "declare those again", the worker tried a page's title
+        # and its URL as --from, then said in its report it had declared "from the screen" when it had not, and four
+        # reviews held that against it until the case timed out.
+        lines.append("NOT shown on the page the task looked at last: " + ", ".join(missing) + ". Open the saved record "
+                     "and look at it (gui observe), then run the same declaration again - the same --from, the "
+                     "record's document, not the page: what is read back is what the page you looked at last shows. "
+                     "Correct the saved record if they are wrong - never enter it again.")
     return rec, lines
 
 
@@ -387,7 +520,13 @@ def _source_text(source):
             return office._ocr_file(office._path(source))
         return office.read_document(source)["text"]
     except Exception as exc:  # noqa: BLE001 - what cannot be read is said
-        raise ComputerError(f"cannot read the record's source {source}: {exc}")
+        raise ComputerError(f"cannot read the record's source {source}: {exc}. --from names the document the record "
+                            "comes from (a file), or the word screen for values read off what the screen showed - "
+                            "never a page's title or address. A record saved already is read back from the page you "
+                            "looked at last whatever --from says: declare it again from its document. A value the "
+                            "person gave you in a reply needs no file: "
+                            "declare the record from its document, and their reply backs that value. A file you write "
+                            "their words into backs nothing.")
 
 
 _FIELDS_PART = "What every field of the page held (in view or not):\n"
@@ -445,6 +584,8 @@ UNCOVERED = "record_not_declared"
 SAVED_TWICE = "saved_twice"
 UNBACKED_PICK = "unbacked_pick"
 NOT_BACKED = "report_not_backed"
+WORDY_KEY = "identifier_as_words"
+SENT_AROUND = "sent_around_ledger"
 NOT_MADE = "not_made"
 
 
@@ -494,7 +635,17 @@ def picks(task_id=None, events=None, open_form=False):
     if events is None:
         from decurix_agent.computer import evidence
         events = evidence._task_events(task_id)
-    out, pending, page = [], [], None
+    out, pending, page, form = [], [], None, []
+    owner = task_id or task_context.current() or ""
+
+    def with_party(found):
+        # The record's own party: the identifiers its form holds (form_party); each pick of it carries them. A form that
+        # holds none is a party of its own - this record of this task - so what is confirmed about it carries to no
+        # other record or run, and such a pick is asked each time (owner's ruling 2026-11-09: a consumer's invoice has
+        # no buyer number, and a client-wide answer would back a wrong entry on it).
+        party = form_party(form) or f"record:{owner}:{len(out)}"
+        return [dict(p, party=party) for p in found]
+
     for event in events:
         if event.get("outcome") not in (None, "done"):
             continue
@@ -507,14 +658,26 @@ def picks(task_id=None, events=None, open_form=False):
             left = page is not None and here != page
             page = here
         if kind in ("click", "key") and core._saved(change):
-            out += pending
-            pending = []
+            out += with_party(pending)
+            pending, form = [], []
             continue
         if left or core._FORM_START.search(change) or (kind == "open" and core._FORM_START.search("page is now " + to)):
-            pending = []
+            pending, form = [], []
+        if kind == "type" and event.get("text"):
+            form.append(str(event["text"]))
         if kind == "select" and not left and (event.get("option") or event.get("taken")):
+            form.append(str(event.get("taken") or event.get("option")))
             pending.append(_pick_of(event, host=(page or ("", ""))[0]))
-    return out + pending if open_form else out
+    return out + with_party(pending) if open_form else out
+
+
+def form_party(values):
+    """For whom one record is, as the identifier-shaped values its form holds (letters and digits together: a
+    buyer's tax number, an account), joined; "" when it holds none. A confirmation of a picked entry backs only the
+    record of the same party: a client's Karnataka buyer confirmed is no source for its Kerala buyer's entry (owner's
+    ruling 2026-11-09)."""
+
+    return "|".join(sorted({t for v in values or () for t in _PARTY_TOKEN.findall(str(v).upper())}))
 
 
 def picked_options(task_id=None):
@@ -568,24 +731,135 @@ def _answers_text(task_id=None):
         return ""
 
 
+def _worker_words_text(task_id=None):
+    """The person's own answers on this worker's earlier tasks, as the control plane keeps them (person_record.
+    worker_words): a rule taught once ("region 07 goes to fund FND-3") backs, in every later task, a value that stands
+    in its words. Found live (2026-11-08): a code the worker derived from a rule the person taught two tasks before
+    was refused as backed by nothing a person said, since only the current task's answers were read. Never the
+    worker's own files or notes: a rule it wrote to ~/work backs nothing."""
+
+    try:
+        from decurix_agent import person_record
+        return "\n".join(person_record.worker_words(task_id))
+    except Exception:  # noqa: BLE001 - what cannot be confirmed backs nothing
+        return ""
+
+
+def _free_text(task_id=None):
+    """What people wrote for this task, as one text: the request, the person's replies the control plane confirms, the
+    person's words on the skill being run and on this worker's earlier tasks, and the organisation's knowledge
+    (given_sources' "free" part)."""
+
+    parts = [task_context.current_request() or "", _answers_text(task_id), _taught_text(), _worker_words_text(task_id),
+             _org_text(task_id)]
+    return "\n".join(p for p in parts if p)
+
+
+MAX_GIVEN_FILES = 24
+
+
+def _request_folder_files(task_id=None):
+    """
+    The files in the folders the request names that were there before the task began (stage_checks.
+    request_input_files, less what source_guard.made_by_task says the task made): the client's documents a request
+    points to by folder rather than attaching them. Found live (2026-11-09, an eval case, a return filed right): every
+    invoice in the folder the request named wrote "Place of Supply: Karnataka", yet the "29-Karnataka" picked from the
+    portal's list was held as backed by nothing given, because only attached files were read; the person was asked to
+    confirm it and the run ended not done. A file the task wrote there never backs anything.
+
+    Only the named folder's own files, never its subfolders' (review of freeze 2, A11: a subfolder holds other
+    periods' or other parties' documents); a document of another period is left out where it is read (given_sources).
+    """
+
+    request = task_context.current_request() or ""
+    if not request or task_context.since() is None:
+        return []  # (the task's start unknown: what it made cannot be told from what was there)
+    found = []
+    try:
+        for m in _FOLDER_PATH.finditer(request):
+            folder = os.path.expanduser(m.group(1).rstrip(".),:;"))
+            if not os.path.isdir(folder) or os.path.realpath(folder) in _whole_folders():
+                continue  # (the whole home or work folder holds other requests' files: never this one's input)
+            found += [os.path.join(folder, n) for n in sorted(os.listdir(folder))
+                      if not n.startswith((".", "~$")) and os.path.isfile(os.path.join(folder, n))]
+            if len(found) >= MAX_GIVEN_FILES * 4:
+                break
+        from decurix_agent import source_guard, stage_checks
+        # The files the request names one by one (never a folder's tree: stage_checks.request_input_files walks it).
+        found += [entry.split(" (= ")[0] for entry in stage_checks.run_inputs(request)]
+        return [p for p in dict.fromkeys(found)
+                if not source_guard.made_by_task(p, task_id or None, request)][:MAX_GIVEN_FILES]
+    except Exception:  # noqa: BLE001 - a folder not listed backs nothing
+        return []
+
+
+# A month named with its year in a request ("January 2027", "Jan-2027", "01/2027"): the period the run is for.
+_PERIOD = re.compile(r"(?i)\b([a-z]{3,9})[\s,.'-]*(\d{4})\b|\b(0?[1-9]|1[0-2])[/-](\d{4})\b")
+
+
+def request_periods(request):
+    """The (year, month) periods the request names, or an empty set when it names none."""
+
+    from decurix_agent.computer import datefields
+    out = set()
+    for m in _PERIOD.finditer(request or ""):
+        if m.group(1):
+            month = datefields.MONTHS.get(m.group(1).lower())
+            if month:
+                out.add((int(m.group(2)), month))
+        else:
+            out.add((int(m.group(4)), int(m.group(3))))
+    return out
+
+
+def of_another_period(text, periods):
+    """Whether a document's own dates all fall outside the request's periods: it is another period's document. False
+    when the request names no period or the document carries no date that can be read either way."""
+
+    from decurix_agent import values
+    if not periods:
+        return False
+    seen = set()
+    for m in _DATE_TOKEN.finditer(text or ""):
+        iso = values.as_iso(m.group(0))
+        if iso:
+            seen.add((int(iso[:4]), int(iso[5:7])))
+    return bool(seen) and not (seen & periods)
+
+
+def _whole_folders():
+    return {os.path.realpath(os.path.expanduser("~")), os.path.realpath(str(config.WORK_DIR))}
+
+
+# A folder the request names by its path ("~/work/practice/case-7/", "/home/headless/inbox"): only one that exists.
+_FOLDER_PATH = re.compile(r"(?<![\w/])((?:~|/home/[\w.-]+|/tmp)/[^\s'\"<>|;,]*)")
+
+
 def given_sources(task_id=None):
     """
     What a picked option may be backed by, as {"free": text, "files": [text]}. Free: the request, the person's replies
-    in this task that the control plane confirms, the person's words on the skill being run (from the control plane),
-    and the organisation's knowledge (people write it; a desktop may only read it). Files: the request's own files,
-    which back a pick only where they state that field (option_beside_label). Never the application's pages, whose
-    option list is the menu; never the worker's own memory, notes or files.
+    in this task that the control plane confirms, the person's words on the skill being run and their answers on this
+    worker's earlier tasks (from the control plane), and the organisation's knowledge (people write it; a desktop may
+    only read it). Files: the request's own files and the files already in a folder the request names
+    (_request_folder_files), which back a pick only where they state that field (option_beside_label). Never the
+    application's pages, whose option list is the menu; never the worker's own memory, notes or files.
     """
 
-    free = [task_context.current_request() or "", _answers_text(task_id), _taught_text(), _org_text(task_id)]
+    free = [_free_text(task_id)]
     files = []
     try:
         from decurix_agent.tools import office
-        for path in (task_context.current_files() or [])[:12]:
+        attached = list(task_context.current_files() or [])[:12]
+        in_folder = [p for p in _request_folder_files(task_id) if p not in attached]
+        periods = request_periods(task_context.current_request() or "")
+        for path in list(dict.fromkeys(attached + in_folder))[:MAX_GIVEN_FILES]:
             try:
-                files.append(str(office.read_document(str(path)).get("text") or "")[:MAX_PAGE_TEXT])
+                text = str(office.read_document(str(path)).get("text") or "")[:MAX_PAGE_TEXT]
             except Exception:  # noqa: BLE001 - a file not read backs nothing
                 continue
+            if path in in_folder and of_another_period(text, periods):
+                continue  # another period's document in the folder is never this run's (review of freeze 2, A11)
+            files.append(text)
     except Exception:  # noqa: BLE001
         pass
     return {"free": "\n".join(p for p in free if p), "files": [f for f in files if f]}
@@ -597,6 +871,136 @@ def given_text(task_id=None):
 
     sources = given_sources(task_id)
     return "\n".join([sources["free"]] + sources["files"])
+
+
+# ------------------------------------------------------------------ a record's number or reference
+#
+# Found live (2026-11-08): a key field typed with a phrase no source held as a number - a supplier's copy printed a
+# phrase pointing to another paper where its invoice number belongs, and the worker declared that phrase as the bill's
+# number. It was accepted: the phrase DOES stand in the document, beside the field's own label, so the ledger called
+# the value backed. Standing in a source is not enough
+# for the field that identifies a record: the document there says where the number is, not what it is. Decided by
+# structure, not a word list: a field whose label names a number, a reference or an id (label_words: "No.", "#", "Ref"
+# are these) holds a code, and a value of two or more words with no digit in it is words, not a code. Only the people's
+# own words (the request, the person's answers, what they taught, the organisation's knowledge) can give words there.
+
+_IDENTIFIER_LABEL = frozenset({"number", "reference", "id"})
+
+
+def identifier_field(label):
+    """Whether a field's label says it holds a code the record is found by: its number, reference or id."""
+
+    return bool(set(label_words(label)) & _IDENTIFIER_LABEL)
+
+
+def words_not_code(value):
+    """Whether a value is words and no code: two or more words, and not one digit among them."""
+
+    text = " ".join(str(value or "").split())
+    return len(text.split()) >= 2 and not re.search(r"\d", text)
+
+
+def wordy_identifiers(fields, task_id=None, free=None):
+    """
+    [(label, value)] of `fields` ((label, value) pairs) whose label names the record's number, reference or id
+    (identifier_field) and whose value is words, not a code (words_not_code) - unless what people wrote for this task
+    (`free`, default _free_text: the request, the person's answers, their teaching, the organisation's knowledge) gives
+    those words whole. A document writing them there does not give the number: it points elsewhere.
+    """
+
+    found = [(" ".join(str(label).split()), " ".join(str(value or "").split())) for label, value in fields
+             if identifier_field(label) and words_not_code(value)]
+    if not found:
+        return []
+    free = _free_text(task_id) if free is None else free
+    return [(label, value) for label, value in found if not identity.holds(free, value)]
+
+
+def wordy_text(found):
+    """What a worker is told for wordy_identifiers' fields: ask the person for each, by the field's name."""
+
+    named = "; ".join(f"{label}: {value!r}" for label, value in found[:6])
+    asks = ", ".join(dict.fromkeys(label for label, _ in found[:6]))
+    return (f"a record's number, reference or id is a code, and this is words: {named}. Where a document writes words "
+            "in that place, it does not give the code - it says where the code is. Ask the person (HELP) for the "
+            f"{asks}, naming the field; never type the words, a guess or a made-up code in its place.")
+
+
+def typed_into_saved(events):
+    """[(label, value)] typed or chosen into a form that a save then answered as saved (core._current_form's reading
+    of the form, at each save), oldest first."""
+
+    from decurix_agent.computer import core
+    out, seen = [], []
+    for event in events or []:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        seen.append(event)
+        if event.get("kind") in ("click", "key") and core._saved(str(event.get("change") or "")):
+            out += core._current_form(seen[:-1])
+            seen = []
+    return out
+
+
+def wordy_saved(task_id=None, events=None):
+    """wordy_identifiers of the fields this task put into forms it saved: the final check's reading (ledger_checks),
+    for a record saved with or without a declaration."""
+
+    if events is None:
+        from decurix_agent.computer import evidence
+        events = evidence._task_events(task_id)
+    return wordy_identifiers(typed_into_saved(events), task_id)
+
+
+# ------------------------------------------------------------------ a record sent around the screen
+#
+# Found live (2026-11-08): a worker tried to curl a bill straight into the application's form endpoint. The approval
+# gate held that one (the application's host was not this machine), but a send to a server on this machine runs without
+# a person (TheBot's safety reads it as development), and a yes to the gate is a yes to the send, never a check of what
+# was saved. A record sent so was never declared, typed on the screen or read back: nothing shows what the application
+# holds. So a send the task made to an application it entered records in is held against the done.
+
+def _hosts_worked(events):
+    """The hosts (lower case, no port) of the pages where this task opened a new record's form or had a save answered."""
+
+    from decurix_agent.computer import core
+    import urllib.parse
+    hosts = set()
+    for event in events or []:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        pages = re.findall(r"page is now (\S+)", change)
+        if event.get("kind") == "open" and event.get("target"):
+            pages.append(str(event["target"]))
+        record_page = core._saved(change) and event.get("kind") in ("click", "key")
+        for page in pages + ([str(event.get("url"))] if event.get("url") else []):
+            if record_page or core._NEW_RECORD_PAGE.search("page is now " + page.rstrip(";,")):
+                try:
+                    host = urllib.parse.urlsplit(page.rstrip(";,")).hostname or ""
+                except ValueError:
+                    host = ""
+                if host:
+                    hosts.add(host.lower())
+    return hosts
+
+
+def sent_around(commands, events=None, task_id=None):
+    """
+    The commands among `commands` (shell commands this task ran) that sent data to an application around the screen
+    (playbooks.sends_data): every such send when the task declared a record (the ledger is how its records go in), and
+    any send naming the host of a page where the task opened a new record's form or saved one. [] when none.
+    """
+
+    from decurix_agent import playbooks
+    sending = [c for c in commands or () if playbooks.sends_data(c)]
+    if not sending:
+        return []
+    if load(task_id):
+        return sending
+    hosts = _hosts_worked(events)
+    return [c for c in sending
+            if any(re.search(r"(?<![\w.-])" + re.escape(h) + r"(?![\w-])", c, re.I) for h in hosts)]
 
 
 def _option_words(text):
@@ -622,6 +1026,24 @@ def _joined_figure(digits, option):
     return bool(re.search(r"[A-Za-z][-/]" + d + r"(?!\d)|(?<!\d)" + d + r"[-/][A-Za-z]", option))
 
 
+def _code_written_whole(option, given, offered=None):
+    """
+    Whether `given` writes an option that is a code (a digit in it: "FND-3", "GST 18%") whole - its letters and digits
+    in order, nothing glued at either end (identity.holds_identifier) - and no longer entry of the list that holds it
+    ("FND-3 Annex" beside "FND-3") is written there too. A code written whole names its entry. Found live
+    (2026-11-08): among codes that share their letters (FND-3, FND-8, FND-9), the only part that tells one apart is its
+    figure, which is joined to the letters and so taken as the code's own part (_joined_figure), never as a word; no
+    text, not even the person's "region 07 goes to FND-3", could back the pick.
+    """
+
+    option = " ".join(str(option or "").split())
+    if not re.search(r"\d", option) or not given or not identity.holds_identifier(given, option):
+        return False
+    longer = [" ".join(str(o).split()) for o in offered or ()
+              if " ".join(str(o).split()).casefold() != option.casefold()]
+    return not any(identity.holds_identifier(o, option) and identity.holds_identifier(given, o) for o in longer if o)
+
+
 def option_backed(option, given, offered=None):
     """
     Whether `given` (a text) picks out `option` among the entries a list offered (`offered`; None when not read).
@@ -645,6 +1067,8 @@ def option_backed(option, given, offered=None):
               if " ".join(str(o).split()).casefold() != option.casefold()]
     others = [o for o in others if o]
     if not others and stands_in(option, given):
+        return True
+    if _code_written_whole(option, given, offered):
         return True
     need = mine - set().union(*others) if others else set(mine)
     need = {w for w in need if not (w.isdigit() and _joined_figure(w, option))}
@@ -761,7 +1185,7 @@ def resolved_names(task_id=None, events=None):
 
 # ------------------------------------------------------------------ a person's answer about a field, kept
 
-def _kept_answer(label, option, host, offered=None):
+def _kept_answer(label, option, host, offered=None, party=None):
     """Whether a person's answer about this field (its label, in this application), kept on the control plane as a
     learned row derived from their judgement, names `option` - checked against that judgement's own text."""
 
@@ -770,10 +1194,25 @@ def _kept_answer(label, option, host, offered=None):
         rows = person_record.field_answers()
     except Exception:  # noqa: BLE001 - what cannot be read backs nothing
         return False
+    party = "" if party is None else party
     for a in rows:
         if a.get("host") and host and a["host"] != host:
             continue
         if not (label_matches(a.get("label", ""), label) and same_value(a.get("option", ""), option, order="")):
+            continue
+        if a.get("party") and (a["party"] != party or a["party"].startswith("record:")):
+            continue  # (kept for another party, or for one record alone: no source for this pick)
+        if not a.get("party") and party and not party.startswith("record:"):
+            # A row kept before answers carried their party says nothing of which party it was for: it never backs a
+            # pick made for a party (review of freeze 2, A12). A record whose form names no party ("record:...", see
+            # picks) is no party's, so such a row may still back it.
+            continue
+        if a.get("confirmed"):
+            # The person confirmed this very entry when asked about it: the question code put names the field and the
+            # entry, and the control plane holds their reply as their judgement on it (confirm_picks).
+            if set(label_words(label)) <= set(label_words(a.get("source_asked", ""))) \
+                    and option_backed(option, a.get("source_asked", ""), offered):
+                return True
             continue
         # The question the person answered (the control plane's, never the row's) names this field: a row cannot move
         # an answer about one field onto another (review round 11). None given: nothing backed.
@@ -823,7 +1262,8 @@ def keep_field_answers(task_id=None, events=None):
                 mark = (a["id"], p["host"], " ".join(label_words(p["label"])))
                 if mark not in _kept_now:
                     _kept_now.add(mark)
-                    person_record.keep_field_answer(task_id, a["id"], p["label"], p["host"], value, asked=a["asked"])
+                    person_record.keep_field_answer(task_id, a["id"], p["label"], p["host"], value, asked=a["asked"],
+                                                    party=p.get("party") or "")
                     posted += 1
                 break
         return posted
@@ -853,7 +1293,53 @@ def pick_backed(pick, given=None, resolved=None, value=None, labels=()):
         for label in [pick.get("label")] + list(labels or ()):
             if label and any(option_beside_label(v, label, f, offered) for f in sources.get("files") or ()):
                 return True
-    return bool(pick.get("label")) and _kept_answer(pick["label"], value, pick.get("host", ""), offered)
+    # (A pick read elsewhere than picks() names no record: its party is unknown, and only an answer kept for no party
+    # at all - from before parties were kept - backs it.)
+    party = pick.get("party") or ""
+    if pick.get("label") and _confirmed_here(pick["label"], value, party):
+        return True
+    return bool(pick.get("label")) and _kept_answer(pick["label"], value, pick.get("host", ""), offered, party=party)
+
+
+# Picks the person confirmed in this process (label words, value, party): a confirmation backs at once, before the
+# control plane's copy of it can be read back (confirm_picks).
+_confirmed_now = set()
+
+# An identifier a record's form holds for whom it is (a tax number, an account, a client code): letters and digits
+# together, long enough not to be a word or an amount (form_party).
+_PARTY_TOKEN = re.compile(r"\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{8,20}\b")
+
+
+def _confirmed_here(label, value, party):
+    words = " ".join(label_words(label))
+    return any(w == words and same_value(v, value, order="") and p == party for w, v, p in _confirmed_now)
+
+
+def confirm_picks(task_id, judgement_id, entries, asked):
+    """
+    Keep that the person confirmed each picked entry ({label, value, host, party}) for its record's party, in answer
+    to `asked` (a question naming each field and its entry): at once in this process, and on the control plane for
+    later tasks (person_record.keep_field_answer, confirmed). Never a different entry. Returns how many were kept.
+    Never raises.
+    """
+
+    kept = 0
+    for e in entries:
+        label, value = str(e.get("label") or ""), str(e.get("value") or "")
+        if not label or not value:
+            continue
+        party = e.get("party") or ""  # (the record's own party: picks / form_party)
+        _confirmed_now.add((" ".join(label_words(label)), value, party))
+        try:
+            from decurix_agent import person_record
+            if judgement_id:
+                person_record.keep_field_answer(task_id, judgement_id, label, e.get("host") or "", value, asked=asked,
+                                                party=party, confirmed=True)
+        except Exception as exc:  # noqa: BLE001 - kept here; the control plane's copy is for later tasks
+            from decurix_agent.logging_utils import log
+            log(f"Could not keep the person's confirmation of {label}: {exc}")
+        kept += 1
+    return kept
 
 
 def unbacked_pick_entries(task_id=None, events=None):
@@ -872,7 +1358,8 @@ def unbacked_pick_entries(task_id=None, events=None):
         if given is None:
             given = given_sources(task_id)
         if not pick_backed(p, given, resolved):
-            if not any(o["label"] == p["label"] and o["option"] == p["option"] for o in out):
+            if not any(o["label"] == p["label"] and o["option"] == p["option"] and o.get("party") == p.get("party")
+                       for o in out):
                 out.append(p)
     return out
 
@@ -895,10 +1382,14 @@ def chosen_values(task_id=None):
     return list(dict.fromkeys(picked_options(task_id) + resolved_names(task_id)))
 
 
-def _elsewhere_text():
-    """What else a value may legitimately come from: the request, the person's words and what the task read."""
+def _elsewhere_text(task_id=None):
+    """What else a value may legitimately come from: the request, the person's words and what the task read. The
+    person's words are the control plane's record of them (_free_text: their replies on this task, what they taught and
+    answered on this worker's earlier tasks, the organisation's knowledge), never a file the worker wrote them into.
+    Found live (2026-11-08): a code the person's reply gave, typed rather than picked from a list, stood in nothing
+    read here, so the worker wrote the reply into a file of its own to declare from."""
 
-    parts = [task_context.current_request() or ""]
+    parts = [_free_text(task_id)]
     try:
         from decurix_agent.computer import evidence
         parts.append(evidence.read()[-MAX_PAGE_TEXT:])
@@ -912,11 +1403,76 @@ def _elsewhere_text():
     return "\n".join(parts)
 
 
-def declare(key, source, fields, scope="", task_id=None):
+def _backings(kept, task_id, order):
+    """Note on each field not taken from the record's source which given place its value stands in - the person's
+    words (this task's replies, what they taught, their answers on the worker's earlier tasks), the organisation's
+    knowledge, or the request - as `backed_by`, for the ledger to show. Found live (2026-11-08): the ledger named only the
+    record's document, and three reviews in a row held a value the person's rule gave as cited from that document,
+    until the task ran out of time. A value standing in none of them (a page read, an entry of the
+    application's list) gets none."""
+
+    texts = None
+    for f in kept.values():
+        if f.get("from") not in ("seen", "chosen") or not f.get("intent"):
+            continue
+        if texts is None:
+            person = "\n".join(p for p in (_answers_text(task_id), _taught_text(), _worker_words_text(task_id)) if p)
+            texts = (("the person's words", person), ("the organisation's knowledge", _org_text(task_id)),
+                     ("the request", task_context.current_request() or ""))
+        for name, text in texts:
+            if text and stands_in(f["intent"], text, order):
+                f["backed_by"] = name
+                break
+
+
+def _source_units(key, kept, text, task_id):
+    """
+    A figure declared bare keeps the unit what backs it writes it with (owner decision, 2026-11-08). Found live: a note
+    said "18%", the worker declared the record's Rate as "18", the save compared 18 with the unit-less field's 18 and
+    the unit question - the very case it exists for - never came. What backs a figure is the record's source for one
+    kept "from source", and what was given (given_text: the request, its files, the person's answers) for one kept
+    "from seen" (never the application's pages it read, where the form's own bare figure stands). Where every place it writes the figure writes the same unit, the intent is
+    the figure as written there ("18%"), changed in `kept`, so the save's comparison with a field whose label states no
+    unit reaches the person's question (presave, _undecided). Where it writes the figure with a unit and also bare, or
+    with two units, which one is this field's cannot be told: refused, once when one of them is bare (declared bare
+    again, that is the worker's choice, made with both shown), and every time otherwise (the source never writes it
+    bare). Returns (the "label=written" lines kept with a unit, the refusals).
+    """
+
+    united, forms = [], []
+    given = None
+    for label, f in kept.items():
+        value = f.get("intent") or ""
+        bare = values.parse_amount(value)
+        if f.get("from") not in ("source", "seen") or not isinstance(bare, values.Amount) or bare.unit or bare.currency:
+            continue
+        if f["from"] == "seen":
+            if given is None:
+                given = given_text(task_id)
+            backing = given
+        else:
+            backing = text
+        places = values.units_beside(value, backing)
+        units = {u for u, _ in places}
+        if not units or units == {""}:
+            continue
+        if len(units) == 1:
+            f["intent"] = next(w for u, w in places if u)
+            united.append(f"{label}={f['intent']}")
+            continue
+        shown = list(dict.fromkeys(w for _, w in places))[:6]
+        if "" in units and not stop_once(task_id, f"unit-{key}-{label}-{value}"):
+            continue
+        forms.append(f"{label}: '{value}' - written there as " + ", ".join(repr(w) for w in shown))
+    return united, forms
+
+
+def declare(key, source, fields, scope="", task_id=None, rows=None):
     """
     Keep a record's intent: {key, source, scope, fields{label: {intent, from}}}. Every value must stand in the source
     ("source"), else in what the task read or the request ("seen"); otherwise the whole declaration is refused with
-    the fields named. Returns the record and the lines to show.
+    the fields named. `rows`: the record's lines, [{label: value}] in order (_kept_rows: only values its source writes).
+    Returns the record and the lines to show.
     """
 
     task_id = task_id or task_context.current()
@@ -934,7 +1490,10 @@ def declare(key, source, fields, scope="", task_id=None):
         raise ComputerError("a record needs its source: --from PATH (the document it comes from) or --from screen")
     # A record this task saved already is not declared again: a second save of it makes a second record (review round
     # 9, B: a task tried again from the start declared and saved its bill twice).
-    done = saved_record(load(task_id), key=key)
+    # (Or the saved record whose own number is this key: the same record, declared under its number. Or the saved record
+    # of the same document whose own number field these fields give the same number: the same record under another key.)
+    done = (saved_record(load(task_id), key=key) or saved_by_number(load(task_id), key)
+            or saved_from_same_document(load(task_id), source, fields if isinstance(fields, dict) else {}))
     text = _source_text(source)
     # The key on a page of the application this task read before (a list, a record): it may be entered already - the
     # task stops once and asks (review round 9, C: a bill already in the books was entered again).
@@ -950,6 +1509,11 @@ def declare(key, source, fields, scope="", task_id=None):
     picture = is_picture(source)
     elsewhere = chosen = selects = resolved = given = None
     kept, unsourced, partial, unbacked = {}, [], [], []
+    # A number, reference or id given as words (wordy_identifiers): refused before anything else is asked of the value -
+    # a document that writes the words there, beside the field's label, does not give the code (found live 2026-11-08).
+    wordy = wordy_identifiers(fields.items(), task_id)
+    if wordy:
+        raise ComputerError("not declared - " + wordy_text(wordy))
 
     def backed(value, label):
         # Whether a value the worker took from an application's list is backed (pick_backed): by an identifier, a
@@ -964,9 +1528,13 @@ def declare(key, source, fields, scope="", task_id=None):
         return any(pick_backed(p, given, resolved, value=value, labels=(label,)) for p in mine)
     for label, value in fields.items():
         label = " ".join(str(label).split())
-        value = " ".join(str(value if value is not None else "").split())[:MAX_VALUE]
+        value = " ".join(str(value if value is not None else "").split())
         if not label:
             continue
+        if len(value) > MAX_VALUE:
+            raise ComputerError(f"not declared - {label} is longer than {MAX_VALUE} characters, and a record's value is "
+                                "kept whole or not at all (a part would never match the form). Ask the person (HELP) "
+                                "how this field is to be entered.")
         if not value:
             kept[label] = {"intent": "", "from": "empty"}
             continue
@@ -976,6 +1544,13 @@ def declare(key, source, fields, scope="", task_id=None):
             continue
         if stands_in(value, text, source_order, source_order):
             kept[label] = {"intent": value, "from": "source"}
+            continue
+        # A digit date the way the form takes it ("12-10-2026") that names one date the document writes another way
+        # ("12-Oct-2026") is kept as the document writes it: kept as typed, which day it is could not be told at the
+        # save, and the save was refused over an identical string (found live 2026-11-08).
+        written = "" if picture else binding.date_in(value, [text])
+        if written:
+            kept[label] = {"intent": written, "from": "source"}
             continue
         if chosen is None:
             selects, resolved = _selects(task_id), resolved_names(task_id)
@@ -994,7 +1569,7 @@ def declare(key, source, fields, scope="", task_id=None):
             unbacked.append(f"{label}: {value}")
             continue
         if elsewhere is None:
-            elsewhere = _elsewhere_text()
+            elsewhere = _elsewhere_text(task_id)
         if stands_in(value, elsewhere, source_order):
             kept[label] = {"intent": value, "from": "seen"}
         elif picture:
@@ -1019,20 +1594,38 @@ def declare(key, source, fields, scope="", task_id=None):
                             "(a place as 'Kerala', not the application's option label '32-Kerala'; a party as the "
                             "document names it): the application's own wording of an option or an entry chosen from "
                             "its list is accepted at the save. A value the document does not give at all is not typed.")
+    united, unit_forms = _source_units(key, kept, text, task_id)
+    _backings(kept, task_id, source_order)
+    if unit_forms:
+        raise ComputerError("not declared - a figure is declared bare where what backs it writes it with a unit: "
+                            + "; ".join(unit_forms) + ". Declare each as the source writes it for this field (with its "
+                            "unit): the save compares it with the field and asks the person when the field's label "
+                            "does not say the unit. A figure the source also writes bare may be declared bare again "
+                            "only when that is the one this field takes.")
     records = load(task_id)
     if done is not None:
+        if source != done.get("source"):
+            # (A field this declaration adds keeps its own source: the saved record's is another document.)
+            kept = {l: (dict(f, source=source) if f.get("from") == "source" else f) for l, f in kept.items()}
         return _add_to_saved(task_id, records, done, kept)
     records = [r for r in records if not (r.get("key") == key and not r.get("saved_at"))]  # declared again: replaced
     rec = {"key": key, "source": source, "scope": " ".join(str(scope or "").split()), "fields": kept,
            "source_order": source_order, "declared_at": time.time(), "saved_at": None, "saved": "", "window": "", "readback": {}, "checks": 0}
+    lines_kept = [] if picture else _kept_rows(rows, text, source_order)
+    if lines_kept:
+        rec["rows"] = lines_kept
     records.append(rec)
     _save(task_id, records)
     lines = [f"Record {key} declared from {source}" + (f" in {rec['scope']}" if rec["scope"] else "")
-             + f": {len(kept)} field(s)"]
-    seen = [l for l, f in kept.items() if f["from"] in ("seen", "chosen")]
+             + f": {len(kept)} field(s)" + (f" and {len(lines_kept)} line(s)" if lines_kept else "")]
+    seen = [l + (f" ({f['backed_by']})" if f.get("backed_by") else "") for l, f in kept.items()
+            if f["from"] in ("seen", "chosen")]
     if seen:
         lines.append("(from the screen, the application's own lists, the request or the person rather than the source: "
                      + ", ".join(seen) + ")")
+    if united:
+        lines.append("(kept with the unit their source writes them in, which the declaration left out: "
+                     + ", ".join(united) + ")")
     unread = [f"{l}={f['intent']}" for l, f in kept.items() if f["from"] == "picture"]
     if unread:
         lines.append("(read off the picture and NOT confirmed by OCR - look at the picture again for each before saving: "
@@ -1131,8 +1724,15 @@ def _undecided(flabel, fvalue, want, why, place=("", ""), unit=""):
         if question:
             return (f"{flabel} holds {fvalue!r} and the record says {want!r}, and which day {value!r} is cannot be told "
                     "from here - this needs the person. The agent puts the two readings to them itself, as a question "
-                    "of its own, when you next ask them anything (HELP: say the save waits on this date) or stop; "
-                    "do not retype the field (a date written the same way is no answer).")
+                    "of its own, now (the save waits on it), and their answer comes back to "
+                    "you - then save again; if you are not paused for it, say the save waits on this date when you next "
+                    "ask them anything (HELP) or stop. Do not retype the field, go round the save, or save it another "
+                    "way (a date written the same way is no answer).")
+        if task_context.date_left_open(side=side):
+            # (Asked once in this task, and the person could not say: not asked again, and not saved on a guess.)
+            return (f"{flabel} holds {fvalue!r} and the record says {want!r}, and the person could not say which day "
+                    f"{value!r} is when asked: this record cannot be saved as checked. Do not ask again or retype it - "
+                    "report this record as not saved, and why.")
         return (f"{flabel} holds {fvalue!r} and the record says {want!r}: the dates cannot be compared under the date "
                 "order known for this task - this needs the person.")
     if why == "unit" and unit:
@@ -1158,19 +1758,36 @@ def _undecided(flabel, fvalue, want, why, place=("", ""), unit=""):
             "person.")
 
 
-def presave(rec, form_fields):
+def presave(rec, form_fields, cut=(), unset=(), formats=None):
     """
     The intent against a form about to be saved: (blocking, advisory) lines. A matched field whose value is not the
     intent's blocks; an intent field the form does not name, or a filled form field the intent does not cover, is
     advisory. Also returns how many intent fields the form matched (the diff is "clean" when nothing blocks).
+
+    cut: the form's labels whose values were read in part (cdp.FORM_VALUE_CHARS) - compared only as far as they were
+    read, never called different for the part not read (_read_in_part). unset: the form's choices left in their "no
+    selection" state (cdp.FORM_FIELDS, by structure) - one the record does not declare is a point (unset_choice_line;
+    ADVISORY until UNSET_CHOICE_BLOCKS). formats: {label: placeholder} for the form's fields whose placeholder writes
+    a date format (cdp.FORM_FIELDS) - what it states of the field's date order (compare_shown).
     """
 
     fields = {l: f for l, f in rec.get("fields", {}).items() if f.get("intent")}
     matched = match_fields(fields, [(str(l), str(v if v is not None else "")) for l, v in form_fields])
     blocking, advisory = [], []
     chosen = place = None
+    cut = {str(c) for c in cut or ()}
+    formats = {str(k): str(v) for k, v in (formats or {}).items()} if isinstance(formats, dict) else {}
+    if matched and any(values.parse_date(str(v)) for _l, _f, v in matched):
+        # The application the form is on: where a person's answer about its date order is kept and read
+        # (task_context.note_app_host, kept_app_order).
+        place = field_place()
+        task_context.note_app_host(place[0])
     for label, flabel, fvalue in matched:
         want = fields[label]["intent"]
+        if str(flabel) in cut and str(fvalue).strip():
+            line, differs = _read_in_part(flabel, fvalue, want)
+            (blocking if differs else advisory).append(line)
+            continue
         if not str(fvalue).strip():
             if _IDENT_RE.match(str(want).strip()):
                 # A party saved without the identifier its document gives is a record nothing can resolve later -
@@ -1179,7 +1796,8 @@ def presave(rec, form_fields):
                 blocking.append(f"{flabel} is empty where the record says {want!r} - a record is saved with its identifier")
             else:
                 advisory.append(f"{flabel} is empty where the record says {want}")
-        elif (decided := compare_shown(fvalue, want, _source_order(rec), flabel)).same is not True:
+        elif (decided := compare_shown(fvalue, want, _source_order(rec), flabel,
+                                       date_format=formats.get(str(flabel), ""))).same is not True:
             unit = ""
             if decided.same is None and decided.why == "unit":
                 # A unit on one side only: the person's recorded word about this field's unit decides it, if any.
@@ -1216,12 +1834,67 @@ def presave(rec, form_fields):
              and str(l) not in used]
     if extra:
         advisory.append("on the form but not in the record: " + ", ".join(str(x)[:80] for x in extra[:12]))
+    left = undeclared_unset(rec, unset)
+    if left:
+        (blocking if UNSET_CHOICE_BLOCKS else advisory).append(unset_choice_line(rec, left))
     return blocking, advisory, len(matched)
 
 
-def note_presave(rec, blocking, task_id=None, undeclared=None):
-    """Keep the last pre-save diff on the record (what blocked, how many checks, and the fields this task set on the
-    form that the record does not declare - what the final check holds against a saved record)."""
+def _read_in_part(flabel, fvalue, want):
+    """
+    (line, differs) for a field whose value was read only in part (cdp.FORM_VALUE_CHARS: cut at a word): the part is
+    compared with the start of the record's value (values._compare_key: letters and digits in order, gaps aside) and
+    nothing more. Found live (2026-11-08): the form readers cut values at 80 characters with no mark, presave compared
+    the part with a declared 126-character Notes value, and the save was refused at every try until the token budget ran
+    out. A part that agrees is undecided - the save goes on, and the read-back after it looks for the whole value; only
+    a part that already reads otherwise than the record's start differs.
+    """
+
+    part, whole = values._compare_key(fvalue), values._compare_key(want)
+    if part and whole.startswith(part):
+        return (f"{flabel} was read only in part (its first {len(str(fvalue))} characters), and that part agrees with "
+                "the record; the rest is not compared before the save - the read-back after it looks for the whole "
+                "value", False)
+    return (f"{flabel} holds {str(fvalue)!r}... (read in part) where the record says {want!r} - the part read already "
+            "reads otherwise than the record's start", True)
+
+
+# Whether presave blocks a save over a choice left unset that the record does not declare (unset_choice_line).
+# ADVISORY until it passes the replay gate and a clean live round (CLAUDE.md: a new code check ships advisory): until
+# then it is a point the worker is shown at the save (readback) and the reviewer reads in the ledger (listing).
+UNSET_CHOICE_BLOCKS = False
+
+
+def undeclared_unset(rec, unset):
+    """The labels of the form's choices left in their "no selection" state (cdp.FORM_FIELDS, by structure) that the
+    record does not declare - a declared field, its value given or declared empty, covers one by label."""
+
+    declared = list((rec.get("fields") or {}).keys())
+    out = []
+    for label in unset or ():
+        label = " ".join(str(label or "").split())
+        if not label or label in out:
+            continue
+        if any(label_matches(d, label) or label_words(d) == label_words(label) for d in declared):
+            continue
+        out.append(label)
+    return out
+
+
+def unset_choice_line(rec, labels):
+    """The point for choices left unset that record `rec` does not declare: each named by its label, with the two ways
+    to settle it - declared from a source, or asked of the person."""
+
+    names = ", ".join(labels[:8])
+    return (f"{names} {'is' if len(labels) == 1 else 'are'} left unset (the choice's own \"no selection\" state) and "
+            f"record {rec.get('key')} does not declare {'it' if len(labels) == 1 else 'them'}: declare each with the "
+            f"value a source gives (gui record), or ask the person (HELP) which {labels[0]} this record takes")
+
+
+def note_presave(rec, blocking, task_id=None, undeclared=None, unset=None):
+    """Keep the last pre-save diff on the record (what blocked, how many checks, the fields this task set on the
+    form that the record does not declare - what the final check holds against a saved record - and the choices left
+    unset that it does not declare, shown after the save and in the ledger: undeclared_unset)."""
 
     task_id = task_id or task_context.current()
     records = load(task_id)
@@ -1231,6 +1904,8 @@ def note_presave(rec, blocking, task_id=None, undeclared=None):
             r["last_blocked"] = blocking[:12]
             if undeclared is not None:
                 r["undeclared"] = [f"{l}={v}" for l, v in undeclared][:12]
+            if unset is not None:
+                r["unset"] = [str(l) for l in unset][:12]
             for label, f in rec.get("fields", {}).items():
                 if f.get("entered") and label in r.get("fields", {}):
                     r["fields"][label]["entered"] = f["entered"]
@@ -1239,8 +1914,169 @@ def note_presave(rec, blocking, task_id=None, undeclared=None):
 
 # ------------------------------------------------------------------ after a save
 
-def readback(rec, title, page_text, change, task_id=None):
-    """Mark the record saved and each intended value seen or absent on the page the save left. Returns the lines."""
+def _kept_rows(rows, text, order):
+    """
+    The record's lines as declared: of each given row {label: value}, the values its source writes (stands_in, or a
+    digit date the source writes another way: kept as the source writes it); a row with fewer than MIN_ROW_CELLS such
+    values is left out - what it would check could stand on any line. [] when none is left.
+    """
+
+    from decurix_agent import binding
+    kept = []
+    for row in list(rows or [])[:MAX_ROWS]:
+        cells = {}
+        for label, value in (row or {}).items():
+            label, value = " ".join(str(label).split()), " ".join(str(value if value is not None else "").split())
+            if not label or not value or len(value) > MAX_VALUE or label in cells:
+                continue
+            if stands_in(value, text, order, order):
+                cells[label] = value
+            else:
+                written = binding.date_in(value, [text])
+                if written:
+                    cells[label] = written
+        if len(cells) >= MIN_ROW_CELLS:
+            kept.append(cells)
+    return kept
+
+
+def page_lines(observation):
+    """
+    The page's lines of text, top to bottom: the pieces that sit side by side on one line (their middles within half a
+    piece's height), each [text, left, right] left to right. A field's text is its value, a field with none has none
+    (its name is its label); anything else's is its name. Offscreen pieces count: a saved record's table runs below the
+    window. A saved record shows its lines as text, not fields (found live 2026-11-09, a saved invoice's items: a grid
+    of plain text and links, its column names on a line above).
+    """
+
+    pieces = []
+    for element in (observation or {}).get("elements") or []:
+        box = element.get("box") or []
+        if len(box) < 4 or not (0 < box[3] <= LINE_MAX_HEIGHT):
+            continue
+        field = element.get("role") in ("textbox", "combobox", "searchbox", "spinbutton")
+        text = " ".join(str((element.get("value") if field else element.get("name")) or "").split())
+        if text:
+            pieces.append((box[1] + box[3] / 2, box[3], [text, box[0], box[0] + box[2]]))
+    pieces.sort(key=lambda p: (p[0], p[2][1]))
+    lines, current, middle, height = [], [], None, None
+    for mid, tall, piece in pieces:
+        if current and mid - middle > min(tall, height) / 2:
+            lines.append(sorted(current, key=lambda p: p[1]))
+            current = []
+        if not current:
+            middle, height = mid, tall
+        current.append(piece)
+    if current:
+        lines.append(sorted(current, key=lambda p: p[1]))
+    return lines
+
+
+def _column(label, lines, below):
+    """The span (left, right) of the column name a label is: a piece above line `below` whose words are the label's
+    (the nearest such line); None when no line above names it."""
+
+    from decurix_agent.computer import core
+    want = core._words_of(label)
+    if not want:
+        return None
+    for line in reversed(lines[:below]):
+        for text, left, right in line:
+            if core._words_of(text) == want:
+                return left, right
+    return None
+
+
+def _under(line, column):
+    """The piece of a line under a column name: the one whose span overlaps the name's most (a column of text starts
+    under its name), else the one whose middle is nearest the name's (a figure stands to the right of it)."""
+
+    left, right = column
+
+    def overlap(k):
+        return min(right, line[k][2]) - max(left, line[k][1])
+
+    best = max(range(len(line)), key=overlap)
+    if overlap(best) > 0:
+        return best
+    return min(range(len(line)), key=lambda k: abs((line[k][1] + line[k][2]) / 2 - (left + right) / 2))
+
+
+def _row_on_line(row, lines, n, taken, order):
+    """
+    Whether declared row `row` {label: value} stands on page line `n`: each value on a piece of its own - under its
+    label's column when a line above names it (_under), else on any piece left,
+    never a bare number that opens the line (a numbered table's row number). A value a pick asked for is shown as the
+    entry it took (`taken`: {(label, asked): {entries}}).
+    """
+
+    line = lines[n]
+    used = set()
+
+    def shows(value, label, text):
+        # A list's entry is named with more than the record keeps of it ("Desk Lamp Desk Lamp, Products" for an item
+        # the saved page shows as "Desk Lamp", found live 2026-11-09): the page's words standing in the entry show it.
+        return (stands_in(value, text, order) or
+                any(stands_in(entry, text) or (re.search(r"[^\W\d_]{2}", text) and stands_in(text, entry))
+                    for entry in taken.get((label, value.lower()), ())))
+
+    for label, value in row.items():
+        column = _column(label, lines, n)
+        if column is not None:
+            i = _under(line, column)
+            if i in used or not shows(value, label, line[i][0]):
+                return False
+            used.add(i)
+            continue
+        found = next((i for i, (text, _l, _r) in enumerate(line)
+                      if i not in used and not (i == 0 and text.isdigit()) and shows(value, label, text)), None)
+        if found is None:
+            return False
+        used.add(found)
+    return True
+
+
+def rows_shown(rows, observation, order=None, picks_made=()):
+    """
+    Which declared rows the page shows: (shown, absent) as row numbers from 1, each row on a line of its own (a line
+    holds one row at most). `picks_made`: this task's picks (_pick_of), so a value asked of a list is found as the entry
+    the list gave for it.
+    """
+
+    lines = page_lines(observation)
+    taken = {}
+    for p in picks_made or ():
+        if p.get("option") and p.get("taken"):
+            key = (" ".join(str(p.get("label") or "").split()), " ".join(str(p["option"]).split()).lower())
+            taken.setdefault(key, set()).add(p["taken"])
+    fits = [[n for n in range(len(lines)) if _row_on_line(row, lines, n, taken, order)] for row in rows]
+    owner = {}
+
+    def place(r, tried):
+        # One line per row (a matching by augmenting paths): two rows alike never stand on one line.
+        for n in fits[r]:
+            if n in tried:
+                continue
+            tried.add(n)
+            if n not in owner or place(owner[n], tried):
+                owner[n] = r
+                return True
+        return False
+
+    for r in range(len(rows)):
+        place(r, set())
+    placed = set(owner.values())
+    return [r + 1 for r in range(len(rows)) if r in placed], [r + 1 for r in range(len(rows)) if r not in placed]
+
+
+def _row_text(row):
+    return ", ".join(f"{label}={value}" for label, value in list(row.items())[:4])
+
+
+def readback(rec, title, page_text, change, task_id=None, observation=None):
+    """Mark the record saved and each intended value seen or absent on the page the save left - and each declared
+    line on a line of the page (`observation`, rows_shown; a record with lines and no look of the page has them all
+    absent). Returns the lines."""
 
     task_id = task_id or task_context.current()
     records = load(task_id)
@@ -1253,12 +2089,26 @@ def readback(rec, title, page_text, change, task_id=None):
                  or (f.get("entered") and stands_in(f["entered"], page_text, task_context.app_date_order())))
         (seen if shown else absent).append(label)
     key_shown = stands_in(rec.get("key", ""), page_text)
+    rows = rec.get("rows") or []
+    rows_seen, rows_absent = [], list(range(1, len(rows) + 1))
+    if rows and observation is not None:
+        rows_seen, rows_absent = rows_shown(rows, observation, _source_order(rec), _selects(task_id))
+    if not seen and not key_shown and not rows_seen:
+        # A page that shows nothing of the record (none of its values, not its key, none of its lines) is not its
+        # saved page: no save is taken from it. Found live (2026-11-11, a web ERP): a link from an unsaved bill's form to
+        # the list was read as the save, and the ledger said "saved; 0 of 3" for a bill the application never had.
+        total = len(seen) + len(absent)
+        return [f"Record {rec.get('key')}: NOT saved - the page this left shows none of its {total} declared value(s) "
+                "nor its key, so it is not the record's saved page. If the record was saved, open it and look; if "
+                "not, it is still to be saved - never enter it again before you know which."]
     for r in records:
         if r.get("key") == rec.get("key") and r.get("declared_at") == rec.get("declared_at"):
             r["saved_at"] = time.time()
             r["saved"] = " ".join(str(change or "").split())[:300]
             r["window"] = str(title or "")[:120]
             r["readback"] = {"seen": seen, "absent": absent, "key_shown": key_shown}
+            if rows:
+                r["readback"].update(rows_seen=rows_seen, rows_absent=rows_absent)
     _save(task_id, records)
     total = len(seen) + len(absent)
     line = f"Record {rec.get('key')}: saved; the page now shows {len(seen)} of {total} declared value(s)"
@@ -1267,7 +2117,18 @@ def readback(rec, title, page_text, change, task_id=None):
         line += ". Open the saved record and check those before going on; a value the application changed is not what the document says."
     elif total:
         line += " - all of them."
-    return [line]
+    lines = [line]
+    if rows_absent:
+        lines.append(f"Its lines: {len(rows_seen)} of {len(rows)} stand on a line of the page; NOT shown: "
+                     + "; ".join(f"line {n} ({_row_text(rows[n - 1])})" for n in rows_absent[:6])
+                     + ". Open the saved record and check those lines against the document before going on.")
+    elif rows:
+        lines.append(f"Its lines: all {len(rows)} stand on a line of the page, each on its own.")
+    if rec.get("unset"):
+        # The pre-save point (ADVISORY: UNSET_CHOICE_BLOCKS), shown with the save it did not stop.
+        lines.append("Left unset at this save: " + unset_choice_line(rec, list(rec["unset"])) + ". If a source or the "
+                     "person gives a value, open the saved record and set it there - never enter the record again.")
+    return lines
 
 
 # ------------------------------------------------------------------ listing
@@ -1276,9 +2137,23 @@ def status_of(rec):
     if not rec.get("saved_at"):
         return "declared, not saved" + (" (last save blocked: " + "; ".join(rec["last_blocked"]) + ")" if rec.get("last_blocked") else "")
     rb = rec.get("readback") or {}
-    if rb.get("absent"):
-        return "saved; not read back: " + ", ".join(rb["absent"])
+    lines_absent = [f"line {n}" for n in _rows_unread(rec)]
+    if rb.get("absent") or lines_absent:
+        return "saved; not read back: " + ", ".join(list(rb.get("absent") or []) + lines_absent)
     return "saved and read back" if rb.get("seen") else "saved"
+
+
+def _rows_unread(rec):
+    """The declared lines of a record (numbers from 1) its read-back did not find on the page: all of them when it
+    was never read back."""
+
+    rows = rec.get("rows") or []
+    rb = rec.get("readback") or {}
+    if not rows:
+        return []
+    if "rows_absent" not in rb:
+        return list(range(1, len(rows) + 1))
+    return list(rb.get("rows_absent") or [])
 
 
 def listing(task_id=None):
@@ -1296,7 +2171,60 @@ def listing(task_id=None):
             if not f.get("intent"):
                 continue
             mark = "seen" if label in rb.get("seen", []) else ("ABSENT" if label in rb.get("absent", []) else "-")
-            out.append(f"    {label}: {f['intent']} [{f.get('from')}; read back: {mark}]")
+            # Which given place a value not taken from the source stands in (_backings): the record's "from" names
+            # only its document. (Never a "]" in it: soul reads the bracket as one part, record_ledger.go.)
+            backing = f"; backed by {f['backed_by']}" if f.get("backed_by") else ""
+            out.append(f"    {label}: {f['intent']} [{f.get('from')}{backing}; read back: {mark}]")
+        if rec.get("rows"):
+            # (No ": " here either, for the same reason as below.)
+            unread = _rows_unread(rec)
+            state = ("not saved yet" if not rec.get("saved_at") else
+                     "read back, each on a line of the page" if not unread else
+                     "NOT read back - line " + ", ".join(str(n) for n in unread[:12]))
+            out.append(f"    ({len(rec['rows'])} line(s) declared from its source, {state})")
+        if rec.get("unset"):
+            # (No ": " in this line: the soul reads "    Label: value" lines as declared fields - record_ledger.go.)
+            out.append("    (left unset at the last save check and not declared - " + ", ".join(rec["unset"][:8])
+                       + " - a value from a source or the person's answer is owed)")
+    return out
+
+
+def saved_unread(task_id=None, events=None):
+    """
+    The new records this task saved that nothing read back against a source, each as where it was saved (the page or
+    window the save left): a save answered as saved on a new record's page (core.records_created) that no declared
+    record read back whole matches. Found live (2026-11-09): a worker that declared nothing created a party's ledger
+    with its state left unset, and the run ended done on the model's word - nothing had read a single save back. A
+    final report says these, never a checked done over them.
+    """
+
+    from decurix_agent.computer import core
+    if events is None:
+        from decurix_agent.computer import evidence
+        events = evidence._task_events(task_id)
+    read = set()
+    for r in load(task_id):
+        rb = r.get("readback") or {}
+        if r.get("saved_at") and rb.get("seen") and not rb.get("absent") and not _rows_unread(r):
+            read.add(" ".join(str(r.get("saved") or "").split())[:300])
+    out, new_page = [], False
+    for event in events or []:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if core._FORM_START.search(change) or core._FORM_START.search("page is now " + str(event.get("target") or "")):
+            new_page = True
+        if event.get("kind") in ("click", "key") and core._saved(change) and new_page:
+            new_page = False
+            if " ".join(change.split())[:300] not in read:
+                moved = re.search(r"page is now (\S+)", change)
+                out.append(moved.group(1).rstrip(";,") if moved else str(event.get("window") or "a form"))
+            continue
+        moved = re.search(r"page is now (\S+)", change)
+        if moved:
+            new_page = bool(core._NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
+        elif core._NEW_RECORD_PAGE.search(change) or core._NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+            new_page = True
     return out
 
 
@@ -1314,6 +2242,8 @@ def all_read_back(task_id=None):
         rb = rec.get("readback") or {}
         wanted = [l for l, f in (rec.get("fields") or {}).items() if isinstance(f, dict) and f.get("intent")]
         if not rec.get("saved_at") or rb.get("absent") or not wanted or set(wanted) - set(rb.get("seen") or []):
+            return False
+        if _rows_unread(rec):
             return False
     return True
 
@@ -1340,6 +2270,64 @@ def undeclared_task_fields(rec, form_fields, task_set):
     return out
 
 
+def adopt_backed(task_id=None):
+    """
+    Take onto each saved record the fields its task set without declaring them that a declaration would have settled
+    anyway: a value that stands in the record's own document (never a record declared from the screen, whose source
+    is the application itself), or in what was given - the request, the person's words the control plane keeps, the
+    organisation's knowledge (_free_text). Each is kept as declared would keep it ("source", or "seen" with what backs
+    it) and marked `adopted`; read back where the page looked at last shows it, absent otherwise. A value standing in
+    none of them stays undeclared, for the final check to hold (gate_faults). Found live (2026-11-08, twice): a value the
+    person's answer gave was typed and saved without being declared, the final check sent the task back, and the
+    attempt sent back ran out of time - for a formality code can settle itself. Returns
+    the "KEY: Label=value" lines adopted.
+    """
+
+    task_id = task_id or task_context.current()
+    records = load(task_id)
+    adopted, given = [], None
+    for r in records:
+        if not r.get("saved_at") or not r.get("undeclared"):
+            continue
+        order = _source_order(r)
+        source_text = None
+        left = []
+        for item in r["undeclared"]:
+            label, _, value = str(item).partition("=")
+            label, value = label.strip(), value.strip()
+            if not label or not value or label in (r.get("fields") or {}):
+                left.append(item)
+                continue
+            if source_text is None:
+                source_text = ""
+                if r.get("source") and r.get("source") != "screen":
+                    try:
+                        source_text = _source_text(r["source"])
+                    except ComputerError:
+                        source_text = ""
+            if source_text and stands_in(value, source_text, order):
+                f = {"intent": value, "from": "source", "adopted": True}
+            else:
+                if given is None:
+                    given = _free_text(task_id)
+                if not (given and stands_in(value, given, order)):
+                    left.append(item)
+                    continue
+                f = {"intent": value, "from": "seen", "adopted": True}
+                _backings({label: f}, task_id, order)
+            r.setdefault("fields", {})[label] = f
+            rb = r.setdefault("readback", {})
+            if stands_in(value, _shown_now(task_id), order):
+                rb["seen"] = list(dict.fromkeys(list(rb.get("seen") or []) + [label]))
+            else:
+                rb["absent"] = list(dict.fromkeys(list(rb.get("absent") or []) + [label]))
+            adopted.append(f"{r.get('key')}: {label}={value}")
+        r["undeclared"] = left
+    if adopted:
+        _save(task_id, records)
+    return adopted
+
+
 def gate_faults(task_id=None, created=None):
     """
     What the final check holds against the task's saved records, decided in code (review round 9): a field this task
@@ -1354,8 +2342,18 @@ def gate_faults(task_id=None, created=None):
     out = []
     for rec in found:
         if rec.get("saved_at") and rec.get("undeclared"):
+            # Where the saved record is and the one command that settles it, so the attempt sent back declares the
+            # field on that record rather than entering it again: found live (2026-11-08, a bill in an eval run), told
+            # only "correct the saved record", the next attempt opened a new form and typed the bill again.
+            where = re.search(r"https?://\S+", rec.get("saved") or "")
+            place = (f"its page is {where.group(0).rstrip('.,;')}" if where
+                     else f"its window is {rec['window']!r}" if rec.get("window") else "")
             out.append(finding(UNDECLARED, f"record {rec['key']} was saved with " + ", ".join(rec["undeclared"][:6])
-                               + " - a value this task set that no declaration backs"))
+                               + " - a value this task set that no declaration backs. To settle it, declare the field "
+                               "on the saved record: open it" + (f" ({place})" if place else "") + " and look at it "
+                               f"(gui observe), then run gui record {json.dumps(rec['key'])} --from "
+                               f"{json.dumps(rec.get('source') or 'SOURCE')} --fields - with that field and the value "
+                               "its source or the person's answer gives - never a new form"))
     saved = sum(1 for r in found if r.get("saved_at"))
     if created is not None and created > saved:
         out.append(finding(UNCOVERED, f"this task's saves made {created} new record(s), and {saved} declared record(s) "
@@ -1364,9 +2362,12 @@ def gate_faults(task_id=None, created=None):
 
 
 def declared_sources(task_id=None):
-    """The sources (files) records were declared from, each once."""
+    """The sources (files) records were declared from, each once: a record's, and a field's added from another."""
 
-    return list(dict.fromkeys(r.get("source") for r in load(task_id) if r.get("source") and r["source"] != "screen"))
+    found = []
+    for r in load(task_id):
+        found += [r.get("source")] + [f.get("source") for f in (r.get("fields") or {}).values() if isinstance(f, dict)]
+    return list(dict.fromkeys(s for s in found if s and s != "screen"))
 
 
 def parse_fields(text):

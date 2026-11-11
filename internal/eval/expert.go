@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,8 @@ import (
 
 // The scripted expert (D9) only chooses: shown a worker's question and the facts the person knows, it names one fact
 // or none. What the worker is sent is that fact's own bytes from the case, or DontKnow. It never sees a grader, an
-// expected record or the oracle, and it never answers an approval.
+// expected record or the oracle. It answers an approval only with a yes the case lists (Case.Approves), decided in
+// code from the gate's own signed question, never by its model; every other approval ends the case unanswered.
 
 // Hub is the hosted-model hub as the eval uses it (*llm.Hub).
 type Hub interface {
@@ -36,8 +38,13 @@ const (
 	ExpertPurpose = "eval.expert"
 )
 
-// ExpertPrompt is the expert's fixed, generic instruction.
-const ExpertPrompt = `A worker doing a task asked the question below. These are the facts the person who gave the task knows, each with an id and what it is about. Reply {"fact": "<id>"} for the one fact that answers the question, or {"fact": null} if none does. Never answer the question yourself.`
+// ExpertPrompt is the expert's fixed, generic instruction. A fact that gives the rule the person decides a thing by
+// answers a question asking for that thing, though the question lacks what applying the rule needs: the first prompt
+// ("the one fact that answers the question") had Kimi-K2.6 refuse such a rule on one worded question 11 times in 12
+// ("it explains how, not which"), so a lesson asked for again was answered "don't know". No fact gives leave to act,
+// so a question that only asks "may I go ahead?" gets none (the first prompt gave a fact to such questions 9 times in
+// 18). Probed 2026-11-08 on 22 questions: 93/93 as meant (docs/evals.md). The "asks" field is the model's own, unread.
+const ExpertPrompt = `A worker doing a task asked the question below. These are the facts the person who gave the task knows, each with an id, what it is about and the person's own words. Choose the one fact whose words give what the question asks for. A fact gives it when its words state what is asked, or the rule or method the person decides it by: the worker applies a rule itself, so choose that fact even when the question does not hold what applying it needs. A fact whose words do not give what is asked gives nothing, though it is on the same subject; and no fact gives leave to act, so a question that only asks whether the worker may go ahead gets none. Reply {"asks": "<what the question asks for, in a few words>", "fact": "<id>"}, or {"asks": "<what it asks for>", "fact": null} when no fact gives it. Never answer the question yourself.`
 
 // modelChanged is the problem a row gets when its calls were not all served by the pinned deployment (D10).
 const modelChanged = "model changed during the run"
@@ -210,4 +217,48 @@ func clipText(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// ApprovalYes is the expert's reply to an approval its case lists: a plain yes, which the gate settles in code, with
+// no model reading it.
+const ApprovalYes = "Yes, go ahead."
+
+// ApprovalNo is the expert's reply to a gate-signed approval its case does not list: a plain no (every word on the
+// agent's plain-no list, approval._PLAIN_NO), which the gate settles as declined in code, with no model reading it.
+// It grants nothing; the worker must route around the held action.
+const ApprovalNo = "No, do not."
+
+// gateClick is how the approval gate words a click it stops (approval.request_text over describe_action and
+// elements.describe): `Approval needed before I click <role> "<name>"`, then the ref, the window and the reason. The
+// gate quotes a name with its own double quotes turned to single ones, so the name holds none.
+var gateClick = regexp.MustCompile(`^Approval needed before I click ([a-z][a-z ]{0,39}?) "([^"]*)"`)
+
+// GateControl reads the control a click acts on from the gate's signed question: its role and name. ok is false for
+// any other action the gate stops (typing, a key, a command whose control was not resolved).
+func GateControl(question string) (role, name string, ok bool) {
+	m := gateClick.FindStringSubmatch(strings.TrimSpace(question))
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
+
+// sameName compares two control names as the gate quotes them: whitespace collapsed, case folded.
+func sameName(a, b string) bool {
+	return strings.EqualFold(strings.Join(strings.Fields(a), " "), strings.Join(strings.Fields(b), " "))
+}
+
+// ApprovalFor is the case's approval that the gate's signed question names, by structure: the click's control, by its
+// whole name (and its role, when the approval gives one). Words anywhere else in the question never match.
+func (c Case) ApprovalFor(gateQuestion string) (Approval, bool) {
+	role, name, ok := GateControl(gateQuestion)
+	if !ok {
+		return Approval{}, false
+	}
+	for _, a := range c.Approves {
+		if sameName(a.Control, name) && (a.Role == "" || sameName(a.Role, role)) {
+			return a, true
+		}
+	}
+	return Approval{}, false
 }

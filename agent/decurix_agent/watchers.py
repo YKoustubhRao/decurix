@@ -3,7 +3,7 @@ import threading
 import time
 import traceback
 
-from decurix_agent import (ask_task, attachments, config, guidance, lessons, long_task, playbooks, procedures, progress, record_task, replay_task,
+from decurix_agent import (ask_task, attachments, config, guidance, lessons, long_task, messaging, playbooks, procedures, progress, record_task, replay_task,
                            skill_task, state, task_context, tool_task, usage, workflow_task)
 from decurix_agent.computer import approval, browser
 from decurix_agent.harness import continue_after_query, perform_task
@@ -182,6 +182,38 @@ def is_reply_file(name):
     return REPLY_MARK in (name or "")
 
 
+def _saved_before_restart(task_id):
+    """
+    What the task's own record ledger says it saved before the restart, as the note to the person ("" when nothing):
+    each saved record, and whether its page was read back with every declared value. Never "start it over": sent again,
+    a request that had saved its record enters it twice. Found live (2026-11-08): two bills saved correctly before a
+    restart were reported "not done - send the request again to start it over".
+    """
+
+    try:
+        from decurix_agent.computer import records
+        saved = [r for r in records.load(task_id) if r.get("saved_at")]
+    except Exception:  # noqa: BLE001 - nothing known saved: the plain note
+        return ""
+    if not saved:
+        return ""
+    lines = []
+    for rec in saved:
+        rb = rec.get("readback") or {}
+        wanted = [l for l, f in (rec.get("fields") or {}).items() if isinstance(f, dict) and f.get("intent")]
+        where = rec.get("saved") or "the application"
+        if rb.get("absent"):
+            state_now = "its page was not read back"
+        elif wanted and not set(wanted) - set(rb.get("seen") or []):
+            state_now = "read back with every declared value shown"
+        else:
+            state_now = "not yet read back"
+        lines.append(f"- {rec.get('key')} saved in {where} ({state_now})")
+    return ("This desktop restarted while it was working on this, after it had saved:\n" + "\n".join(lines)
+            + "\nThe task was not finished or checked after that point. Look at what was saved before anything else; "
+            "do not send the same request again just to start it over - that would enter it a second time.")
+
+
 def _report_interrupted():
     """
     Tell the control plane about a task an earlier life of this agent started
@@ -205,6 +237,9 @@ def _report_interrupted():
     task_context.start(record["task_id"], request=record.get("request"))
     state.current_task = record.get("request") or None
     note = workflow_task.interrupted_note(record["task_id"]) or INTERRUPTED
+    saved = _saved_before_restart(record["task_id"])
+    if saved:
+        note = saved
     if skill_task.parse_learn(record.get("request") or "") is not None:
         note += " A lesson keeps every answer you gave, so the same `/learn` carries on from there."
     try:
@@ -214,6 +249,41 @@ def _report_interrupted():
     finally:
         state.current_task = None
         task_context.start("")
+
+
+LOST_QUESTION = (
+    "This desktop restarted while this waited on your answer, so the question is gone and nothing more will happen "
+    "on this task. Send the request again to start it over (for a lesson, `/learn` on the same recording carries on "
+    "from the last answer it kept)."
+)
+
+
+def _close_lost_questions():
+    """
+    Close, on the control plane, each task of this desktop that waits on the person for a question this agent no
+    longer holds: an earlier life of it asked, then the desktop restarted. Found live (2026-11-09): a task read
+    "waiting on you" for good over a question the restarted agent had forgotten, and only a reply to it - answered
+    "stale" - closed it. The question this agent does hold (a long request it resumed waiting on its answer) is never
+    closed. Each closes as stopped, saying what it had saved when its records say so. Never raises.
+    """
+
+    held = task_context.current() if state.waiting_for_query else ""
+    try:
+        waiting = messaging.waiting_tasks()
+    except Exception as exc:  # noqa: BLE001 - not known which are lost: none is closed
+        log(f"Could not read this desktop's questions from the control plane: {exc}")
+        return
+    for task_id in waiting:
+        if task_id == held or not task_context.valid(task_id):
+            continue
+        log(f"Task {task_id} waits on a question an earlier life of this agent asked; closing it as stopped.")
+        task_context.start(task_id)
+        try:
+            write_final_reply(_saved_before_restart(task_id) or LOST_QUESTION, kind="error", interrupted=True)
+        except Exception as exc:  # noqa: BLE001 - the next start tries again
+            log(f"Could not close the lost question of task {task_id}: {exc}")
+        finally:
+            task_context.start(held)
 
 
 def _answer_stale_reply(path, content):
@@ -607,8 +677,9 @@ def answer_waiting(path, content, already_marked=False):
                 if not guidance.calls_off(said, ""):
                     date_answer = True
                     content = (f"(Not your question - the agent asked the person which way {question['value']} is "
-                               "written, since a save waited on it, and their reply picked neither reading, so the "
-                               "save still waits on it. Your own question was not put to them. Their reply: "
+                               "written, since a save waited on it, and their reply picked neither reading. It will "
+                               "not be asked again: a record that waits on that date is not saved - report it as not "
+                               "saved, and why. Your own question was not put to them. Their reply: "
                                + " ".join(said.split())[:300] + ")")
     except Exception as exc:  # noqa: BLE001
         log(f"Could not take the reply as the date order: {exc}")
@@ -721,6 +792,10 @@ def answer_waiting(path, content, already_marked=False):
             workflow_task.cancel_active()
         if state.paused_replay is not None:
             target, args = replay_task.resume, (content, outcome)
+        elif date_answer and skill_task.ask_again():
+            # The reply answered the date (or unit) question that went out in place of the run's own: that question
+            # is asked again, never answered with the note about the date.
+            return
         else:
             target, args = skill_task.resume, (content, outcome)
     elif workflow_task.awaiting_start():
@@ -738,6 +813,12 @@ def answer_waiting(path, content, already_marked=False):
                 skill_task.learn_answer(content, secret=secret, judgement_id=state.reply_judgement)
             except Exception as exc:
                 log(f"Could not keep the answer on the skill: {exc}")
+        elif outcome is not None:
+            # An approval's yes is no help; a no, a condition or "do X instead" is (engine_questions.note_approval).
+            try:
+                skill_task.engine_questions.note_approval(outcome)
+            except Exception as exc:  # noqa: BLE001
+                log(f"Could not note the approval's reply on the run: {exc}")
         target, args = continue_after_query, (content,)
         # A reply that only calls the task off ends it here: the
         # engine is not handed it. Found live: told `stop` at a
@@ -1001,6 +1082,7 @@ def command_watcher():
     )
 
     _report_interrupted()
+    _close_lost_questions()
 
     # A task's outcome the control plane could not be told (it was restarting) is sent again, now and every little
     # while, so no chat is left saying "running" over a task that ended (messaging.resend_unsent).

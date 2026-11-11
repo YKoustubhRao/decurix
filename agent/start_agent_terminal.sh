@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# Every command this script runs is looked up on the system's PATH, not the container's: that one puts the worker's
+# ~/.local/bin first, and a `python3`, `nice` or `setsid` the worker left there would have started in the agent's
+# place, and taken its token. What the script starts for the worker gets the container's PATH back (WORKER_PATH).
+WORKER_PATH=$PATH
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+AGENT_TOKEN_DIR=/run/decurix-agent
+
 # Adaptively wait for X11 display :1 to be ready (up to 15s max), proceeding immediately once available
 for i in $(seq 1 150); do
     if [ -S /tmp/.X11-unix/X1 ] || (which xdpyinfo >/dev/null 2>&1 && xdpyinfo -display :1 >/dev/null 2>&1); then
@@ -67,7 +75,7 @@ fi
 # are named core.<pid> AND are ELF core dumps - a file that merely shares
 # the name is left alone.
 if ls "$HOME"/core.* "$HOME/Desktop"/core.* >/dev/null 2>&1; then
-python3 - "$HOME" "$HOME/Desktop" >> "$LOG" 2>&1 <<'PY'
+python3 -I - "$HOME" "$HOME/Desktop" >> "$LOG" 2>&1 <<'PY'
 import os, re, sys
 
 removed = 0
@@ -138,7 +146,7 @@ for d in $legacy_dirs; do
     fi
 done
 if [ "$has_legacy" -eq 1 ]; then
-python3 - "$HOME" $legacy_dirs >> "$LOG" 2>&1 <<'PY'
+python3 -I - "$HOME" $legacy_dirs >> "$LOG" 2>&1 <<'PY'
 import os, sys
 
 home, names = sys.argv[1], sys.argv[2:]
@@ -167,7 +175,7 @@ fi
 # the old name - including one that just landed there from the legacy move
 # above - gets it renamed in place, merged the same non-destructive way.
 if [ -d "$HOME/.decurix/helptext" ] && [ ! -L "$HOME/.decurix/helptext" ]; then
-python3 - "$HOME/.decurix" >> "$LOG" 2>&1 <<'PY'
+python3 -I - "$HOME/.decurix" >> "$LOG" 2>&1 <<'PY'
 import os, sys
 
 decurix = sys.argv[1]
@@ -191,8 +199,10 @@ fi
 # xfce4, terminal) always has scheduling priority over background agent reasoning.
 # python3 -I, as the gate is (decurix-entrypoint.sh): no PYTHON* variable, no user site-packages, no .pth or
 # usercustomize.py in the worker's home, and not the working directory, is read - only /opt, which vm_server.py
-# puts on sys.path itself (review round 11).
-setsid nice -n 10 python3 -I /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
+# puts on sys.path itself (review round 11). By absolute path, with the container's PATH for its own commands and
+# where its token is (decurix-entrypoint.sh).
+/usr/bin/env PATH="$WORKER_PATH" DECURIX_AGENT_TOKEN_FILE="$AGENT_TOKEN_DIR/agent.token" \
+    /usr/bin/setsid /usr/bin/nice -n 10 /usr/bin/python3 -I /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 
@@ -201,20 +211,6 @@ echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 # this log) and runs in its own process meanwhile; the daemon exits after DECURIX_GUI_DAEMON_IDLE_MINUTES (10) with no
 # command, so an idle desktop carries none (docs/computer-use.md, "The gui daemon").
 
-# Broker mode (DECURIX_SCREEN_USER=1; docs/gate-boundary.md): the screen broker runs as the screen user and starts no
-# program but the browser; every other program a `gui` command opens is started here, as the worker, by the launch
-# helper (decurix_agent/computer/launch_helper.py), with this user's own environment. Exit 3: it cannot serve here.
-if [ "${DECURIX_SCREEN_USER:-}" = "1" ]; then
-    setsid sh -c '
-        cd / || exit 0
-        while :; do
-            PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" python3 -m decurix_agent.computer.launch_helper
-            [ $? -eq 3 ] && break
-            sleep 1
-        done
-    ' < /dev/null >> "$LOG" 2>&1 &
-    echo "[$(date)] launch helper started (loop pid $!)" >> "$LOG"
-fi
 
 # TheBot's soul is a persistent HTTP server thebot_harness.py talks to (see
 # decurix_agent/thebot_harness.py), so it must be running before any task
@@ -255,6 +251,36 @@ if [ -x /opt/soul ]; then
     # Embedded in Decurix: soul's acquired skills and coding harness stay off (owner decision O-8, review T-07/T-08).
     export THEBOT_STANDALONE=0
     export DOCLING_SCRIPT="/opt/thebot-scripts/docling_convert.py"
-    setsid nice -n 10 /opt/soul >> /tmp/thebot-soul.log 2>&1 < /dev/null &
+    /usr/bin/env PATH="$WORKER_PATH" DECURIX_AGENT_TOKEN_FILE="$AGENT_TOKEN_DIR/soul.token" \
+        /usr/bin/setsid /usr/bin/nice -n 10 /opt/soul >> /tmp/thebot-soul.log 2>&1 < /dev/null &
     echo "[$(date)] soul (TheBot) started as background daemon (pid $!)" >> "$LOG"
+fi
+
+# Both holders take their token before anything else of this user's starts (decurix-entrypoint.sh): each deletes its
+# file once it has made itself non-dumpable and read it. A file still there after 30 s is deleted unread; its holder
+# then has no token and refuses every call but its health check, rather than leave the token where the worker reads it.
+i=0
+while [ -e "$AGENT_TOKEN_DIR/agent.token" ] || [ -e "$AGENT_TOKEN_DIR/soul.token" ]; do
+    if [ $i -ge 300 ]; then
+        echo "[$(date)] a token was not taken in 30 s; deleted unread (its holder refuses every call)" >> "$LOG"
+        rm -f "$AGENT_TOKEN_DIR/agent.token" "$AGENT_TOKEN_DIR/soul.token"
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+
+# Broker mode (DECURIX_SCREEN_USER=1; docs/gate-boundary.md): the screen broker runs as the screen user and starts no
+# program but the browser; every other program a `gui` command opens is started here, as the worker, by the launch
+# helper (decurix_agent/computer/launch_helper.py), with this user's own environment. Exit 3: it cannot serve here.
+if [ "${DECURIX_SCREEN_USER:-}" = "1" ]; then
+    /usr/bin/env PATH="$WORKER_PATH" /usr/bin/setsid /bin/sh -c '
+        cd / || exit 0
+        while :; do
+            PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" python3 -m decurix_agent.computer.launch_helper
+            [ $? -eq 3 ] && break
+            sleep 1
+        done
+    ' < /dev/null >> "$LOG" 2>&1 &
+    echo "[$(date)] launch helper started (loop pid $!)" >> "$LOG"
 fi

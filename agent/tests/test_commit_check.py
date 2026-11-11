@@ -35,7 +35,7 @@ class Base(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         for p in (mock.patch.object(core, "FORM_CHECK_FILE", Path(tmp.name) / "form-check.json"),
                   mock.patch.object(core, "_unsourced_fields", lambda fields: []),
-                  mock.patch.object(core, "_ledger_check", lambda fields: None),
+                  mock.patch.object(core, "_ledger_check", lambda fields, **_: None),
                   mock.patch.object(core, "_relayed_page", lambda before: False)):
             p.start()
             self.addCleanup(p.stop)

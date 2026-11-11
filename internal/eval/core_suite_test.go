@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
@@ -107,6 +109,44 @@ func TestLearnV1SuiteLoads(t *testing.T) {
 				t.Errorf("%s: the fact %s is required %v; only its first case requires it", c.ID, f.ID, f.IsRequired())
 			}
 			seen[f.ID] = true
+		}
+	}
+	// A bill's save waits for the person's OK (the plan says so, the gate holds it): each bill case approves that one
+	// click and nothing else. And the lesson cannot be guessed: no bill's cost centre is written in its documents or in
+	// the app's earlier records, so a worker that has not been taught the rule has nothing to copy it from.
+	for _, c := range s.Cases {
+		if c.Kind != "doc_to_record" {
+			if len(c.Approves) != 0 {
+				t.Errorf("%s approves %+v; only a bill's save is approved", c.ID, c.Approves)
+			}
+			continue
+		}
+		if len(c.Approves) != 1 || c.Approves[0].Control != "Save bill" {
+			t.Errorf("%s approves %+v, not the bill form's save alone", c.ID, c.Approves)
+		}
+		recs, err := c.Expected.Graders[0].RecordList()
+		if err != nil || len(recs) != 1 {
+			t.Fatalf("%s: records %v %v", c.ID, recs, err)
+		}
+		centre := recs[0]["cost_centre"].S
+		if centre == "" {
+			t.Fatalf("%s grades no cost centre", c.ID)
+		}
+		for name, b := range c.Files {
+			if strings.Contains(string(b), centre) {
+				t.Errorf("%s: its %s writes the cost centre %s", c.ID, name, centre)
+			}
+		}
+		var fx struct {
+			Collections map[string][]map[string]any `json:"collections"`
+		}
+		if err := json.Unmarshal(c.Fixture, &fx); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range fx.Collections["bills"] {
+			if r["cost_centre"] == centre {
+				t.Errorf("%s: an earlier bill in the app is already in %s", c.ID, centre)
+			}
 		}
 	}
 }
@@ -302,6 +342,13 @@ func offlineOracle(t *testing.T, py string, s Suite, c Case) (Evidence, string) 
 	if c.Start.Mock != "" {
 		base, stateFile = startMock(t, py, s.MockSources[c.Start.Mock], c.Fixture)
 	}
+	// As curl does live: the request names the URL's own host (a mock may serve several apps by host name), and the
+	// solution's cookie jar (-b/-c) keeps a sign-in from one step to the next.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	for i, st := range c.Oracle {
 		switch st.Kind {
 		case StepAnswer:
@@ -320,7 +367,7 @@ func offlineOracle(t *testing.T, py string, s Suite, c Case) (Evidence, string) 
 			for j := 0; j < len(words); j++ {
 				if words[j] == "--data-urlencode" && j+1 < len(words) {
 					k, v, _ := strings.Cut(words[j+1], "=")
-					form.Set(k, v)
+					form.Add(k, v) // curl sends a repeated field once per --data-urlencode
 					j++
 				} else if strings.HasPrefix(words[j], "http://") {
 					target = words[j]
@@ -330,14 +377,24 @@ func offlineOracle(t *testing.T, py string, s Suite, c Case) (Evidence, string) 
 			if err != nil || base == "" {
 				t.Fatalf("%s: oracle step %d posts to %q", c.ID, i+1, target)
 			}
-			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-			resp, err := client.PostForm(base+u.Path, form)
+			endpoint := base + u.Path
+			if u.RawQuery != "" {
+				endpoint += "?" + u.RawQuery
+			}
+			req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 			if err != nil {
 				t.Fatal(err)
 			}
+			req.Host = u.Host
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusSeeOther {
-				t.Fatalf("%s: oracle step %d got %d from the mock", c.ID, i+1, resp.StatusCode)
+				t.Fatalf("%s: oracle step %d got %d from the mock: %s", c.ID, i+1, resp.StatusCode, body)
 			}
 		case strings.Contains(st.Line, "curl $MOCK_ROUTE") || strings.HasPrefix(st.Line, "office read "):
 			// A read the solution makes before it acts; nothing to change.

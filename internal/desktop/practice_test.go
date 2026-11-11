@@ -99,7 +99,10 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.netExists = true
 		_ = json.NewEncoder(w).Encode(map[string]string{"Id": "net1"})
 	case p == "/networks" && r.Method == "GET":
-		_ = json.NewEncoder(w).Encode([]map[string]string{{"Id": "net1", "Name": PracticeNetworkName}})
+		// One of this control plane's, one another's (OwnerLabel): cleanup removes only its own.
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"Id": "net1", "Name": PracticeNetworkName, "Labels": map[string]string{OwnerLabel: ownerID()}},
+			{"Id": "net-other", "Name": PracticeNetworkName, "Labels": map[string]string{OwnerLabel: "0123456789ab"}}})
 	case strings.HasPrefix(p, "/networks/") && r.Method == "DELETE":
 		w.WriteHeader(204)
 	case strings.HasPrefix(p, "/images/"):
@@ -166,7 +169,13 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"Id": ctr, "Config": map[string]any{"Labels": labels}, "State": map[string]any{"Running": true, "Paused": d.paused[ctr]}, "NetworkSettings": map[string]any{"Networks": map[string]any{PracticeNetworkName: map[string]string{"IPAddress": "172.30.0.5"}}}})
 	case p == "/containers/json":
-		_ = json.NewEncoder(w).Encode([]map[string]string{{"Id": "left-behind"}})
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"Id": "left-behind", "Labels": map[string]string{OwnerLabel: ownerID()}},
+			{"Id": "another-planes", "Labels": map[string]string{OwnerLabel: "0123456789ab"}},
+			{"Id": "made-before-owners"},
+			{"Id": "stale-mock-x1", "Labels": map[string]string{OwnerLabel: ownerID(), PracticeLabel: "true", "decurix-practice-run": "x1", "decurix-practice-mock": "true"}},
+			{"Id": "other-planes-mock-x1", "Labels": map[string]string{OwnerLabel: "0123456789ab", PracticeLabel: "true", "decurix-practice-run": "x1", "decurix-practice-mock": "true"}},
+			{"Id": "other-runs-mock", "Labels": map[string]string{OwnerLabel: ownerID(), PracticeLabel: "true", "decurix-practice-run": "y2", "decurix-practice-mock": "true"}}})
 	case strings.HasSuffix(p, "/exec") && strings.HasPrefix(p, "/containers/"):
 		var body struct {
 			User string
@@ -338,7 +347,7 @@ func TestCreatePracticeIsIsolated(t *testing.T) {
 		t.Fatal("inherited secret or host address leaked into a practice desktop")
 	}
 	flags := d.copiedTo["desk:/opt"]
-	if len(flags) != 2 || !strings.Contains(flags[0]["decurix-chromium.init"], "set -- '--host-resolver-rules=MAP app.example.test practice-mock:8000' \"$@\"") {
+	if len(flags) != 2 || !strings.Contains(flags[0]["decurix-chromium.init"], "set -- '--host-resolver-rules=MAP app.example.test practice-mock-x1:8000' \"$@\"") {
 		t.Fatalf("browser mapping not installed: %v", flags)
 	}
 	if flags[1]["decurix_agent/app.py"] != "x" {
@@ -398,6 +407,18 @@ func TestPracticeMockAndCollection(t *testing.T) {
 	if err != nil || mock != "mock" {
 		t.Fatal(err)
 	}
+	// A mock of the same run left from an earlier case is removed before the new one is made: they answer to one name, and a
+	// stale one took part of a later case's requests (found live 2026-11-10). Another run's or another plane's is left alone.
+	joined := strings.Join(d.calls, "\n")
+	removed, made := strings.Index(joined, "DELETE /containers/stale-mock-x1"), strings.Index(joined, "POST /containers/create")
+	if removed < 0 || made < 0 || removed > made {
+		t.Fatalf("the run's leftover mock was not removed before the new one: %s", joined)
+	}
+	for _, other := range []string{"other-planes-mock-x1", "other-runs-mock", "left-behind"} {
+		if strings.Contains(joined, "DELETE /containers/"+other) {
+			t.Fatalf("removed %s, which is not this run's mock on this plane: %s", other, joined)
+		}
+	}
 	// It is handed over only after it answered on its port: the wait runs in the mock, after its files are in
 	// (F-R3-1).
 	waited := false
@@ -415,8 +436,8 @@ func TestPracticeMockAndCollection(t *testing.T) {
 		t.Fatalf("mock boundary lost: %v", host)
 	}
 	aliases, _ := json.Marshal(cfg["NetworkingConfig"])
-	if !strings.Contains(string(aliases), PracticeMockAlias) {
-		t.Fatal("mock alias missing")
+	if !strings.Contains(string(aliases), `"`+PracticeMockHost("x1")+`"`) || strings.Contains(string(aliases), `"`+PracticeMockAlias+`"`) {
+		t.Fatalf("the mock is not under its run's own name: %s", aliases)
 	}
 	files := d.copiedTo["mock:/work"][0]
 	if files["mock_app.py"] != "print(1)" || files["fixture.json"] != `{"rows":[]}` {
@@ -506,6 +527,12 @@ func TestResetAndCleanupPractice(t *testing.T) {
 	if !strings.Contains(joined, "DELETE /containers/left-behind") || !strings.Contains(joined, "DELETE /networks/net1") {
 		t.Fatalf("cleanup incomplete: %s", joined)
 	}
+	// Another control plane's practice desktop and network, and a container that names no creator, are left alone.
+	for _, other := range []string{"/containers/another-planes", "/containers/made-before-owners", "/networks/net-other"} {
+		if strings.Contains(joined, "DELETE "+other) {
+			t.Fatalf("cleanup removed %s, which this control plane did not create: %s", other, joined)
+		}
+	}
 }
 
 // Every place the agent and soul keep state is under the folder the reset clears whole: the agent's DECURIX_DIR
@@ -589,5 +616,23 @@ func TestUnderFolderLeadsWithTheOwnedFolder(t *testing.T) {
 		if !strings.HasPrefix(n, ".decurix/") || strings.Contains(n, "..") {
 			t.Fatalf("entry escapes the folder: %v", names)
 		}
+	}
+}
+
+// TestEachRunsMockHasItsOwnName: two runs on the one practice network never share the name a desktop's browser asks
+// for (found live 2026-11-09: two control planes' evals at once, one fixed name, Docker's DNS spread requests over both
+// mocks), and a long run id still makes one DNS label.
+func TestEachRunsMockHasItsOwnName(t *testing.T) {
+	a, b := PracticeMockHost("e080746b94af1ba1c"), PracticeMockHost("eb4806653f0ee23e4")
+	if a == b || !strings.HasPrefix(a, PracticeMockAlias+"-") {
+		t.Fatalf("names %q and %q", a, b)
+	}
+	long := strings.Repeat("a", 64)
+	if got := PracticeMockHost(long); len(got) > 63 || got == PracticeMockHost(strings.Repeat("b", 64)) {
+		t.Fatalf("long run id gave %q", got)
+	}
+	flags, err := practiceBrowserFlags([]string{"books.example.test"}, "r2")
+	if err != nil || !strings.Contains(flags, "MAP books.example.test "+PracticeMockHost("r2")+":"+PracticeMockPort) {
+		t.Fatalf("flags %q, %v", flags, err)
 	}
 }

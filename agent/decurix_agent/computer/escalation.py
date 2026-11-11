@@ -43,6 +43,15 @@ from decurix_agent.computer.errors import ComputerError
 # engine, a timeout, prose instead of JSON, a choice outside the list, low
 # confidence. Each drops to the next rung; none of them acts.
 #
+# Plan rule 3, phase 2 (the second decision moved after the final check's):
+# each question is made of evidence (*_evidence: data only - the candidates,
+# the screen as the tools render it, the lines of text read off the frames),
+# worded by *_prompt and read by decide_*. With DECURIX_SOUL_ESCALATION=1
+# (soul_escalates, off by default) soul words and reads it instead
+# (agent/thebot internal/escalation, POST /api/llm/escalation), byte for byte
+# the same (agent/tests/test_escalation_parity.py); when soul cannot, the
+# question is today's.
+#
 # Approval is not on this ladder. The gate in core.act is not something a
 # ladder may climb over - a step it guards is either found strictly or asked
 # about, and a grant is still a person's yes, fingerprinted to one action.
@@ -99,6 +108,33 @@ POINT_SYSTEM = (
 
 JSON_OBJECT = re.compile(r"\{.*?\}", re.DOTALL)
 
+# The ladder's questions, each its purpose's last part (py.escalation.<kind>).
+GROUND, JUDGE, DETOUR, POINT = "ground", "judge", "detour", "point"
+PURPOSE = "py.escalation."
+
+# What a choice among numbered things says (ground, point): taken; in the list but not sure enough; none of them.
+CHOSEN, DOUBT, NONE = "chosen", "doubt", "none"
+# What the detour question says: leave the steps out; they are still needed; cannot tell.
+SKIP, KEEP, UNSURE = "skip", "keep", "unsure"
+
+# The bounds of what a prompt shows: the typed pairs, a screen's OCR text, a detour's reason kept for the trail.
+TYPED_SHOWN = 3
+OCR_CHARS = 700
+REASON_CHARS = 80
+
+
+def soul_escalates():
+    """
+    Whether soul words the ladder's questions and reads their answers (plan rule 3, phase 2: DECURIX_SOUL_ESCALATION=1,
+    off by default; read for each run's ladder, skill_task._ladder). Then the ladder hands soul each question's evidence
+    as data at /api/llm/escalation (agent/thebot internal/escalation: the same prompt, byte for byte, and the same
+    reading of the answer), and Python keeps the tools: ranking the candidates, rendering the screen, reading the
+    frames. When soul cannot (not running, an older image, a refusal), the question is today's: this module's prompt
+    and decide_*, through harness.ask_model.
+    """
+
+    return os.environ.get("DECURIX_SOUL_ESCALATION", "").strip() == "1"
+
 
 def parse_reply(text):
     """The JSON object in a model's reply, or None: models wrap it in prose and fences."""
@@ -106,7 +142,7 @@ def parse_reply(text):
     for found in JSON_OBJECT.finditer(text or ""):
         try:
             value = json.loads(found.group(0))
-        except ValueError:
+        except (ValueError, RecursionError):  # nested past Python's limit is no answer, never a crash
             continue
         if isinstance(value, dict):
             return value
@@ -118,8 +154,177 @@ def _confidence(value):
     try:
         confidence = float(value)
         return max(0.0, min(1.0, confidence)) if math.isfinite(confidence) else 0.0
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # float() of an int past a float's range is no number
         return 0.0
+
+
+def _choice(answer):
+    """int(answer.get("choice") or 0): 0 for anything int() refuses - an infinity included (OverflowError), which once
+    escaped the ladder."""
+
+    try:
+        return int(answer.get("choice") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _pick(text, count, enough):
+    """A choice among `count` numbered things read from the answer: its number (0 when none of them), confidence and
+    verdict against the least confidence that is `enough`."""
+
+    answer = parse_reply(text) or {}
+    choice = _choice(answer)
+    confidence = _confidence(answer.get("confidence"))
+    if not 1 <= choice <= count:
+        return {"choice": 0, "confidence": confidence, "verdict": NONE}
+    return {"choice": choice, "confidence": confidence, "verdict": CHOSEN if confidence >= enough else DOUBT}
+
+
+def decide_ground(text, evidence):
+    """The grounding answer read: which candidate, how sure (soul's internal/escalation DecideGround)."""
+
+    return _pick(text, len(evidence["candidates"]), GROUND_CONFIDENCE)
+
+
+def decide_point(text, evidence):
+    """Which line on the screen now a point click goes to, read from the answer (DecidePoint)."""
+
+    return _pick(text, len(evidence["lines"]), GROUND_CONFIDENCE)
+
+
+def decide_judge(text, evidence=None):
+    """Whether the step did its job: achieved only for a JSON true given with JUDGE_CONFIDENCE (DecideJudge)."""
+
+    answer = parse_reply(text) or {}
+    confidence = _confidence(answer.get("confidence"))
+    return {"achieved": answer.get("achieved") is True and confidence >= JUDGE_CONFIDENCE, "confidence": confidence}
+
+
+def decide_detour(text, evidence=None):
+    """Whether the steps may be left out: skip for a JSON true, keep for a JSON false, each given with
+    DETOUR_CONFIDENCE; unsure otherwise; and the reason given (DecideDetour)."""
+
+    answer = parse_reply(text) or {}
+    confidence = _confidence(answer.get("confidence"))
+    sure = confidence >= DETOUR_CONFIDENCE
+    verdict = (SKIP if answer.get("skip") is True and sure else KEEP if answer.get("skip") is False and sure
+               else UNSURE)
+    return {"verdict": verdict, "confidence": confidence, "reason": str(answer.get("reason") or "")[:REASON_CHARS]}
+
+
+def _typing(typed):
+    """What the recording typed and what this run typed instead, the first TYPED_SHOWN pairs."""
+
+    return "".join(f"The recording typed {el._quote(was, 80)}; this run typed {el._quote(now, 80)}.\n"
+                   for was, now in typed[:TYPED_SHOWN])
+
+
+def _task(goal):
+    return f"Task: {goal}\n" if goal else ""
+
+
+def ground_prompt(ev):
+    """The grounding question (soul's GroundPrompt, byte for byte)."""
+
+    lines = [f"{n}. {c['role']} {el._quote(c['name'])}" + (" [disabled]" if c["disabled"] else "")
+             for n, c in enumerate(ev["candidates"], 1)]
+    return (
+        _task(ev["goal"])
+        + f"Step {ev['step']}" + (f" of {ev['total']}" if ev["total"] else "") + f": {ev['summary']}\n"
+        + f"Recorded control: {ev['role']} {el._quote(ev['name'])}\n"
+        # What the person said the step is (learning, study._aim_spots): a control they named in their own words
+        # ("the Save button") is often labelled otherwise on the screen.
+        + (f"What the person said this step is for: {' '.join(ev['intent'].split())[:400]}\n" if ev["intent"] else "")
+        + f"Window now: {el._quote(ev['window'], 80)}\n"
+        + (f"In front: {', '.join(el._quote(n, 60) for n in ev['front'])}\n" if ev["front"] else "")
+        + "Candidates:\n" + "\n".join(lines)
+    )
+
+
+def judge_prompt(ev):
+    """The judging question (soul's JudgePrompt)."""
+
+    return (
+        _task(ev["goal"])
+        + f"Step {ev['step']}: {ev['summary']}\n"
+        + "It was recorded to leave: " + "; ".join(ev["missing"]) + "\n"
+        + f"The screen now:\n{ev['screen']}"
+    )
+
+
+def _ocr(texts):
+    return ocr.text([{"text": t} for t in texts], OCR_CHARS)
+
+
+def detour_prompt(ev):
+    """The detour question (soul's DetourPrompt)."""
+
+    return (
+        _task(ev["goal"]) + _typing(ev["typed"])
+        + f"The run is at step {ev['step']}: {ev['summary']}\n"
+        + f"The recording's screen at step {ev['step']}:\n{_ocr(ev['here'])}\n\n"
+        + f"The recording's screen at step {ev['later_step']} ({ev['later_summary']}):\n{_ocr(ev['there'])}\n\n"
+        + f"The screen now:\n{_ocr(ev['now'])}"
+    )
+
+
+def point_prompt(ev):
+    """The question where a point click goes (soul's PointPrompt)."""
+
+    context = "\n".join(("> " if l["clicked"] else "  ") + l["text"][:120] for l in ev["context"])
+    return (
+        _task(ev["goal"]) + _typing(ev["typed"])
+        + (f"The person explained the task: {ev['explanation'][:600]}\n" if ev["explanation"] else "")
+        + f"Step {ev['step']}: {ev['summary']}\n"
+        + (f"What the person said this step is for: {ev['intent']}\n" if ev["intent"] else "")
+        + f"When recorded, the person clicked the line marked >:\n{context}\n\n"
+        + "Lines on the screen now:\n"
+        + "\n".join(f"{n}. {text[:120]}" for n, text in enumerate(ev["lines"], 1))
+    )
+
+
+SYSTEMS = {GROUND: GROUND_SYSTEM, JUDGE: JUDGE_SYSTEM, DETOUR: DETOUR_SYSTEM, POINT: POINT_SYSTEM}
+PROMPTS = {GROUND: ground_prompt, JUDGE: judge_prompt, DETOUR: detour_prompt, POINT: point_prompt}
+DECIDE = {GROUND: decide_ground, JUDGE: decide_judge, DETOUR: decide_detour, POINT: decide_point}
+
+
+def _number(value):
+    """A confidence soul gave, as a float, or ValueError: a number from 0 to 1, never a bool or a NaN."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"soul's confidence is not one: {value!r}"[:200])
+    return float(value)
+
+
+def from_soul(kind, decision, evidence):
+    """
+    Soul's decision (internal/escalation Decide) in decide_*'s shape, or ValueError for one that is not of it or does
+    not hold together (a choice outside the list, a verdict its confidence does not carry): the ladder then reads it as
+    an engine that could not be asked - fail closed, nothing made up here.
+    """
+
+    if not isinstance(decision, dict):
+        raise ValueError("soul's decision is not an object")
+    confidence = _number(decision.get("confidence"))
+    if kind in (GROUND, POINT):
+        count = len(evidence["candidates" if kind == GROUND else "lines"])
+        choice, verdict = decision.get("choice"), decision.get("verdict")
+        if isinstance(choice, bool) or not isinstance(choice, int) or not 0 <= choice <= count:
+            raise ValueError(f"soul's choice is not one of the {count}: {choice!r}"[:200])
+        expected = NONE if choice == 0 else CHOSEN if confidence >= GROUND_CONFIDENCE else DOUBT
+        if verdict != expected:
+            raise ValueError(f"soul's verdict {verdict!r} is not its choice's"[:200])
+        return {"choice": choice, "confidence": confidence, "verdict": verdict}
+    if kind == JUDGE:
+        achieved = decision.get("achieved")
+        if not isinstance(achieved, bool) or (achieved and confidence < JUDGE_CONFIDENCE):
+            raise ValueError(f"soul's judgement is not one: {json.dumps(decision)[:200]}")
+        return {"achieved": achieved, "confidence": confidence}
+    verdict, reason = decision.get("verdict"), decision.get("reason")
+    if (verdict not in (SKIP, KEEP, UNSURE) or not isinstance(reason, str) or len(reason) > REASON_CHARS
+            or (verdict != UNSURE and confidence < DETOUR_CONFIDENCE)):
+        raise ValueError(f"soul's detour decision is not one: {json.dumps(decision)[:200]}")
+    return {"verdict": verdict, "confidence": confidence, "reason": reason}
 
 
 def _front(observation):
@@ -136,8 +341,11 @@ class Ladder:
     experience.commit).
     """
 
-    def __init__(self, ask_model=None, goal="", total=0, model_calls=None, explanation=""):
+    def __init__(self, ask_model=None, goal="", total=0, model_calls=None, explanation="", ask_decided=None):
         self.ask_model = ask_model
+        # ask_decided(system, prompt, evidence, *, purpose) -> (text, decision or None): a question soul may word and
+        # read itself (soul_escalates; skill_task._ask_decided). None, and every question is today's (ask_model).
+        self.ask_decided = ask_decided
         self.goal = goal
         # What the person who taught the skill explained in their own words (learning._answer_explain).
         self.explanation = explanation or ""
@@ -252,6 +460,45 @@ class Ladder:
     def _may_ground(self, step):
         return self.ask_model is not None and self.calls_left > 0 and not healing.strict(step)
 
+    def _consult(self, kind, evidence, prompt):
+        """
+        One question to the engine: decide_*'s decision of its answer. With ask_decided (DECURIX_SOUL_ESCALATION) soul
+        is handed the evidence and may answer with its own decision (from_soul checks it); when it does not, the
+        prompt - today's - was asked instead and its answer is read here. Raises as ask_model raises.
+        """
+
+        purpose = PURPOSE + kind
+        if self.ask_decided is not None:
+            text, decision = self.ask_decided(SYSTEMS[kind], prompt, evidence, purpose=purpose)
+            if decision is not None:
+                return from_soul(kind, decision, evidence)
+        else:
+            text = self.ask_model(SYSTEMS[kind], prompt, purpose=purpose)
+        return DECIDE[kind](text, evidence)
+
+    def _ground_evidence(self, step, observation, ranked):
+        """What the grounding question is shown, as data (internal/escalation GroundEvidence)."""
+
+        target = step.get("target") or {}
+        return {
+            "goal": f"{self.goal}" if self.goal else "",
+            "step": f"{step['n']}",
+            "total": f"{self.total}" if self.total else "",
+            "summary": f"{step.get('summary', '')}",
+            "role": f"{target.get('role', 'control')}",
+            "name": str(target.get("name") or ""),
+            "intent": str(step["intent"]) if step.get("intent") else "",
+            "window": str(observation.get("active_title") or ""),
+            "front": [str(n) for n in _front(observation)],
+            "candidates": [{"role": f"{c['element'].get('role')}", "name": str(c["element"].get("name") or ""),
+                            "disabled": "disabled" in (c["element"].get("states") or [])} for c in ranked],
+        }
+
+    def _typed(self):
+        """What the recording typed and what this run typed instead, as text pairs."""
+
+        return [[str(was), str(now)] for was, now in self.typed]
+
     def _asked(self, ranked, reason):
         options = [{"n": n, "role": c["element"].get("role"), "name": c["element"].get("name"),
                     "ref": c["element"].get("ref"), "path": c["element"].get("path"), "score": c["score"]}
@@ -264,43 +511,20 @@ class Ladder:
 
         self.calls_left -= 1
         self.model_calls += 1
-        target = step.get("target") or {}
-        window = el._quote(observation.get("active_title") or "", 80)
-
-        lines = [f"{n}. {c['element'].get('role')} {el._quote(c['element'].get('name') or '')}"
-                 + (" [disabled]" if "disabled" in (c["element"].get("states") or []) else "")
-                 for n, c in enumerate(ranked, 1)]
-        front = _front(observation)
-
-        prompt = (
-            (f"Task: {self.goal}\n" if self.goal else "")
-            + f"Step {step['n']}" + (f" of {self.total}" if self.total else "") + f": {step.get('summary', '')}\n"
-            + f"Recorded control: {target.get('role', 'control')} {el._quote(target.get('name') or '')}\n"
-            # What the person said the step is (learning, study._aim_spots): a control they named in their own words
-            # ("the Save button") is often labelled otherwise on the screen.
-            + (f"What the person said this step is for: {' '.join(str(step['intent']).split())[:400]}\n"
-               if step.get("intent") else "")
-            + f"Window now: {window}\n"
-            + (f"In front: {', '.join(el._quote(n, 60) for n in front)}\n" if front else "")
-            + "Candidates:\n" + "\n".join(lines)
-        )
+        evidence = self._ground_evidence(step, observation, ranked)
+        prompt = ground_prompt(evidence)
 
         try:
-            answer = parse_reply(self.ask_model(GROUND_SYSTEM, prompt, purpose="py.escalation.ground"))
+            decided = self._consult(GROUND, evidence, prompt)
         except Exception as exc:
             self.trail.append(f"the engine could not be asked ({str(exc)[:80]})")
             return None
 
-        try:
-            choice = int((answer or {}).get("choice") or 0)
-        except (TypeError, ValueError):
-            choice = 0
-        confidence = _confidence((answer or {}).get("confidence"))
-
-        if not 1 <= choice <= len(ranked):
+        choice, confidence = decided["choice"], decided["confidence"]
+        if decided["verdict"] == NONE:
             self.trail.append("the engine was not sure which")
             return None
-        if confidence < GROUND_CONFIDENCE:
+        if decided["verdict"] == DOUBT:
             self.trail.append(f"the engine leaned to {healing.describe(ranked[choice - 1])} but only at {confidence:.2f}")
             return None
 
@@ -326,20 +550,16 @@ class Ladder:
         except Exception:
             return False
 
-        prompt = (
-            (f"Task: {self.goal}\n" if self.goal else "")
-            + f"Step {step['n']}: {step.get('summary', '')}\n"
-            + "It was recorded to leave: " + "; ".join(missing) + "\n"
-            + f"The screen now:\n{screen}"
-        )
+        evidence = {"goal": f"{self.goal}" if self.goal else "", "step": f"{step['n']}",
+                    "summary": f"{step.get('summary', '')}", "missing": list(missing), "screen": screen}
+        prompt = judge_prompt(evidence)
 
         try:
-            answer = parse_reply(self.ask_model(JUDGE_SYSTEM, prompt, purpose="py.escalation.judge")) or {}
+            achieved = self._consult(JUDGE, evidence, prompt)["achieved"]
         except Exception as exc:
             self.trail.append(f"the engine could not be asked to judge step {step['n']} ({str(exc)[:80]})")
             return False
 
-        achieved = answer.get("achieved") is True and _confidence(answer.get("confidence")) >= JUDGE_CONFIDENCE
         self.trail.append(f"the engine {'accepted' if achieved else 'would not vouch for'} step {step['n']}")
 
         if achieved:
@@ -348,10 +568,6 @@ class Ladder:
         return achieved
 
     # -- when the screen is not the recording's ---------------------------
-
-    def _typing(self):
-        return "".join(f"The recording typed {el._quote(was, 80)}; this run typed {el._quote(now, 80)}.\n"
-                       for was, now in self.typed[:3])
 
     def detour(self, steps, index, now, screen_of):
         """
@@ -375,23 +591,23 @@ class Ladder:
         if self.ask_model is not None and self.calls_left > 0 and all(texts):
             self.calls_left -= 1
             self.model_calls += 1
-            prompt = (
-                (f"Task: {self.goal}\n" if self.goal else "") + self._typing()
-                + f"The run is at step {first['n']}: {first.get('summary', '')}\n"
-                + f"The recording's screen at step {first['n']}:\n{ocr.text(texts[0], 700)}\n\n"
-                + f"The recording's screen at step {then['n']} ({then.get('summary', '')}):\n{ocr.text(texts[1], 700)}\n\n"
-                + f"The screen now:\n{ocr.text(texts[2], 700)}"
-            )
+            evidence = {
+                "goal": f"{self.goal}" if self.goal else "", "typed": self._typed(),
+                "step": f"{first['n']}", "summary": f"{first.get('summary', '')}",
+                "later_step": f"{then['n']}", "later_summary": f"{then.get('summary', '')}",
+                "here": [l["text"] for l in texts[0]], "there": [l["text"] for l in texts[1]],
+                "now": [l["text"] for l in texts[2]],
+            }
+            prompt = detour_prompt(evidence)
             try:
-                answer = parse_reply(self.ask_model(DETOUR_SYSTEM, prompt, purpose="py.escalation.detour")) or {}
+                decided = self._consult(DETOUR, evidence, prompt)
             except Exception as exc:
                 self.trail.append(f"the engine could not be asked about {span} ({str(exc)[:80]})")
-                answer = {}
-            sure = _confidence(answer.get("confidence")) >= DETOUR_CONFIDENCE
-            if answer.get("skip") is True and sure:
+                decided = {"verdict": UNSURE, "confidence": 0.0, "reason": ""}
+            if decided["verdict"] == SKIP:
                 verdict = "the engine agreed"
-            elif answer.get("skip") is False and sure:
-                self.trail.append(f"the engine said {span} are still needed ({str(answer.get('reason') or '')[:80]})")
+            elif decided["verdict"] == KEEP:
+                self.trail.append(f"the engine said {span} are still needed ({decided['reason']})")
                 return None
 
         if verdict is None:
@@ -479,30 +695,24 @@ class Ladder:
 
         self.calls_left -= 1
         self.model_calls += 1
-        context = "\n".join(("> " if l is clicked else "  ") + l["text"][:120] for l in around)
-        prompt = (
-            (f"Task: {self.goal}\n" if self.goal else "") + self._typing()
-            + (f"The person explained the task: {self.explanation[:600]}\n" if self.explanation else "")
-            + f"Step {step['n']}: {step.get('summary', '')}\n"
-            + (f"What the person said this step is for: {step['intent']}\n" if step.get("intent") else "")
-            + f"When recorded, the person clicked the line marked >:\n{context}\n\n"
-            + "Lines on the screen now:\n"
-            + "\n".join(f"{n}. {l['text'][:120]}" for n, l in enumerate(lines, 1))
-        )
+        evidence = {
+            "goal": f"{self.goal}" if self.goal else "", "typed": self._typed(),
+            "explanation": self.explanation if self.explanation else "",
+            "step": f"{step['n']}", "summary": f"{step.get('summary', '')}",
+            "intent": f"{step['intent']}" if step.get("intent") else "",
+            "context": [{"text": l["text"], "clicked": l is clicked} for l in around],
+            "lines": [l["text"] for l in lines],
+        }
+        prompt = point_prompt(evidence)
 
         try:
-            answer = parse_reply(self.ask_model(POINT_SYSTEM, prompt, purpose="py.escalation.point")) or {}
+            decided = self._consult(POINT, evidence, prompt)
         except Exception as exc:
             self.trail.append(f"the engine could not be asked where step {step['n']} clicks ({str(exc)[:80]})")
             return None
 
-        try:
-            choice = int(answer.get("choice") or 0)
-        except (TypeError, ValueError):
-            choice = 0
-        confidence = _confidence(answer.get("confidence"))
-
-        if not 1 <= choice <= len(lines) or confidence < GROUND_CONFIDENCE:
+        choice, confidence = decided["choice"], decided["confidence"]
+        if decided["verdict"] != CHOSEN:
             self.trail.append(f"the engine was not sure where step {step['n']} clicks now")
             return None
 

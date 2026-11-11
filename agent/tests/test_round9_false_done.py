@@ -20,8 +20,8 @@ import config_stub  # noqa: F401
 
 import test_skills as ts  # noqa: E402
 
-from decurix_agent import (guidance, llm_client, long_task, person_record, skill_task, state, task_context,  # noqa: E402
-                           verify)
+from decurix_agent import (final_gate, guidance, llm_client, long_task, person_record, skill_task, state,  # noqa: E402
+                           task_context, verify)
 from decurix_agent.computer import core, evidence, records  # noqa: E402
 from decurix_agent.computer.errors import ComputerError  # noqa: E402
 
@@ -154,7 +154,7 @@ class TheFinalGate(ts.TeachingBase):
                   mock.patch.object(skill_task.verify, "judge",
                                     side_effect=AssertionError("the judge decides nothing code has decided")),
                   mock.patch.object(skill_task.evidence, "live", lambda scale=1: b"now"),
-                  mock.patch.object(skill_task, "_did_screen_work", lambda: True),
+                  mock.patch.object(final_gate, "_did_screen_work", lambda: True),
                   mock.patch.object(skill_task, "_engine_can_drive", lambda: False)):
             p.start()
             self.addCleanup(p.stop)
@@ -240,8 +240,8 @@ class B_AReplyThatSettlesNothing(ts.TeachingBase):
         skill_task._rechecks.clear()
         with mock.patch.object(skill_task, "write_final_reply",
                                lambda text, kind="final", engine=None, **k: made_again.append((text, kind))), \
-                mock.patch.object(skill_task, "_retry_engine", side_effect=AssertionError("the work was run again")), \
-                mock.patch.object(skill_task, "_done_reading",
+                mock.patch.object(final_gate, "_retry_engine", side_effect=AssertionError("the work was run again")), \
+                mock.patch.object(final_gate, "_done_reading",
                                   lambda reply, doubt="": {"choice": "unclear", "instruction": ""}), \
                 mock.patch.object(skill_task, "_engine_can_drive", lambda: True):
             skill_task._confirm_reply(paused, "I don't know that. Use what you have, or stop and say what is missing.")
@@ -252,8 +252,8 @@ class B_AReplyThatSettlesNothing(ts.TeachingBase):
         state.current_task = "Enter bill.pdf"
         paused = {"mode": "confirm", "run": None, "claim": "Saved.", "engine": "thebot", "task": "Enter bill.pdf",
                   "verdict": {"verdict": verify.UNSURE, "seen": "the total is not shown", "why": "not sure"}}
-        with mock.patch.object(skill_task, "_retry_engine", lambda guided, note: retried.append(note)), \
-                mock.patch.object(skill_task, "_done_reading",
+        with mock.patch.object(final_gate, "_retry_engine", lambda guided, note: retried.append(note)), \
+                mock.patch.object(final_gate, "_done_reading",
                                   lambda reply, doubt="": {"choice": "correction", "instruction": "the total is wrong"}), \
                 mock.patch.object(skill_task, "_engine_can_drive", lambda: True):
             skill_task._confirm_reply(paused, "the total is wrong")

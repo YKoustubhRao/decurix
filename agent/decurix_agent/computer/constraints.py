@@ -1,5 +1,10 @@
 import re
 
+# The item of a list for a document that shows that field's place empty (binding.left_blank holds it to the document):
+# no value of the field's kind, and none is typed (skills.expand), so no constraint is broken by it. One text for
+# binding, skills and here.
+EMPTY_ITEM = "(empty)"
+
 
 # ============================================================
 # Parameter constraints: what a value has to look like
@@ -126,7 +131,9 @@ def violations(params, values, split=None):
 
         if param.get("list") and split is not None and value:
             for n, item in enumerate(split(value), 1):
-                why = problem(param.get("constraint"), item)
+                # (Found live 2026-11-09: an inter-state bill's "(empty)" CGST was refused as "not a number", the run
+                # asked a person for it, and a correct month was refused before its first step.)
+                why = None if item == EMPTY_ITEM else problem(param.get("constraint"), item)
                 if why:
                     found.append((param, f"item {n} ({why})"))
                     break

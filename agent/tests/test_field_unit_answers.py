@@ -157,6 +157,70 @@ class AskedOnceInTheTask(Base):
         self.assertIsNone(unit_answers.question(TASK))
 
 
+class TheSourcesUnitIsKept(Base):
+    """Owner decision (2026-11-08): a figure declared bare keeps the unit what backs it writes it with. Found live: a
+    note said "18%", the record's Rate was declared "18", the save compared 18 with the field's 18 and the unit question
+    never came."""
+
+    def setUp(self):
+        super().setUp()
+        for p in (mock.patch.object(records, "LEDGER_DIR", self.root / "ledger"),
+                  mock.patch("decurix_agent.computer.evidence.read", lambda task_id=None: ""),
+                  mock.patch("decurix_agent.computer.evidence.looks", lambda task_id=None: []),
+                  mock.patch.object(records, "_selects", lambda *a, **k: []),
+                  mock.patch.object(records, "resolved_names", lambda *a, **k: [])):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def declare(self, note, fields=None):
+        path = self.root / "note.txt"
+        path.write_text(note, encoding="utf-8")
+        return records.declare("GST 18", str(path), fields or {"Rate": "18"})
+
+    def test_a_bare_figure_from_a_note_that_says_18_percent_reaches_the_unit_question(self):
+        rec, lines = self.declare("Tax template: Output GST\nGST on every line at 18%.\n")
+        self.assertEqual(rec["fields"]["Rate"], {"intent": "18%", "from": "source"})
+        self.assertTrue(any("Rate=18%" in l for l in lines))
+        blocking = records.presave(rec, [("Rate", "18")])[0]
+        self.assertEqual(len(blocking), 1)
+        self.assertIn("this needs the person", blocking[0])
+        q = unit_answers.question(TASK)
+        self.assertEqual((q["label"], q["unit"]), ("Rate", "%"))
+
+    def test_the_request_backs_a_unit_too(self):
+        with mock.patch.object(task_context, "current_request", lambda: "Make the tax template at 18% GST."):
+            rec, _ = self.declare("Tax template: Output GST\n")
+        self.assertEqual(rec["fields"]["Rate"], {"intent": "18%", "from": "seen", "backed_by": "the request"})
+
+    def test_a_source_with_no_unit_is_unchanged(self):
+        rec, _ = self.declare("Tax template: Output GST\nRate: 18\n")
+        self.assertEqual(rec["fields"]["Rate"]["intent"], "18")
+        self.assertEqual(records.presave(rec, [("Rate", "18")])[0], [])
+        self.assertIsNone(unit_answers.question(TASK))
+
+    def test_a_unit_in_the_fields_label_settles_it_as_before(self):
+        rec, _ = self.declare("Tax template: Output GST\nGST on every line at 18%.\n")
+        self.assertEqual(records.presave(rec, [("Rate (%)", "18")])[0], [])
+        self.assertIsNone(unit_answers.question(TASK))
+
+    def test_a_figure_written_both_bare_and_with_a_unit_is_refused_once_with_both_shown(self):
+        note = "Tax template: Output GST\nLines: 18\nRate: 18%\n"
+        with self.assertRaises(records.ComputerError) as caught:
+            self.declare(note)
+        self.assertIn("'18%'", str(caught.exception))
+        self.assertIn("'18'", str(caught.exception))
+        rec, _ = self.declare(note)  # declared bare again, with both shown: the worker's choice
+        self.assertEqual(rec["fields"]["Rate"]["intent"], "18")
+        rec, _ = self.declare(note, {"Rate": "18%"})
+        self.assertEqual(rec["fields"]["Rate"]["intent"], "18%")
+
+    def test_a_figure_only_ever_written_with_two_units_is_refused_every_time(self):
+        note = "Weight: 18 kg\nRate: 18%\n"
+        for _ in range(2):
+            with self.assertRaises(records.ComputerError):
+                self.declare(note)
+
+
 class KeptForTheNextTask(Base):
     def row(self, **change):
         row = {"label": "Rate", "host": HOST, "form": FORM, "unit": "%", "takes": True, "source_text": "1",

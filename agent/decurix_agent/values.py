@@ -28,6 +28,15 @@ and the other does not, the answer is None - never a match of their punctuation-
 exception: a value written with a leading "+" and a 1-3 digit country code, a space or a dash, then a national number
 of at least seven digits (the E.164 shape), equals the same national number.
 
+Precision: by default two figures are one only when equal. `compare(..., precision=True)` (and `within_precision`, for
+figures already read) is the one deliberate tolerance: a figure written rounded is the precise figure it rounds -
+equal within half the last written place of the coarser one (a kept cell and its computed value, a memo's "5.3 lakh"
+and the source's 531,169). `same_figure(..., a_computed=True)`: a value worked out (a product, a sum, a formula's
+result) claims no precision of its own, so only the written side's counts. A stored number's place is its shortest
+written form's (a whole one is written to the unit); a float's own noise (1e-6) is aside. Every caller that compares
+figures so asks here (review round 2: stage_checks, provenance and stage_facts each had their own slack - 0.011, half
+a place plus 0.005).
+
 Text: NFKC, case folded, whitespace collapsed; every letter, mark and digit of every script kept, punctuation aside;
 a short code in brackets at the end of an option's label ("Karnataka (29)") aside.
 """
@@ -170,8 +179,66 @@ def parse_number(value):
     return found.sign * found.magnitude
 
 
-def _same_amount(a, b, field_units=()):
-    if a.magnitude != b.magnitude or a.sign != b.sign:
+def step_of(magnitude):
+    """How finely a figure is written: 0.01 for 12.50, 1 for 1250 (a Decimal read from its written digits)."""
+
+    exponent = Decimal(magnitude).as_tuple().exponent
+    return Decimal(1).scaleb(exponent) if isinstance(exponent, int) and exponent < 0 else Decimal(1)
+
+
+# A float's own noise: 0.1 + 0.2 is 0.30000000000000004, and a sheet's computed cell carries the like.
+_FLOAT_NOISE = Decimal("0.000001")
+
+
+def within_precision(va, sa, vb, sb):
+    """Whether two figures read as (value, step) are one at the coarser of their written precisions: within half its
+    last place (and a float's noise). The one rule for a figure written rounded against the precise one."""
+
+    return abs(Decimal(va) - Decimal(vb)) <= max(Decimal(sa), Decimal(sb)) / 2 + _FLOAT_NOISE
+
+
+def figure(value):
+    """(Decimal value, step) of a number as given - an int, a float (its shortest written form), a Decimal, or a text
+    parse_number reads - else None. A bool is no figure."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)  # (a stored 1180.0 is written 1180: whole, its last place the unit)
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            d = Decimal(str(value))
+        except InvalidOperation:
+            return None
+        if not d.is_finite():
+            return None
+        return d, step_of(d)
+    found = parse_amount(value)
+    if not isinstance(found, Amount) or found.unit:
+        return None
+    return found.sign * found.magnitude, step_of(found.magnitude)
+
+
+def same_figure(a, b, precision=True, a_computed=False):
+    """
+    Whether two numbers (as `figure` reads them) are one; None when either is no number.
+      - precision True: within the coarser written precision (within_precision).
+      - a_computed: `a` is a value worked out (a product, a sum, a formula's result), whose own form claims no
+        precision: only `b`'s written precision counts - 1392.4 gives a result written 1392, never one written 1392.04.
+      - precision False: equal, a float's noise aside (two figures each read as written, or two worked out).
+    """
+
+    fa, fb = figure(a), figure(b)
+    if fa is None or fb is None:
+        return None
+    if not precision:
+        return abs(fa[0] - fb[0]) <= _FLOAT_NOISE
+    return within_precision(fa[0], 0 if a_computed else fa[1], fb[0], fb[1])
+
+
+def _same_amount(a, b, field_units=(), precision=False):
+    if a.sign != b.sign or a.magnitude != b.magnitude and not (
+            precision and within_precision(a.magnitude, step_of(a.magnitude), b.magnitude, step_of(b.magnitude))):
         return Result(False, "number")
     if a.currency and b.currency and a.currency != b.currency:
         return Result(False, "currency")
@@ -203,6 +270,48 @@ def field_units(label):
         return frozenset()
     text = re.sub(r"[^\W_]+(?:\s*(?:/|,|\bor\b)\s*[^\W_]+)+", " ", text)
     return frozenset(re.findall(r"%|[^\W\d_]+", text))
+
+
+# A figure a text writes as a token of its own: not inside a longer number, a date, a time, a code or a word.
+_FIGURE_IN_TEXT = re.compile(r"(?<![\w.,/\-])(?<!\d:)\d[\d,]*(?:\.\d+)?(?![\w/\-]|[.,]\d)")
+# What opens a value of its own just before a figure, on its line: the line's start, a table's cell, a label's ":"/"=".
+_VALUE_OPENS = re.compile(r"(?:^|[|\t:=]| {2})[ \t]*$")
+# One word right after a figure that closes the value: the end of the line or of a table's cell, or a comma/semicolon.
+_UNIT_WORD = re.compile(r"[ \t]+[^\W\d_]{1,12}\.?(?=[ \t]*(?:[\r\n|,;]|$)|\t| {2})")
+
+
+def units_beside(value, text):
+    """
+    For each place `text` writes the figure `value` writes (by value, however grouped), the unit parse_amount reads
+    beside it there and how it is written there, as (unit, written): ("%", "18%"), and ("", "18") for a place that
+    writes it bare. [] when `value` is no plain figure or the text never writes it. A percent sign is a unit wherever
+    it stands ("GST @ 18%", "18 %"); a word only where the figure and the word make a whole value of their own - a
+    table's cell, or a label's value to the end of its line ("Weight: 15 kg", "| 18 Nos |") - never a word a sentence
+    runs on with ("came to 18 today"). Structure only, never a list of units (2026-11-08: a note's "18%" declared as
+    a bare 18 settled a unit-less field's unit silently - computer/records.py declare).
+    """
+
+    want = parse_amount(value)
+    if not isinstance(want, Amount):
+        return []
+    text = unicodedata.normalize("NFKC", str(text or ""))
+    out = []
+    for m in _FIGURE_IN_TEXT.finditer(text):
+        got = parse_amount(m.group(0))
+        if not isinstance(got, Amount) or got.magnitude != want.magnitude:
+            continue
+        rest = text[m.end():]
+        written = m.group(0)
+        pct = re.match(r"[ \t]?%", rest)
+        if pct:
+            written += pct.group(0)
+        elif _VALUE_OPENS.search(text[text.rfind("\n", 0, m.start()) + 1:m.start()]):
+            word = _UNIT_WORD.match(rest)
+            if word and isinstance(parse_amount(written + word.group(0)), Amount):
+                written += word.group(0)
+        found = parse_amount(written)
+        out.append((found.unit if isinstance(found, Amount) else "", " ".join(written.split())))
+    return out
 
 
 # ------------------------------------------------------------------ dates
@@ -308,6 +417,52 @@ def spoken(day):
     return f"{d} {_MONTH_NAMES[m - 1]} {y}"
 
 
+# A date format written in a field's label or placeholder ("Date (DD-MM-YYYY)", "mm/dd/yy", "YYYY.MM.DD"): three runs
+# of letters joined by one separator, not inside a longer word. Which runs are a day, a month and a year is read from
+# the runs themselves (stated_date_order), never from a list of formats.
+_FORMAT_IN_LABEL = re.compile(r"(?<![^\W\d_])([^\W\d_]{1,4})([-/. ])([^\W\d_]{1,4})\2([^\W\d_]{1,4})(?![^\W\d_])")
+
+
+def _format_runs(text):
+    """The date formats a text writes, each as its three runs (letter, length) - ("d", 2), ("m", 2), ("y", 4) for
+    "DD-MM-YYYY": runs of one letter each, the letters d, m and y once each, case aside."""
+
+    out = []
+    for m in _FORMAT_IN_LABEL.finditer(_norm(text)):
+        runs = []
+        for run in (m.group(1), m.group(3), m.group(4)):
+            letter = run[0].casefold()
+            if run.casefold() != letter * len(run):
+                break
+            runs.append((letter, len(run)))
+        if len(runs) == 3 and sorted(r[0] for r in runs) == ["d", "m", "y"]:
+            out.append(runs)
+    return out
+
+
+def stated_date_order(label, value):
+    """
+    The date order a form field's own label (or its placeholder) states for `value`: "day" or "month" when the label
+    writes a date format - three runs of the letters D, M and Y, each once ("DD-MM-YYYY", "mm/dd/yy", "D.M.YYYY") -
+    laid out as `value` is: the year last, as many year digits as the format gives (one Y: any), the day and the month
+    in digits (DD/MM, never MMM, a month's name). None when the label writes no such format, writes two that disagree,
+    or `value` is not laid out as the format says (a year-first value is decided without an order). Structure only:
+    the field "Date (DD-MM-YYYY)" holding "02-04-2027" holds 2 April 2027 - the application said so on its own form
+    (found live 2026-11-10: a save was refused as needing the person over exactly this).
+    """
+
+    m = _DIGIT_DATE.fullmatch(_norm(value))
+    if not m or not label:
+        return None
+    orders = set()
+    for runs in _format_runs(label):
+        (first, n1), (second, n2), (last, ny) = runs
+        if last != "y" or n1 > 2 or n2 > 2 or (ny > 1 and ny != len(m.group(3))):
+            continue
+        orders.add("day" if first == "d" else "month")
+    return orders.pop() if len(orders) == 1 else None
+
+
 def _same_date(da, db):
     if "unreadable" in (da.kind, db.kind):
         return Result(None, "date_order:" + ("a" if da.kind == "unreadable" else "b"))
@@ -389,16 +544,18 @@ def _national(value):
 
 # ------------------------------------------------------------------ the comparator
 
-def compare(a, b, a_order=None, b_order=None, units=()):
+def compare(a, b, a_order=None, b_order=None, units=(), precision=False):
     """
     Whether two values of one field are the same whatever their form: Result(same, why), same True, False, or None when
     what is known cannot decide it. `a_order` / `b_order`: the date order each side is written in ("day", "month" or
     None) - the source document's and the application's are different facts. `why` says what decided or what is
     missing: "date_order:a" / "date_order:b" is the side whose date order would decide it. `units`: what the field
     states its figure is in (field_units of its label) - a figure written with one of them matches the same figure
-    written bare.
+    written bare. `precision`: two figures are one within the coarser one's written precision (within_precision) -
+    only where a figure written rounded stands for the precise one (a kept cell and its computed value).
     """
 
+    a, b = _plain(a), _plain(b)
     a_order, b_order = _order(a_order), _order(b_order)
     da, db = parse_date(a, a_order), parse_date(b, b_order)
     if da or db:
@@ -419,7 +576,7 @@ def compare(a, b, a_order=None, b_order=None, units=()):
         return Result(sa == sb, "digits")
     na, nb = parse_amount(a), parse_amount(b)
     if isinstance(na, Amount) and isinstance(nb, Amount):
-        return _same_amount(na, nb, frozenset(units or ()))
+        return _same_amount(na, nb, frozenset(units or ()), precision)
     if UNDECIDED in (na, nb):
         return Result(None, "number_format")
     if isinstance(na, Amount) or isinstance(nb, Amount):
@@ -434,6 +591,20 @@ def compare(a, b, a_order=None, b_order=None, units=()):
         # round 5, N4).
         return Result(None, "digit_groups")
     return Result(bool(ka) and ka == kb, "text")
+
+
+def _plain(value):
+    """A float or Decimal as its digits (1e-05 is 0.00001, as a sheet stores it): its written form is no figure."""
+
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (float, Decimal)) and not isinstance(value, bool):
+        try:
+            d = Decimal(str(value))
+        except InvalidOperation:
+            return value
+        return format(d, "f") if d.is_finite() else value
+    return value
 
 
 def range_count(before, left, stated):

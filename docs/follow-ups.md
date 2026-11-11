@@ -6,7 +6,7 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 
 | ID | Decision | State |
 |---|---|---|
-| O-1 | Input broker and OS boundary: direct input around the gate (XTEST, VNC, CDP, AT-SPI, host-app and phone viewers), a gate-owned evidence store, `checked` set by the worker, the script sandbox's filesystem | **Open, do next.** The word guards are frozen. Order: the evidence store under the gate user first (it makes "observed" real), then the input broker ([gate-boundary.md](gate-boundary.md), "Next: the input broker"). Also: a per-task `$HOME` snapshot, read-only binds outside `~/work`, an egress proxy |
+| O-1 | Input broker and OS boundary: direct input around the gate (XTEST, VNC, CDP, AT-SPI, host-app and phone viewers), a gate-owned evidence store, `checked` set by the worker, the script sandbox's filesystem | **Broker on by default** (decided 2026-11-08): every new desktop is made in broker mode unless the control plane runs with `DECURIX_SCREEN_BROKER=0`; existing desktops keep their mode until recreated. The panel's window list is the screen user's now (`computer/windowlist.py`, lists and raises windows, starts nothing; [gate-boundary.md](gate-boundary.md), "The panel's window list"). The word guards are frozen. The agent token's half of path 6 is closed (2026-11-08: out of every environment, two non-dumpable holders, start scripts on the system's PATH, a session bus without the worker's services; gate-boundary.md, "The agent token's two holders"; checked live). **Open:** the default mode's boot race for the token files, `VNC_PW` out of a `docker exec`'s environment, the worker's home readable by the screen user by path, no desktop icons in broker mode, the gate-owned evidence store (it makes "observed" real), an agent-signed outcome callback; also a per-task `$HOME` snapshot, read-only binds outside `~/work`, an egress proxy |
 | O-1.a | TheBot command guard: five structural fixes before the final freeze | **Done** 2026-11-07: all five landed and the guard is frozen (`safety.go`'s FROZEN note). Table below |
 | O-2 | Per-desktop cache volume (B-02) | Done as recommended: a cache volume per desktop, the model cache shared read-only |
 | O-3 | Brainiac appliance: model user, AppArmor, signed catalog, uploader list | **Open; required before any box ships.** Table below |
@@ -16,8 +16,9 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 | O-7 | Org knowledge and skill writes from the gated listener (A-08) | Done: host-operator only |
 | O-8 | Acquired skills, proven fixes and the coding harness inside Decurix (T-07, T-08, T-21) | Done: off unless `THEBOT_STANDALONE=1`. Veto keeps them |
 | O-9 | taskRules audit to principles only (T-18) | Staged as commit `ab8cac8`. **Open:** bench it on hosted brains before keeping it |
-| O-10 | God-file splits (`core.py`, `long_task.py`, `skill_task.py`, `operator.go`, `httpapi`) and the check-registry rewrite | First split done (2026-11-07): `long_task.py`'s stage checks and the cross-check's code part moved to `stage_checks.py`, no behaviour change. **Open:** the other files, one at a time, each behind the replay gate |
+| O-10 | God-file splits (`core.py`, `long_task.py`, `skill_task.py`, `operator.go`, `httpapi`) and the check-registry rewrite | First split done (2026-11-07): `long_task.py`'s stage checks and the cross-check's code part moved to `stage_checks.py`, no behaviour change. Second (2026-11-08): `computer/core.py` (5673 -> 4135 lines) gave select's machinery to `selecting.py`, sheet blocks and slide text to `sheets.py`, and the comparison of two looks to `changes.py`, no behaviour change. Third (2026-11-08): `skill_task.py` (4221 -> 2496 lines) gave the commands and reply words to `skill_commands.py`, `/learn` to `teaching.py`, an engine's mid-task question to `engine_questions.py`, and the final gate with its restore offer to `final_gate.py`, no behaviour change. **Open:** the other files, one at a time, each behind the replay gate |
 | N-W4-8 | A Landlock file policy for Brainiac's headless browser (profile folder plus the system read set, network kept) | **Built** 2026-11-08 (`web/render.go` `browserPolicy`, `render_linux.go`): through `isolate.Wrap`, profile read-write, system read set read-only, `HOME`/`TMPDIR`/XDG moved into the profile; no Landlock = old behaviour plus one log line. Live in a `golang:1.27` container: a child under the policy wrote its profile, read `/usr`, and got EACCES for a file outside, `/proc/1/environ` and a write outside. **Open:** a real Chrome render under the policy (`BRAINIAC_LIVE_RENDER`) before Render may be turned on on an appliance; Chrome's children lack their own `/proc/self` |
+| O-11 | The approval gate's false asks on ERPNext bills (found 2026-11-08) | **Done** 2026-11-09 (owner: "yes go ahead"), each by structure, never by a word taken off a list; the real commits beside them still ask (`agent/tests/test_gate_false_asks.py`): (a) a button that opens a new, empty record ("+ Add Purchase Invoice": `approval.opens_new_record`, a word that opens a new one and a record's name, no word that is only an act) is let through only when the page says the press submits no form holding values (`core._press_submits`, `cdp.submit_form_fields`); unreadable is asked. (b) A press found by eye (`gui click --see`) is judged by the control the page names at the point (`core._gate_spot`, `cdp.hit`), and its yes is bound to that control, not to the pixel: the three looks were up to 200 px apart on one row, so a pixel tolerance would have had to cover neighbouring controls and was not built. (c) After Ctrl+L and an address typed, Return is Return in the browser's address bar when this task's own last actions put the keyboard there and the page says its document has lost it (`core._location_bar`, `cdp.page_has_keyboard`). The classifier is a filter in the worker's process (it decides what is put to the gate); the gate's own rules - only it makes a yes, a yes is one action's - are unchanged. **Open:** a live `bench/security/boundary.sh` run on the next image; the effects-based gate (gate-boundary.md, "Next: what the gate asks about") |
 | N-W4-8 note | Render stays off the automatic path everywhere, off by default on an appliance, behind the guard proxy, page read bounded | Done |
 
 ### O-1.a: the guard's last structural fixes
@@ -31,6 +32,7 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 | O-1.a.1 (**done** 2026-11-07: `programLines()` reads each command word's base name past `commandWords()`'s wrappers, the ones `wipeConcern`'s examples name, and every rule list is matched on those lines too; `blankHeredocs` finds the program a body is fed to the same way; the word reader is `eachCommand()`, shared with `wipeConcern`) | A program named by its absolute path, or behind a wrapper program | Every program rule identifies the program by the base name of the command word, after skipping the wrappers `wipeConcern` already models (reuse its parser) | Every existing flagged example, with its program given by absolute path or behind a wrapper, is still flagged |
 | O-1.a.2 (**done** 2026-11-07: `beforeSubcommand()` in the git, npm/yarn/pnpm/cargo/twine/gem and docker rules reads past folder and config options, with their values, and other lone options) | Global options placed before a subcommand | The version-control and publish rules accept the folder and config options before the subcommand | Every existing flagged version-control or publish example, with such an option inserted, is still flagged |
 | O-1.a.5 (**done** 2026-11-07: `deleteConcern()` with `runTimeName()` for rm and find (`recursiveDeleteConcern()`), a cd to a run-time folder makes it `runTimeDir`, `splitCommands()` keeps a substitution's place in its word, and `localTarget()` refuses a run-time target) | An operand decided at run time (a variable or a command substitution) | A recursive delete's operand, or a fetch tool's target, that is decided at run time waits for a person | An existing flagged recursive delete with its path replaced by a variable is flagged |
+| O-1.a.6 (**reverted** 2026-11-11 on the owner's decision, back to the rule exactly as before dc22dc0d: any leading option on a piped interpreter is held; the narrowing was 2026-11-09, dc22dc0d/959ee5ff, undone by the 2026-11-11 `:lock:` commit) | An interpreter fed by a pipe that is told to run a named module | The narrowing assumed a named module makes the pipe only data, but some standard-library modules (the interactive console, the async console, the debugger) read and run Python source from standard input, so arbitrary piped code ran unheld; the owner chose the original rule over a list of allowed modules | Every pipe into Python whose module option names a module, including the interactive console module, behind the wrappers and by absolute path, is held as code piped into an interpreter (`TestPipedInterpreterHoldsAnyNamedModule`) |
 
 **Not to be done** (the freeze): new verbs, new power-management verbs, heredoc body scanning, a shared Go/Python corpus. After O-1.a, `safety.go`'s FROZEN note says these five were the last changes. Related: the Python guard's "a folder it cannot follow waits" (F-10) is done in `commands.py`; anything further there belongs in this list too.
 
@@ -45,6 +47,14 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 6. **Signed-release promotion.** `update.Promote` is the one place a staged plan becomes served. **Built 2026-11-08, uncommitted:** `Promote(st, now, PromoteOptions{ByHand})`: on an appliance only a `release.json` signed with the release key (ed25519, `catalog.Verify`; kind `brainiac.release/v1`, so a signed overlay cannot pose as one) naming the staged lock's sha256 promotes, and only with a `parity.json` of that lock, measured after staging, in which `evals.Results.Proven` holds for every changed model against the one it replaces (every served field for the brain, its own role for other roles); off an appliance a person may still promote by hand, but a present release is always checked. `brainiac update sign-release <lock> --key k` makes the release. Tests: unsigned, untrusted key, non-release, other lock, no/failed/stale/other-lock parity refused; signed and passed promoted. **Open:** the box-side parity run that writes `parity.json` from cases of the request shapes the box serves (trace shapes, `likeEvalCases`) on the staged plan's models; the owner's release key (shared with O-3.3).
 
 ## Deferred items
+
+### A person's later words supersede a taught rule (logged 2026-11-09, owner's ruling)
+
+A correction the person gives after a skill was taught ("ask only before File with EVC and Verify, never before
+Proceed to file") is kept as their later words (run_answers), while the taught rule it corrects stays in
+understanding.rules. Since 2026-11-09 the worker and the check are told that the later words hold
+(`skill_task.LATER_WORDS_HOLD`). Owed: a mechanism that rewrites or retires the rule itself from the person's later
+words - shown to the person as the rule it replaces, never silently - so the lesson stops carrying both.
 
 ### Control plane, desktops, scripts, Electron (W1)
 
@@ -69,7 +79,7 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 
 ### Python agent (W2)
 
-- **O-10:** the check-registry rewrite (step 1, the `_checked` wrapper, is done). The first god-file split is done (2026-11-07): the stage checks (`stage_code_findings`, `CHECK_MATURITY`, `_checked`, every check and the helpers only they use) and the cross-check's code part (`code_disagreements`, `model_disagreements`, `odd_one_out`) are `stage_checks.py`; long_task keeps the prompts and the run, imports what it calls and re-exports the names other modules and tests read through it. stage_checks never imports long_task: the run's ledger, runner and model call are handed over at import (`stage_checks.use_run`), looked up in long_task at each call. A test that patches a check helper patches it on `stage_checks`. Left: `core.py`, `skill_task.py`, `operator.go`, `httpapi`.
+- **O-10:** the check-registry rewrite (step 1, the `_checked` wrapper, is done). The first god-file split is done (2026-11-07): the stage checks (`stage_code_findings`, `CHECK_MATURITY`, `_checked`, every check and the helpers only they use) and the cross-check's code part (`code_disagreements`, `model_disagreements`, `odd_one_out`) are `stage_checks.py`; long_task keeps the prompts and the run, imports what it calls and re-exports the names other modules and tests read through it. stage_checks never imports long_task: the run's ledger, runner and model call are handed over at import (`stage_checks.use_run`), looked up in long_task at each call. A test that patches a check helper patches it on `stage_checks`. The second split is done (2026-11-08): `computer/core.py` keeps observe/act/verify/open and what they share; `selecting.py` (select's machinery and "nothing else in its place"), `sheets.py` (a block of cells or slide text typed and read back, here or in a relayed viewer) and `changes.py` (`compare`, `summarize`, `text_change`, `expectations`) never import core: `observe`, `_task_now` and `_focus_window` are handed over at import (`use_core`), looked up in core at each call; core re-exports by name what others read through it, and the broker's `core.forget_failed_search` route still resolves there. Chosen as the parts with the fewest names tests patch through core: the downloads, settle, commit-check and record-scan groups were left because tests patch their helpers through core while code inside the group calls them, so a move would make those patches silently miss. The third split is done (2026-11-08): `skill_task.py` keeps perform/resume, the run and replay driver, the per-document part, the model's guided run and its judge; `skill_commands.py` (the `/learn`, `/skill`, `/restore` parsers and writers, the reply words, `LEARN_ENGINE`/`SKILL_ENGINE`, `_Refused`), `teaching.py` (`/learn`: `_learn`, `_learn_reply`, `_remember`), `engine_questions.py` (messaging's query gate `_question_gate`, carry-on, `learn_answer`) and `final_gate.py` (messaging's final gate `_gate`, `_retry_engine`, the "cannot confirm" reply `_confirm_reply`, the restore offer and `/restore`, `ledger_held`, `check_unchecked`) never import skill_task: what they call back there (`_judge`, `_record_verdict`, `_by_model`, `_engine`, `_engine_can_drive`, `write_final_reply`, `ask_for_query`, ...) is handed over at import (`use_run`), looked up in skill_task at each call, so the many tests that patch those through skill_task still reach the moved code. skill_task re-exports by name what others read through it and still sets messaging's two gates at its import. Chosen as the groups whose own names tests patch least: a test that patches `_did_screen_work`, `_retry_engine`, `_commands_text`, `_done_reading` (final_gate) or `_remember` (teaching) patches it there now (long_task's tests still patch `skill_task._did_screen_work`, which long_task reads); the run driver was left because tests patch its helpers through skill_task while code inside it calls them. Left: the rest of `core.py` (downloads/waits, the commit check), `operator.go`, `httpapi`.
 - **E-41:** the "PAYMENT TO " string branch only adds a prompt hint and a warning; make it a typed field when `FileFacts` reaches `code_problems`.
 - **E-42:** `claims_done` stays (its only effect is a second judge call, whose "cannot" ends "not checked"; widening its regex would be a word list).
 - **E-43:** run-folder retention is the owner's call (run folders hold the person's outputs; locks, temp files and host copies are pruned).
@@ -81,9 +91,11 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **The X-6 test** calls `_pause` directly; it should drive `_prepare`/`_execute`.
 - **The ledger:** withholding runs on every save rather than once (fails closed); done: only a parse error moves the ledger aside; an `OSError` is retried four times with backoff, then the save fails loudly and leaves the file (`long_task._ledger_io`).
 - **A stale "filled from" note** could add a block for a reused output path (fc0849c).
-- **An all-capitals request** hides the client's own facts (fails closed).
+- **Done 2026-11-08 (uncommitted): an all-capitals request** no longer hides the client's own facts: `memory_context.names_whole` reads a capital as continuing a name only on a line that writes small letters too (a line wholly in capitals has no case, like one all in small letters).
 - **Done: an IBAN** with an unknown country and a valid mod-97 is reported "IBAN NOT CHECKED" among the unchecked payments (`payees._is_iban` answers None).
-- **A second note on the same value** overwrites `OTHER_SIGN`.
+- **Done 2026-11-08 (uncommitted): a second note on the same value** no longer overwrites `OTHER_SIGN`: `binding._clean`
+  keeps every harness note on a value whole (`OTHER_SIGN`, `NUMBERED`, `WORKED`), joined, beside the model's own words
+  cut short, so no cut takes the end of a mark the final check looks for.
 - **Done: `false_sums`** skips a range of numbered things and its count ("Rows 2 - 10 = 9.", `values.range_count`, by structure); "200 - 350 = 150" is still a wrong sum.
 - **X-6 for TheBot:** an optional structured secret marker on HELP.
 - **Done 2026-11-07: the legacy harnesses** are deleted (O-4).
@@ -123,9 +135,8 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **`bench/skills/e2e.py` and `bench/recordings/e2e.py`** pass on that image with this tree's agent.
 - **The gui daemon and screen broker tests** pass on Linux (74 tests; two code bugs fixed: the idle clock started
   before the daemon served, and a socket's inode compared with sockfs's).
-- **Still owed:** the sign-in refusal on a real gated listener (needs a worker with an open question; the integration
-  test covers it with the real stores and routes; not reached on 2026-11-08), the field-unit question's round trip
-  with a hosted brain (see below), and every item below.
+- **Done 2026-11-08** (see "Owed checks run on 2026-11-08" below): the sign-in refusal on a real gated listener and the
+  field-unit question's round trip with a hosted brain. Still owed: every item below.
 
 ## Live checks done on 2026-11-08 (image rebuilt from this tree, a dev control plane beside the app's)
 
@@ -139,14 +150,269 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
   twice before two fixes made in this pass (soul adopts the gate's own request for an action it stopped on the screen;
   the agent's watcher no longer takes TheBot's yes from the gate) - gate-boundary.md, same section.
 - **Not reached, still owed:**
-  - The field-unit question with a hosted brain: twice the worker never put a one-sided unit to the save - it declared
-    the record's Rate as "18" (the note says "18%"), then, told to declare 18%, typed "18%" into the field - so the
-    question never came. Owed: a run that reaches it, and a decision on whether `gui record` should keep a document's
-    unit when the worker drops it (declaring "18" from "18%" settles the unit silently, the case the question exists
-    for).
-  - The sign-in refusal on the gated listener (step prepared, not run).
+  - The field-unit question with a hosted brain: **run on 2026-11-08, below.**
+  - The sign-in refusal on the gated listener: **run on 2026-11-08, below.**
   - The review's "Still open" lines on a held press read screenshots as empty fields that `gui observe` showed filled
-    (seen twice on the tax-code form); not investigated.
+    (seen twice on the tax-code form). **Fixed (2026-11-08):** a chain held at its press (`gui type ... && gui click
+    Save`) recorded nothing, so the review was shown the look and the screenshots from before the typing. Now the
+    typing ahead of a held press is noted (`noteHeldScreen`), the window is looked at again before the review when
+    typed since its last look (`lookBeforeCommit`, moved ahead of `review`), a look older than the typing is shown as
+    "NOT READ", and only a screenshot of the screen as it is goes to the reviewer (`lastPictures`). Owed: a live held
+    Save on that form.
+
+## Owed checks run on 2026-11-08 (images built from HEAD 8586a01 only, broker mode by default, hosted Kimi-K2.6)
+
+- **Gated sign-in: passes.** A user (`maya.finch`, role finance) made on the primary listener; on the gated listener
+  with the access code only, `GET /api/auth/me` 401; a reply to the worker's plan question 401 "Sign in to reply: ...
+  Nothing was sent." and no judgement made; signed in, the same reply 200, delivered, and the task's one judgement
+  for it names `maya.finch` (`kind: person`, door `card`).
+- **Field-unit round trip: passes after one fix.** On a fictional form whose "Rate" has no unit and a note saying
+  "18%": the save stopped with "the agent asks them itself", but the person got the engine's own unnumbered question -
+  in broker mode the screen side kept the unit question in its own `runs/<task>/context.json`. **Fixed:** that file
+  is now sent with each command and handed back (`gui_client.TASK_STATE`, `gui_client.mirrored`; gate-boundary.md,
+  "The screen side's own state"; `test_screen_state.TheTasksRunContextGoesBothWays`). The same applied to the
+  date-order question and to the org's date order the save reads. Patched live: the numbered question came ("Reply 1
+  if the field "Rate" on 127.0.0.1:8765/taxes takes its figures in %, or 2 ..."), "1" was kept as a `field_unit` row
+  derived from it, and a later task (a 12% code) typed "12" against "12%" and saved with no question. On the way: the
+  worker skipped `gui record` on its first run (no declaration, so no unit check) until told; and after the save
+  asked, it retyped "18%" into the field despite "Do not retype the field".
+- **Rule 3: passes.** Every `py.*` call of the three tasks (`py.study`, `py.judge`, `py.kept_facts`,
+  `py.approval.read` read by the agent: 14) is a `caller: soul` row with its purpose and a line in soul's trace, one
+  for one; the gate's two `py.approval.read` went straight to the proxy as `caller: gate` (with no task tag); no
+  `caller: agent` row; `untagged: 0`.
+- **Done 2026-11-08 (uncommitted), found here:** a one-digit percent could not be declared. `gui record ... "Rate": "5%"` from a note saying
+  "rate 5%." is refused as not in the source, every time (the worker tried for 30 turns): `records.stands_in` gets None
+  from `values.parse_number("5%")` and the text key "5" is under its two-character floor; "18%" passes only as an
+  identifier. A fix belongs in `records.stands_in` (a figure with a unit stands where the text writes that figure
+  with that unit), not yet made because that file was being changed in parallel. Now `records.stands_in` takes a
+  figure written with its unit as standing where `values.units_beside` finds that figure with that same unit ("5%"
+  in "rate 5%.", "5 kg" in "Weight: 5 kg"); `values.parse_amount` already read a percent of any length, and
+  `parse_number` stays unit-less on purpose (a bare 5 would then stand for "5%"). A bare one-digit figure is still
+  never found inside another figure.
+
+## Two control planes on one Docker (found 2026-11-08, dev rig)
+
+A second dev control plane started beside the first on the same Docker took the first's desktop for its own: its idle
+pause (`idlepause`) sees only its own database's activity and paused a desktop mid-task, and each control plane's
+`CleanupPractice` at start removes every practice desktop on the host. Not a product path today (one control plane per
+host), but any rig that runs two (parallel eval lanes) needs both to scope their sweeps to desktops they created (a
+control-plane instance label on the container, checked by idle pause and cleanup). **Done** 2026-11-08: every desktop and practice container and practice network carries `decurix.owner` = the control plane's instance id (`desktop.OwnerLabel`, `sqlitedb.InstanceID`); `List` leaves out another control plane's, and the idle pause, the rest/stop that makes room and the practice cleanup act only on their own (`Desktop.Owned`), logging once what they leave alone. A desktop made before the label is adopted when the agent token it was created with is the one this control plane issues for it (an HMAC under its own secret, `Manager.ownedLegacy`), so upgrading keeps idle pause on every existing desktop; one with no token is listed and left to no sweep until it is recreated.
+
+## A refused outcome leaves its task running (found 2026-11-08, video lane)
+
+When the control plane refuses a desktop's outcome with 403 (here an infra fault: a freed practice range still refused,
+since fixed in `practice.SubnetCache`), the agent lets the kept outcome go for good after its short form is refused too
+(`messaging.resend_unsent`), and the task stays `running` in the control plane, blocking the desktop until it is deleted
+(the task then reads `abandoned`). A refusal the desktop cannot tell from an infra fault should be kept and retried with
+backoff, or the task marked failed by the control plane, never left running. **Done** 2026-11-08: `messaging.NOT_YET_CODES` (401, 403, 404, 408, 425, 429) are tried again like an unreachable control plane, kept and resent for up to a day; 400, 409, 413 and 422 stay the control plane's no to the note itself.
+
+## A pre-save refusal that needs the person waits on the model to ask (found 2026-11-08, ERPNext bill 11)
+
+The ledger's pre-save comparison refused a save over a digit date it could not read ("which day 11-10-2026 is cannot be
+told from here - this needs the person ... the agent puts the two readings to them itself when you next ask them
+anything"). The model never asked: it read the refusal as a wrong format, retyped the date three ways (one of them,
+"2026-10-11", the application took as 20-10-2011) and looped for 13 minutes. Code should put such a question to the
+person itself at the refusal (the readings are code's), not wait for the model's HELP. Mitigated in the meantime: a
+taught run no longer declares an ambiguous digit date when the application's order is unknown, and an organisation's
+`DECURIX_DATE_ORDER` settles it. **Open.**
+
+## Taught record keeping: what is left (2026-11-09)
+
+- **Line-level read-back: built 2026-11-09.** A taught run declares its record's lines with it (`skill_task._taught_rows`:
+  the repeated rows or a loop's items, only a part with no save inside it; `records._kept_rows`: only values the
+  document writes, two or more a line). After the save `records.rows_shown` reads the page's lines (`page_lines`:
+  pieces side by side, offscreen included) and needs each declared line on a page line of its own, each value under
+  the column its label names (`_under`), a pick's value shown as the entry it took. A line not shown keeps the record
+  from counting as read back (`all_read_back`). Built against a kept observation of a saved ERPNext invoice
+  (PINV-26-00008): its three lines read back; a wrong quantity, rate or swapped item does not. **Owed live:** one
+  replayed bill whose read-back line says "all N stand on a line of the page"; a page that shows more lines than
+  declared is not flagged yet.
+- **A per-document field one document leaves blank.** An inter-state bill has IGST and no CGST/SGST: the fill drops the
+  empty items, the lists stop counting one per document, and the whole month goes to the model (office books ob-2:
+  correct, 2.96M tokens). The fill's own instructions say such a document is `by_hand` (another kind of tax); it did not
+  follow them. **Fixed 2026-11-09:** the fill may give `(empty)` (`binding.EMPTY_ITEM`) for a field whose place the
+  document shows with no amount; code keeps it only when `binding.left_blank` finds that place in the document with no
+  figure on its line, and `skills.expand` skips typing or picking that item, so the field stays empty.
+- Supplier and item picks from a long description under load take 2-15 minutes per search set (each search waits for
+  the list as long as a look takes); 10 minutes to conclude a supplier is missing. **Open.**
+
+## Found during the learning-curve pilots, fixed after the curves (2026-11-10)
+
+The curves run on one frozen build; these were seen on it or on the pilot build (2896eaa1) and wait for the curves to end.
+
+- **The approval question loses the reason for a Return that submits a form.** Eval case oc-3 (task t6e8c37d37a9d58b0):
+  the step said the plan makes "Verify" wait for the person's OK, but the question read "press Return in the screen: it
+  needs your approval". The hold was right (the Return would have submitted the OTP form with a URL typed into the OTP
+  field). Fix: describe a key whose Enter submits a form by that form's submit control (approval.describe_action).
+  Gate area.
+- **ctrl+l did not reach the browser's address bar** in the same run ("nothing visible changed; focus: textbox 'Enter
+  the one-time password (OTP)'"), and the worker then typed a URL into the OTP field. Check the key event's backend: a
+  browser chord (ctrl+l, alt+d, f6, ctrl+t, ctrl+w) must go to the window, not into the page. Then: an untargeted
+  `gui type` right after a key meant to move focus, with a secret field still holding the keyboard, could refuse with
+  "the keyboard is still in <field>"; guidance should prefer `gui open URL` for navigation.
+- **The scripted expert cannot answer two questions a person would.** A pick confirmation ("please confirm the
+  entries I chose from the application's own lists") and the summary confirmation before filing ("I have prepared the
+  GSTR-1 ... The summary shows ...") were both answered "I don't know" (oc-2, oc-3). Options: a per-case `picks` fact
+  like `date_orders`, and a confirm reply for a summary whose figures the case's expected tables hold.
+- **File with EVC was asked twice in one run** (oc-3, events e1376 and e1571). Not yet read.
+- **The lesson's reader refused a person's answer that gave its reason.** Teaching office-gstr1-books case 1: "3 and 4
+  change; 1, 2 and 5 stay (5 is that client's signatory - another client would have its own)" was refused, and the
+  terse retry "3 and 4 change" left the signatory fixed, so og-2 (another client) stopped to ask about it. The answer
+  said 5 varies per client in plain words; a reader that needs the bare form loses what the person meant. Learning and
+  QnA area.
+- **A ticket action the agent finished after the control plane gave up reads as failed.** Two demonstrations at once
+  (two desktops booting and recording): the control plane answered the demonstration's first ticket note with 504
+  (its bounded agent-call timeout), while the agent did the note, logged "POST /ticket/note 200" and then hit
+  BrokenPipeError writing the reply. Both demonstrations stopped there. Fix: a longer bound for /ticket/* or an
+  idempotent action the caller can retry (a request id the agent answers again from what it already did).
+
+- **The word "ask" became a secret and garbled a taught lesson.** Teaching office-gstr1-books case 1 on 83f4a53d
+  (desktop fgstr, lesson file-gstr-1-from-the-books): every "ask" in the lesson read "[withheld]" ("stop and
+  [withheld] for approval", "Reply `[withheld] first` or `go ahead`"), and 5 of the 14 rules kept in the skill carry it.
+  privacy.withhold_known replaces every word whose hash is a remembered secret, so a remembered "ask" withholds the
+  word everywhere. Confirmed from dev2's records (entry 1794273874386982105-283, a lesson reply not marked secret):
+  the person wrote "Only the client has the OTP: ask me for it, never guess", and REQUEST_SECRET took "ask" as the
+  OTP's value (after "OTP:" any word but a label counts, `_request_value`). The same reply also lost "(the", "(an",
+  "(each", "receiver's", "client's" and "month's": possessive apostrophes read as quote marks (SPOKEN_SECRET or the
+  quoted form of REQUEST_SECRET), so a span between two of them was kept as a quoted secret. Same family as "has"
+  (2026-10-22) and "number:" (2026-11-03). Fix after the curves, from structure: a value after "OTP:" that is a plain
+  word followed by more words of a sentence ("ask me for it") is an instruction, not a code; an apostrophe between two
+  letters is never a quote mark.
+  Seen again on the gstr1-chat lesson (fchat, dev3): the person's first lesson reply, which named "the one-time code",
+  lost every value-shaped word - "Table 4A [withheld] with one row" (B2B), "above [withheld]" (1,00,000), "amount times
+  [withheld]" (100/118), "[withheld] round amounts" (tax-inclusive), "never with [withheld] rows" (made-up). That is
+  privacy.marked_values (value-shaped words of a message taken as secret, whole tokens) applied to a teaching reply.
+  The lesson's words are what the worker is taught; a reply is withheld as a secret only where it answers a question
+  that asks for a secret (secret: true by structure), never because it names the OTP while explaining the work.
+  The lane re-taught gstr1-chat with plain-word replies as a workaround; books and gstr1-books curves run on lessons
+  stored with the holes.
+  **Fixed 2026-11-10 (uncommitted):** see gotchas part-6, "A lesson that named the OTP was taught with holes"
+  (control plane, agent and soul; lessons stored with holes must be taught again on a recreated desktop).
+
+- **Approvals the person gave on earlier tasks do not hold a control on this one.** The gate's holds (core._person_hold,
+  2026-11-10) read this task's declined controls, the worker's own question, and the steps the person approved while
+  teaching. They do not read the control plane's approvals log, which only humans can read (/api/access/approvals). A
+  desktop-readable view of it would be a control-plane change. Coordinator's ruling 2026-11-10: not now.
+
+- **A desktop too busy to answer reads as a desktop that is gone.** Under load 35-79 on 6 CPUs (2026-11-10, freeze-2
+  teaching), the control plane's POST to the desktop's gate (:8083/secrets) hit "context deadline exceeded";
+  sendRequest then reported "find desktop s2gstr: desktop not found" and /learn answered 404 "that desktop no longer
+  exists", three times, while the desktop was running. A timeout reaching a desktop that exists should say so (503,
+  "busy, try again"), never that the desktop is gone.
+
+- **FIXED (2026-11-10, uncommitted; gotchas part-6 "Which steps need the person's OK, said in their own words ...",
+  docs/skills.md `gates`, `agent/tests/test_lesson_gates_own_words.py`).** The lesson now asks which steps need the
+  person's OK (`gates`), reads their words for intent (code for plain numbers, the model for the rest, names copied
+  only), maps names onto steps in code by recorded label, puts the mapping back in one line until a yes, and keeps the
+  confirmed answer as `skill["approvals"]` for the gate. Correction to the entry below: the task's chat shows the
+  person said it in their explanation at the first question and it was taken silently - no "I did not catch that" and
+  no approval question about steps existed. Live check owed: relearn s2gstr's demonstration on the next build with a
+  real model and see the line put back as 42, 59, 63 / not 55.
+- **The lesson's approval question cannot take a person's own words, so the taught gates were wrong.** Freeze-2
+  teaching of office-gstr1-books case 1 (s2gstr, 2026-11-10): the person's answer named Save to portal, File with EVC
+  and Verify as needing their OK and said not to stop before Proceed to file. The reader answered "I did not catch
+  that" to the free-text reply, and the stored skill gates Proceed to file and File with EVC, not Save to portal, with
+  Verify marked consequential:false. A taught run would press two committing controls with no yes unless the model
+  asked. Workaround used: relearn, answering with bare step numbers. Fix: the approval question reads the person's
+  words for which controls need their OK (and which do not), and maps them onto the steps by control name; anything it
+  cannot map is asked again, never dropped. Same family as the reader refusing an answer that gave its reason (above).
+- **Control names inside a secret form are withheld in a step's locator path.** The same lesson stored steps 60-63
+  (the OTP textbox and the Verify button) with `textbox "[withheld]"` / `button "[withheld]"` in target.path, while
+  their own name and summary are intact. A locator that matches on the path would miss Verify. A control's name is
+  structure, never the secret typed into it.
+
+- **A skill's approvals answer lives in a file the worker can write (freeze 2.1).** core.skill_approvals reads
+  skill["approvals"] from the skill file; a run could relax its own holds by editing it. Coordinator's ruling
+  2026-11-10: relaxations count only from a control-plane-confirmed person answer bound to that skill and ask list;
+  additions may come from the file. Honest runs behave the same, so the curves on 2.1 do not wait. With the gate
+  agent, as a follow-up commit.
+
+- **The lesson's gates and skips readings over-read a rule (freeze 2.1 relearn of office-gstr1-books, s2gstr).**
+  (a) "don't look for a password anywhere - stop and ask me to sign in" was read as a step to leave out ("which step is
+  'look for a password'?") and added 45 Sign in to the ask list; the person had to answer "none" and "not 45". (b) After
+  that correction the read-back dropped the earlier "not before 55"; the person had to say it again. (c) A relearn saved
+  as a new skill (`-2`) beside the old one instead of replacing it; a run could pick the stale skill. Fix: a rule about
+  what not to do is neither a skip nor a gate unless it names a step; a correction keeps the rest of the reading; a
+  relearn of the same recording replaces its skill (the old one kept as a version).
+- **A control inside a secret form loses its name in the recording.** The chat lesson's Verify (inside the OTP form) was
+  recorded as "click 54,384", and its approvals entry has no name, so the gate cannot hold it by label. Same root as the
+  locator-path entry above: a control's name is structure, never the secret typed into the form.
+
+- **Several coordinate clicks asked about together cannot be named.** The chat lesson (freeze 2.1, s2chat) kept five
+  clicks recorded as screen positions (11, 27, 41, 73, 86 Verify): the grouped question takes only keep / skip / manual,
+  so the person could not say what each one presses; only a lone coordinate step can be named (gstr's step 52 was).
+  Each kept coordinate step should be nameable, and a named one replays by its control.
+
+- **A screen read that names fields can fail silently, and the recording keeps nameless fields.** ERPNext lesson
+  (erpcurve2, 2026-11-10, an overloaded desktop): the recorder ran minutes behind, and the read used for steps 8-16 had
+  lost every label-derived name (cdp.observe's `_GROUP_LABELS` script; cdp.py ~927 swallows its failure as `[]`, and
+  `CDPPage.evaluate` ~301 ignores `exceptionDetails`), so the steps were stored as `textbox ""` and a coordinate. Not a
+  regression (load). Harden: an evaluate exception raises; a failed name pass is retried once and otherwise marks the
+  read `names_partial`; the recorder reads again for a click on a nameless fillable field; a learned step on a nameless
+  field is flagged, never generalised silently. Until then demonstrations are recorded only at low load.
+
+- **A goal answer's first sentence becomes the task's "done when" even when it is not one.** Freeze-2.2 relearn of
+  office-books case 1 (s2books): the person's goal answer opened with "Saving a ledger or a voucher needs my OK ..."
+  and the draft stored that sentence as done_when; the person had to throw the draft away and answer again with the
+  finishing condition first. The goal reading should pick the sentence that says when the work is finished (or ask),
+  not the first one. Seen again on the same relearn: done_when kept the whole first paragraph, approvals sentence
+  included.
+- **More lesson over-reading (freeze-2.2 books relearn).** A rules text naming a field ("Sales ledger") was read as
+  steps to leave out (47/72/97/122/147); the person had to answer "no". Naming a coordinate click as "the GSTIN/UIN
+  textbox" got "I did not catch that": the control-role words lack "textbox". The final save question still cannot
+  take a correction to a rule (rule 1 kept an unneeded "download the attachments").
+- **The leave-out reader takes a prohibition for a step to remove (third case, freeze 2.2, ERPNext relearn).** The
+  person corrected rules ("never create a new supplier or item yourself ... Save as a draft only, never submit"), and
+  the lesson proposed leaving out steps 5-6 (the supplier pick) and asked which step is "submit". Same family as the
+  "look for a password" and "Sales ledger" cases above. Fix: only an explicit leave-out / skip / glitch statement that
+  names a step (its number or its own action as done) removes steps; a "never X" about an action the demonstration did
+  not do, or a rule about how to do a step, is a rule and never a removal.
+
+- **The worker re-checks finished work just before an irreversible step.** gstr1-books og-5 on freeze 2.4: after File
+  with EVC was approved and before the OTP, the worker re-read the exported JSON's receivers, though validation was done
+  (and graded right) long before; the re-read used inline Python, the frozen command guard held it, and the case ended.
+  A step the run has verified (validation, a read-back) should not be re-derived at the commit point unless something
+  changed since.
+
+- **A request sent to a desktop just paused or unpaused vanishes.** decurix-dev on freeze 2.4 (ERPNext bill 10): the
+  idle-pause sweep paused erpcurve2; it was unpaused and a request sent a minute later; the control plane's POST of the
+  screen password to the gate (:8083/secrets) timed out, `sendRequest` logged "find desktop erpcurve2: desktop not
+  found", and no task, chat entry or error appeared - the person's request was silently dropped. Fix: a send to a
+  desktop that is paused or waking waits for its agent (or unpauses it and retries); a send that still fails is said in
+  the thread; "desktop not found" is never said of a desktop that exists (see the 503 entry above).
+
+- **A screen-broker timeout under load reads as "not running".** ERPNext bill 10 (2.4): "gui: cannot reach the screen:
+  the screen broker did not take this command (it is not running)" at 04:33 and 05:07 while the broker daemon was alive.
+  A broker that did not answer in time should be said so ("busy, try again"), not reported dead.
+
+- **Freeze 2.5 shipped the tripwire, not these two (deferred, 2026-11-11).**
+  - **What shipped.** Soul's operator does not run a command that crosses the desktop's boundary and ends the task as
+    a boundary attempt (`skills/boundary.go`, outside the frozen guard). It catches:
+    - acting as another user;
+    - attaching to or reading another process;
+    - a unix socket driven by hand;
+    - naming the gate's or broker's folder or the agent token;
+    - a desktop service's loopback port;
+    - the browser's debugging flags.
+  - **`gui restart APP` (deferred).** When an app hangs, the worker needs a way to close and reopen it through the
+    broker. Today only a person's "restart" at a skill's halt does this (`launchers.close_recorded`). An unprompted
+    restart loses whatever is unsaved in the app, so whether the worker may restart on its own is a design call. It
+    goes through `screen_call` like `close_recorded` and needs a held-yes rule for windows with unsaved changes.
+  - **Socket refuse-and-report (deferred).** The broker's `peer_allowed` and `REFUSE_PROTOCOL` refusals, and the gate's
+    refusals, are logged only inside their own daemons. Each probe should leave one line in the task's record and in
+    the control plane's boundary log, shown to the person. This needs a channel from the screen user's daemon to the
+    task record, which does not exist yet. The gate's own log is the nearest place to start.
+
+- **Review of freeze 2: what is left (2026-11-11).**
+  - **A5, observed exemption.** The label exemption for a button that "opens a new record" is gone, so "+ Add
+    Purchase Invoice" is asked about on every bill again (one question per run on the curves). The owner's rule
+    allows an exemption only once the press is observed to go to a new-record address with no network write. That
+    needs press-time observation: the CDP watch would have to record non-GET requests and the address after the
+    press, and the yes would have to be bound to that evidence from an earlier press in the same task. Not built.
+  - **A11c, ask instead of read.** An "(empty)" place not proved by a marked row now leaves the value to be read by
+    the work (the model), as before. The rule says "else ask"; the fill (`binding.fill_lists`) has no question path
+    yet.
+  - **A4 (frozen guard)** was the owner's call: reverted in 452a2c1a.
 
 ## Live checks after the next build
 
@@ -156,6 +422,12 @@ The writers could not run these. Run them on the next build, before calling this
 - Rebuild the desktop and tools images, then **recreate every desktop**. Desktop state is fixed at creation; these changes reach a desktop only then: no-new-privileges, the setuid and setgid strip, per-desktop caches, new host session ids, the tools populator, `-nolisten tcp`, no `xhost +`, the browser-agent removal.
 - On the first start, remove this instance's own old-tagged helpers and hops by hand ([running.md](running.md), "Upgrading to the random instance tag").
 - The practice reset on the new image: `DECURIX_PRACTICE_IMAGE=decurix-desktop:basic go test ./internal/desktop -run TestPracticeResetLive -count=1 -v` in the Decurix distro ([running.md](running.md)). It skips without the variable.
+
+**The Windows installer prepares Windows** (`wsl/prepare-windows.ps1`, 2026-11-11). Owed on real machines, not this host (it has WSL):
+- A Windows 11 and a Windows 10 22H2 PC that never had WSL: install, one administrator prompt, the finish page offers "Reboot now"; after it Decurix opens with no further prompt. `%LOCALAPPDATA%\Decurix\logs\prepare-windows.log` says what ran.
+- The same with the restart skipped: the app says "Restart Windows to finish" and asks for nothing.
+- A PC with virtualization off in the BIOS: the installer says so; "Yes" restarts into the UEFI settings (`shutdown /r /fw`).
+- A reinstall on a ready PC and an update: no prompt.
 
 **Security and the gate.**
 - `sh bench/security/boundary.sh --layer` on the new image (as root in the Decurix distro).
@@ -219,11 +491,45 @@ What the PY lane left for later (lane-PY.md; PLAN-P2 §9).
   checks in code, the judgement against the request not made, so never done). `verdict.derive` never makes a done
   (checked=True alone goes out unchecked), `test_verdict.NoReportReliesOnADerivedDone` keeps the list empty, and
   `legacy` is no gate on either side (`verdict.BY`, `tasks.verdictBy`); stored legacy rows are still read.
-- **Python's model calls, still to move behind soul** (plan rule 3; every one is tagged `py.*` or `legacy.*`, so the
-  proxy's stats show the share): `py.judge`, `py.judge.spot`, `py.skill.ask`, `py.skill.calls_off`, `py.stage`,
-  `py.binding.fill`, `py.approval.read`, `py.approval.choice`, `py.ground`, `py.escalation.ground`, `.judge`,
-  `.detour`, `.point`, `py.mimic`, `py.skill_engine.fits`, `py.kept_facts`, `py.playbook`, `py.study`,
-  `py.tool.args`. `agent/tests/test_purpose_tags.py` holds the set (`legacy.azure.turn` went with the azure harness, O-4).
+- **Python's model calls behind soul** (plan rule 3). **Phase 1, the transport, is done (2026-11-08):** every
+  worker-side call goes through soul's `POST /api/llm/call` (`cmd/soul/llmcall.go`; `agent/decurix_agent/soul_call.py`)
+  - `llm_client.chat`/`ask_once` (hosted) and `ollama_client.ask_once` (local) - so it has soul's trace line, tags,
+  prompt-cache key and concurrency limit, with its `py.*` purpose recorded verbatim (`llm.AgentPurpose`). Straight to
+  the proxy (or Ollama) only when soul cannot make the call (not running, an older image, a refusal, no token or key;
+  logged once per process) and always in the approval gate (`soul_call.in_gate`: IN_GATE or `DECURIX_CALLER=gate`;
+  `test_soul_call.TheGateNeverAsksSoul`). Usage is counted once, by Python (`usage.add`), never in a soul job. What
+  remains is phase 2: moving each **decision** into soul, purpose by purpose, so Python holds tools and evidence only:
+  `py.judge`, `py.judge.spot`, `py.skill.ask`, `py.skill.calls_off`, `py.stage`, `py.binding.fill`, `py.ground`,
+  `py.escalation.ground`, `py.escalation.judge`, `py.escalation.detour`, `py.escalation.point`, `py.mimic`,
+  `py.skill_engine.fits`, `py.kept_facts`, `py.playbook`, `py.study`, `py.tool.args`. `py.approval.read` and
+  `py.approval.choice` stay with the gate by design (another user's process; never soul's).
+  `agent/tests/test_purpose_tags.py` holds the set. Open with phase 1: a desktop's reasoning effort reaches a call
+  through soul as soul read it at start (`OpenAIProvider.Effort`), where the direct path read the file per call; a
+  `temperature` of 0 through soul is the provider's default (no caller passes one today). Live check done
+  (2026-11-08, "Owed checks run on 2026-11-08"): `py.*` lines in soul's trace one for one with `caller: soul` rows,
+  none with `caller: agent`. `py.approval.read` is also made by the agent when it reads a reply (`approval.reading`
+  from `engine_questions`, `gated_command`, `final_gate`); those go through soul like any worker-side call.
+  - **Phase 2, `py.judge`: built behind `DECURIX_SOUL_JUDGE=1` (off by default, read per call), parity proven
+    offline (2026-11-08).** `verify.judge` hands soul the evidence as data (`verify.judge_evidence`: texts, values,
+    observations, the files' facts, the documents, pictures as `data:` URLs; Python still reads the files, the screen
+    and the closer look) at `POST /api/llm/judge` (`cmd/soul/judge.go`), and soul words the prompt and reads the answer
+    (`agent/thebot/internal/judge`: `System`, `Messages`, `Decide` - Python's `JUDGE_SYSTEM`, `judge_content`,
+    `_parse` and the not-sure-enough rule, with Python's `str()`/`float()`/`strip()`/`repr()` reproduced). Same call
+    path as `/api/llm/call` (`makeCall`), purpose kept (`py.judge`, `py.judge.spot`), retries and the cut-off retry
+    still `llm_client`'s (`chat_decided`), the error mapping still `verify.judge`'s (soul answers `{error, cut_off}`
+    for an answer it cannot read; unsure, never done). Soul down, an older image (404) or a refusal: today's path.
+    Proof: `agent/thebot/internal/judge/testdata/parity.json` (13 cases, 49+14 answers, fictional), recorded from the
+    unmodified code; `agent/tests/test_judge_parity.py` (today's path still sends those messages and verdicts; the
+    switch sends that evidence and maps soul's decision to the same verdict), `internal/judge` parity_test.go (soul's
+    messages and decisions equal the recorded ones), `cmd/soul` judge_test.go (the provider is sent the same bytes from
+    the evidence as from today's messages via `/api/llm/call`). One known difference: for JSON that does not decode,
+    the `why` quotes Go's decoder, not Python's (still unsure). NaN/Infinity literals and Unicode digits in a
+    confidence decode in Python, not in Go (stricter: unsure). A quirk kept for parity: a confidence of `"nan"` reads
+    as 1.0 in Python's `max(0, min(1, x))`, so `done` with `"nan"` is done on both sides. **Owed before the switch
+    defaults on:** a 5-repeat eval (rule 1) with `DECURIX_SOUL_JUDGE=1` against off on the same suite and image: the
+    same verdict per case and repeat within the run-to-run noise of off vs off, no false done, the same judge tokens
+    per call (prompt and cache share) and `py.judge` rows with `caller: soul`; then delete Python's copy (prompt,
+    `judge_content`, `_parse`) so one copy remains.
 - **Spot judgement of trusted replays** is built (`skill_task._spot`, purpose `py.judge.spot`; a `not_done` records a
   failure) and samples 1 in 5 task ids by default (`DECURIX_SPOT_JUDGE_EVERY`; 0 never, 1 always). Open: measure the
   judge's cost and its catch rate on the L3 matrix before changing it. `learn-v1` exists now (2026-11-08) and holds
@@ -303,6 +609,8 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   `mira.k` too (any word with a digit or a mark), and since round 2 that value is held for 24 h by the call recorder
   and given to the gate, so the username is withheld from that desktop's calls and the gate's questions. Narrow the
   rule by the question's structure (the field it asks for), never by a word list.
+  **Narrowed 2026-11-10:** the sweep now reads only a bare answer (one line, at most 5 words); this reply is kept as
+  `Text` keeps it (the password withheld, `mira.k` kept). A short "user mira.k, pwd x" is still swept.
 - **A secret reply whose question changes between Plan and commit** (a faster reply resumed the task and it asked
   again) can be told "secret" by one intervention and stored by another (C14.1 decides before delivery, the store at
   commit). The window is the length of a delivery. The late remember in `recordDelivered` feeds the call recorder
@@ -357,8 +665,133 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 - **More suites:** `docs-v1` (documents becoming records) and `gst-v1` (a returns portal and a client chat mock,
   written by someone who does not tune the harness). **Done: `learn-v1`** (2026-11-08): ten interleaved cases, bills
   and bank reconciliations, a lesson taught once per kind and a missing input; `py -3 evals/run.py curve` reads it
-  ([evals.md](evals.md), "The learning curve"). Owed: its first live run (calibration with `--carry-state`, then
-  `default+expert --repeats 5`).
+  ([evals.md](evals.md), "The learning curve"). **Calibrated live 2026-11-08** (oracle 10/10, nothing and ask 0/10,
+  twice; evals.md). Two runner fixes came of it: the desktop is settled between a carry-state run's cases (an open
+  question no longer swallows the next request), and a restart does not count its own memory reservation. Owed:
+  - **Done 2026-11-08: a bill case can pass a model arm.** Owner decision taken: approvals are case data. A case lists
+    `approves` (a control and optional role), and the expert says a plain yes to a gate-signed question that words a
+    click on a listed control, through the person's route (`practice.ApprovalGateNotice`); every other approval is
+    refused and ends the case. Every `learn-bill-*` approves "Save bill" only ([evals.md](evals.md), "The scripted
+    expert").
+  - **Done 2026-11-08: the cost-centre lesson is no longer guessable.** The rule is a map from the supplier's GSTIN state
+    code to the firm's own codes (29 CC-14, 30 CC-27, 33 CC-52, else CC-90), with suppliers in three states, and
+    `TestLearnV1SuiteLoads` fails a bill whose code is written in its documents or in an earlier record. Calibrated
+    again live: run `e9aa06b8d2a292e61`, oracle 10/10, nothing and ask 0/10.
+  - **Worker findings from the same run** (harness, not suite): on bill 3 the worker tried to `curl` the bill straight
+    into the app's form endpoint, with cost centre General for a freight bill (the gate held it); on bill 4 it declared
+    "as per covering letter" as the bill number rather than asking; bill 1 took 1.36M tokens and 66 calls, near the
+    case budget. **Fixed 2026-11-08** (bills 3 and 4): the bill-4 phrase did stand in the
+    document, beside "Invoice number", so `declare` called it backed; a number, reference or id given as words (no
+    digit, two or more words) is now refused at `gui record`, at the save and at the final check unless the people's own
+    words give it (`records.wordy_identifiers`), with a question naming the field. A data-sending curl/wget or posting
+    code is a final-check finding when the task declared a record or the command names a host where it opened or saved
+    a record's form (`records.sent_around`). **Decided 2026-11-08:** a send to this machine is not held at the gate
+    (the command guard stays frozen); such a save can never be reported done, and the real fix is the egress proxy in
+    O-1's broker plan. `skill_task._ledger_why` names both new kinds. Owed: the next live learn-v1 run, to see bill 4
+    end asking. The reconciliation half met the bar (674k tokens then about 110k, no question after the lesson).
+  - **Bill 1's budget, diagnosed 2026-11-08 (`eeb05dd4a201cecda`):** the save was refused at every try because the form
+    readers cut values at 80 characters and presave judged the part as the whole (a 126-character Notes field); the
+    worker went round declaring, typing, curl and the dev tools until the budget ran out, and the Cost centre select,
+    left at its empty first option, was never seen by presave. **Fixed:** values read whole up to 600 characters, a
+    longer one marked cut and compared only as far as it was read (a gotcha, part 6); a choice left unset that the
+    record does not declare is a point at the save; the operator ends a refusal repeated three times on an unchanged
+    form with a question naming the field ([harnesses.md](harnesses.md)). **Owed:** `records.UNSET_CHOICE_BLOCKS` is
+    ADVISORY. It becomes blocking only by its own entry here, after it passes the replay gate
+    (`agent/tests/test_replay_gate.py`, a fixture with a correctly saved record whose form has an optional choice left
+    unset must meet no blocking point) and a clean live learn-v1 round in which no correct save met it.
+  - Runner notes: a run started within 90 s of another's desktops could be refused its desktop on memory reservations
+    (fixed by the per-desktop reservation only for a restart; a new arm's desktop still counts the last arm's for 90 s),
+    and once an arm's agent never became ready in 4 minutes while tests ran beside it on the host (a retry passed).
+  - `default+expert --carry-state --repeats 5`: run `eeb05dd4a201cecda` started 2026-11-08 08:28 UTC on the dev control
+    plane (image 158b3cdebb0b from 82f2966); its `curve`, and what it says against the bar, are owed here and in
+    evals.md. **Cancelled 2026-11-08 09:30 UTC after 7 rows** (the "before"; rows in
+    `evals/results/eeb05dd4a201cecda/rows.jsonl`): bill-1 budget (1.46M in, 73 calls), recon-1 pass (166k, the layout
+    asked), bill-2 asked (too many questions; 582k), recon-2 pass (71k), bill-3 timeout (1.16M), recon-3 pass (67k),
+    bill-4 timeout (1.11M; it asked the invoice number, required, and was answered). Bills 2, 3 and 4 had the right
+    record saved (`mock_records` passed) and still did not end done. Two harness-looking points: on bill 2 the expert
+    gave "don't know" to "Which cost centre should I select for this bill?" although the question names
+    `cost-centre-rule` (trajectory `x0a15bc60469f8d16`); on bills 3 and 4 the final check said the cost centre was
+    backed by nothing "a person said or taught", though the person taught the rule in an earlier case, so a lesson
+    kept across tasks is not counted as provenance (`xf9654c7fe29c258b`, `xce7e9d6e97a9bcaf`).
+    **Fixed 2026-11-08 (uncommitted), three causes found in those trajectories:** (1) only the current task's answers
+    were read: the person's own answers on any task of the same worker are now a source
+    (`person_record.worker_words`, `GET /api/desktops/judgements?scope=worker&kind=answer`, bounded, newest first, the
+    caller's own worker only; [learning-loop.md](learning-loop.md)); (2) on an eval desktop nothing the expert said
+    backed anything, even on its own task: the practice broker answered 404 to the judgement read and the runner sent
+    no judgement id, so bill 3's own reply with the rule and bill 4's invoice number were refused too. The runner now
+    keeps each expert reply on the broker (`Broker.KeepReply`, actor kind `scripted`, forgotten at a reset) and sends
+    its id; (3) no text could back a code among codes sharing their letters (the figure is joined, so the word rule
+    dropped it): a code written whole picks out its entry (`records._code_written_whole`). **The "2 records where 1
+    was expected" (`ledger_readback`):** both bills had one record in the app (`mock_records` passed). Bill 3: the bill
+    was saved under the key "bill" with the cost centre undeclared, then declared again under its own bill number to
+    add that field; `declare` matched saved records by key only, so it was a new record (first stopped as "may be
+    entered already" by the task's own saved page), and the edit's save marked it saved - a harness bug, fixed
+    (`records.saved_by_number`: the field joins the saved record). Bill 4: its declarations were refused (cause 2 and
+    3), the worker saved the bill outside the ledger with `--checked`, then declared it twice under two keys after the
+    save; neither was saved, and the final check rightly held a record no declaration covers. No fix to that check;
+    with the causes above the declaration passes before the save. **Owed:** the next live learn-v1 run, to see bills
+    3 and 4 end done without asking the rule again. (Done 2026-11-08: the expert's replies are in the task records as
+    answer judgements authored by the scripted expert, `eval.ExpertActor`, under the id the worker is sent, so the run
+    record's `judgements` names them; `TestTheExpertsReplyIsRecordedWithItsAuthor`.)
+  - **Rerun on today's fixes, in progress 2026-11-08:** images rebuilt from ac20e00 (`decurix-desktop:basic`, `:next`,
+    `:developer`, `:ai` = a8edcd908964; `decurix-tools` unchanged, 28170e9f7e03); dev control plane `decurix-dev`
+    restarted on a binary from ac20e00 (sha256 5939e84a...), volume `decurix-dev-data` kept, brain Kimi-K2.6 set.
+    Calibration `e838100482d961956` (oracle + nothing, `--carry-state --repeats 1`, 09:34 UTC): **oracle 10/10,
+    nothing 0/10** (false done 10/10), no infrastructure or invalid rows, no problems on an oracle row. The
+    5-repeat `default+expert` run, the curve, and the cleanup (`cp-dev.sh stop`, the dev volume, the `before-1107`
+    tags, the buildx builder `decurix-wsl-2048m`) are still owed.
+  - **The "after" run, done as a baseline 2026-11-08:** HEAD 9038515 (the expert prompt, the broker serving the expert's
+    replies, scope=worker provenance, the cut-read, unset-choice and refusal-loop fixes). Images rebuilt from a
+    `git archive` of HEAD (`decurix-desktop:basic`, `:next`, `:developer`, `:ai` = e00bd82ce61e; `decurix-tools`
+    unchanged, 28170e9f7e03); `decurix-dev` restarted on a binary from the same archive (sha256 68315fea4223...),
+    volume `decurix-dev-data` kept. Brain Kimi-K2.6 / gpt-5.4-mini on `AZURE_KEY_1` (the before run's; key 3,
+    `AZURE_KEY_2`, still answers 401 on every route). Run **`eaa791e6bd0cff5fa`** (`default+expert --carry-state
+    --repeats 5`) started 10:30 UTC; watch with `py -3 evals/run.py --cp http://127.0.0.1:18080 table
+    eaa791e6bd0cff5fa`. First six rows (repeat 1), all pass: bill-1 608k in (before: budget at 1.46M), recon-1 172k,
+    bill-2 1.04M, recon-2 75k, bill-3 330k, recon-3 66k. **Paused for the owner at 11:20 UTC** on two harness points
+    seen in bill-2 (`x8d5d51639a38fd33`), the run itself left going:
+    - A "don't know" reply travels to later tasks with no question. The method learned from bill 1
+      (`methods.py:158`, "The person said about this plan: ...") carries bill-1's reply to the plan question ("I don't
+      know that ... Do not make it up: if the task needs it, say it is missing.") into bill 2's prompts and its
+      independent review (call `c0e29be653fa6bbe6`, purpose `review`, input blob `492afed814b8...`). That input has no
+      section for this task's own replies: the rule the person gave shows only inside a cited passage. The review
+      then said "the person explicitly stated they do not know the cost centre" and called a value the person did
+      give fabricated. The case passed only after the expert answered that review question with the rule again.
+    - There is no way to declare a value from the person's reply. `gui record --from "human reply"` failed (not a
+      file), so the worker wrote the person's rule to `~/work/cost-centre-rule.txt` and declared from that file, a
+      source of its own making (the check caught it). It would have passed as `seen` with `--from bill.pdf`, since
+      the reply holds "CC-27", but nothing says so.
+    - The run record lacks the expert's replies. Every trajectory of the run has `questions` and `judgements`
+      empty, and `GET /api/judgements?task=tfdc005bf26753cc6` is empty, though the broker serves both replies on
+      that task (`/api/desktops/judgements?task=` from the desktop). `recordExpertReply` logged no error. Fixed in
+      7aebc2a.
+    **Ended by the owner after repeat 3** (cancelled 14:12 UTC; 30 rows): 22/30 pass (Wilson lower bound 0.56),
+    against 3/7 before. Bills 11/15 (before 0/4); reconciliations 11/15 with 4 false done. `curve`: neither kind meets
+    the bar (bills: 988k then 536k tokens, but questions that are not required rose from 0.7 to 0.9; recons: 100%
+    then 67% with 4 false done). All 8 failures are the harness's and HEAD fixes each: recon-5 r2 `xcb425599da9f1c9e`
+    (82495c2), bill-1 r3 `x643d67b7c0e709ac` (82495c2, b797a0f), bill-2 r3 `xccb1b2b6e6045634` (ae332a0), bill-3 r3
+    `x3275c004d0ccfc5c` (82495c2, 135771b), recon-3 r3 `xc6b1e64d2526879f`, recon-4 r3 `x8aac58f7c6d4dfc2` and
+    recon-5 r3 `xead09eed0df85a94` (be2ebfe, 82495c2), bill-5 r3 `xba5fe22d81ee9442` (b797a0f, 82495c2). Table and
+    per-failure evidence: [evals.md](evals.md), "Baseline for 9038515". Rows in
+    `evals/results/eaa791e6bd0cff5fa/rows.jsonl`. Next: the validation on HEAD, as two runs one after the other
+    (`default+expert`, then `default+expert+soul`), never two practice desktops at once.
+  - **Validation run 1 on fc3cd32: partial, host-contended** (`e53e9a9df7f70755a`, 14:24 to 15:35 UTC, cancelled by
+    the owner after 6 rows while the owner's ERPNext work and its teaching desktop shared the WSL VM, at load 15-57 on
+    6 CPUs). Rows, correctness and tags: [evals.md](evals.md), "Validation on fc3cd32". Every graded record and file
+    was right and there was no false done; the three bills timed out. Owed:
+    - The re-run on a quiet machine, `default+expert`, then the `+soul` run. Both wait for the owner's "go: rerun".
+    - The fix the owner is making: a value set from the person's answer but not declared is adopted into the
+      declaration when it stands in the record's document or the person's confirmed words. Bills 2 and 3 were sent
+      back for it, and the sent-back job started again from the request (`x19d1e3554629eed8`, `x9a02e6064b9e3ded`).
+    - The dev stack is still up (decurix-dev and the dev volume; images a8f4ebfcc2c5 on `:basic`/`:next`). The
+      cleanup list (`cp-dev.sh stop`, the dev volume, the app's `before-1107` tags) is owed after the runs; the buildx
+      builder is stopped.
+  - **Fixed 2026-11-08: the expert's "don't know" to bill 2's cost-centre question.** Matching was right (the question
+    named `cost-centre-rule` by `refers_to`); the expert's model chose null because the fact gives a rule, not "which"
+    ("it explains how, not which"; the question held no GSTIN). `ExpertPrompt` now says a fact gives what is asked when
+    it states it or the rule the person decides it by, a same-subject fact that does not gives nothing, and no fact
+    gives leave to act. Probed on the deployment: that question 1/12 before, the new prompt 93/93 on 22 positives and
+    near misses ([evals.md](evals.md), "The scripted expert"). Suite data unchanged (SHA `c6722c894ced`).
 - **Done: D7.** CLAUDE.md now says dev eval suites with fictional data live in `evals/` and the sealed held-out set stays
   outside the repo.
 - **Calibration L2 needs the live stack.** Offline, `TestCoreSuiteLoads` passes the oracle on 10 of 12 core-v1 cases,
@@ -407,6 +840,8 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   as the control plane recorded it (`person_record.py`), through `GET /api/desktops/judgements?task=` and `?skill=` and
   `GET /api/desktops/learned?kind=field_answer` (`internal/httpapi/desktop_judgements.go`, `tasks.JudgementFieldAnswer`;
   d63f89b, a4ce49c). When the control plane cannot be read, a pick only the person's word backs is not backed (fail closed).
+  Since 2026-11-08 also `?scope=worker`: the person's answers on the worker's earlier tasks back later ones
+  (`person_record.worker_words`; the learn-v1 bullet under EVAL).
   - Not backing anything any more: `<task>.said`, the gone `field-answers.json`, and the skill file.
   - Org knowledge still counts.
 - **Accepted residual: a word of the option in an unrelated phrase of the request.** "the general manager approved
@@ -417,13 +852,21 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 
 ## Phase 2: Python agent, review round 2
 
-- **Comparators still outside `values.py`** (known divergences, each to move as its area is next touched):
-  - `long_task._same_value` / `_scalar` (`long_task.py`, a kept cell's value): its own date logic reads `a > 12` as day
-    first even under MM/DD, and compares numbers within their written precision (a deliberate tolerance for a cell and
-    its computed value).
-  - `provenance.fact_value` / `same_figure` (`provenance.py`): figures within the coarser precision, and an ambiguous
-    date with no convention compared as written.
-  - `stage_facts`: amounts as floats (`round(..., 2)`, `abs(...) <= 0.011`).
+- **Done 2026-11-08 (uncommitted): the comparators outside `values.py`** ask it now.
+  - Dates: `stage_checks._scalar` (a kept cell) and `provenance.fact_value` read dates by `values.parse_date` under
+    the request's order, so a first part over 12 is no date under MM/DD (not decided, so a kept cell is "changed"
+    and a fact is compared as written), and an ambiguous date with no order is the same only as written.
+  - Numbers: one precision rule, `values.within_precision` (half the coarser written place, a float's 1e-6 noise
+    aside), reached as `values.compare(..., precision=True)` and `values.same_figure(a, b, precision, a_computed)`.
+    A kept cell against its computed value and a fact against a rounded figure keep it (deliberate); a computed
+    value (`a_computed`: a product, a sum, a formula's result) claims no precision, so only the written side's
+    counts (a result written 1392 is 1392.4 rounded, one written 1392.04 is not); two computed values, or two
+    figures each read as written in `stage_facts` (a row's stated amount against its working's cells, a message's
+    amounts, a source's price), are equal only (noise aside). Gone: provenance's extra 0.005 (10.00 and 10.01 were
+    one figure) and stage_facts' 0.011 and float rounding (`removed_residue` sums in Decimal, compared noise aside).
+  - Separators that read two ways ("12,5") are no figure in `provenance.fact_value` either (it read 12).
+  - Left as is: provenance's scale words (lakh, crore, a declared unit), which `values` does not read; `sources.
+    _same_figure`, not in this list.
 - **Done: every request and reply names its execution** (`execution_id`, H-PY-7: 0f82aad). Teach, replay and
   run-skill send it too (a498b96), and the agent keeps it on those doors as on `/request` (H-CP-10, cc96751).
 - **A run open or paused for days is not held** before it has a label: `evidence._prune` can take its notes after 2
@@ -486,9 +929,12 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   - Not done from REVIEW-PY-A-2's nits: `core._shown_by_app` still takes the application's value from any observation,
     not only one before the worker's first input on that form; `skill_task._correct` still reads the reply's
     judgement and secret flag from globals.
-  - `resend_learned` can post a line twice when two threads read it at once (no client id for the control plane to
-    dedupe on).
-  - The gate's nonces are in memory: after a gate restart a signed body still within its 120 s window replays (the
-    worker cannot capture the traffic: NET_RAW is dropped). Said in gate-boundary.md.
+  - Done 2026-11-08 (uncommitted): `resend_learned` is single-flight (a call while one runs asks it for one more pass
+    and returns), and each learned line carries its own `client_id` (32 hex), the same on every try; the control plane
+    answers a line already kept under that id with that row (200), under a mutex with its write (`learned.go`
+    `keptLearned`). A line with no id (an older desktop) is kept as before.
+  - Done 2026-11-08 (uncommitted): the gate's nonces are kept in its own directory (`gate-nonces.json`, 0600, written
+    whole, loaded at start, pruned on expiry; `gate_server.use_nonce_store`), so a signed body seen before a gate
+    restart is refused after it. Said in gate-boundary.md.
   - Done: soul's step text (`Running: gui type e3 "<value>"`) withholds a job's secret values in every written form
     the agent's `approval.written_forms` gives (H-PY-9, 99d7962).

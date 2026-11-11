@@ -70,6 +70,7 @@ const (
 
 // reservation is memory a start that was let through is taken to use until its desktop has booted.
 type reservation struct {
+	id    string
 	mb    int64
 	until time.Time
 }
@@ -114,9 +115,12 @@ func (c *Checker) MakeRoom(ctx context.Context, forID string, needMB int64) erro
 		floor = DefaultFloorMB
 	}
 	want := needMB + floor
-	avail -= c.reservedMB(now)
+	// A desktop started again (a restart, a practice desktop settled between cases) does not count its own earlier
+	// start: that boot was ended, and what it used is in the reading or gone.
+	self := desktop.SanitizeID(forID)
+	avail -= c.reservedMB(now, self)
 	if avail >= want {
-		c.reserve(needMB, now)
+		c.reserve(self, needMB, now)
 		return nil
 	}
 
@@ -124,7 +128,6 @@ func (c *Checker) MakeRoom(ctx context.Context, forID string, needMB int64) erro
 	if err != nil {
 		log.Printf("idlepause: listing desktops to make room for %s: %v", forID, err)
 	}
-	self := desktop.SanitizeID(forID)
 	stopped := map[string]bool{}
 	if rd, ok := c.Desktops.(RoomDesktops); ok {
 		for _, d := range c.restCandidates(ctx, rd, list, self) {
@@ -143,19 +146,19 @@ func (c *Checker) MakeRoom(ctx context.Context, forID string, needMB int64) erro
 			}
 			stopped[d.ID] = true
 			if a, ok := c.Memory.AvailableMB(ctx); ok {
-				avail = a - c.reservedMB(now)
+				avail = a - c.reservedMB(now, self)
 			} else {
 				avail = want // the reading went away: start as before
 			}
 		}
 	}
 	if avail >= want {
-		c.reserve(needMB, now)
+		c.reserve(self, needMB, now)
 		return nil
 	}
 	if avail >= needMB {
 		log.Printf("idlepause: starting %s with %d MB free, under the %d MB floor: nothing more could be stopped", forID, avail, floor)
-		c.reserve(needMB, now)
+		c.reserve(self, needMB, now)
 		return nil
 	}
 	busy := 0
@@ -176,7 +179,7 @@ func (c *Checker) restCandidates(ctx context.Context, rd RoomDesktops, list []de
 	}
 	var out []cand
 	for _, d := range list {
-		if desktop.SanitizeID(d.ID) == self || !c.restable(ctx, rd, d) {
+		if desktop.SanitizeID(d.ID) == self || !d.Owned || !c.restable(ctx, rd, d) {
 			continue
 		}
 		out = append(out, cand{d, c.lastUse(rd, d)})
@@ -263,23 +266,35 @@ func (c *Checker) rest(ctx context.Context, rd RoomDesktops, d desktop.Desktop, 
 	return true
 }
 
-// reservedMB is the memory starts let through lately are still taken to use; expired ones are dropped. Under roomMu.
-func (c *Checker) reservedMB(now time.Time) int64 {
+// reservedMB is the memory starts let through lately are still taken to use, but desktop except's own; expired ones
+// are dropped. Under roomMu.
+func (c *Checker) reservedMB(now time.Time, except string) int64 {
 	var sum int64
 	kept := c.reserved[:0]
 	for _, r := range c.reserved {
 		if now.Before(r.until) {
 			kept = append(kept, r)
-			sum += r.mb
+			if r.id != except {
+				sum += r.mb
+			}
 		}
 	}
 	c.reserved = kept
 	return sum
 }
 
-// reserve counts mb against the available memory for reserveFor. Under roomMu.
-func (c *Checker) reserve(mb int64, now time.Time) {
-	c.reserved = append(c.reserved, reservation{mb: mb, until: now.Add(reserveFor)})
+// reserve counts mb against the available memory for reserveFor, for desktop id's start: it replaces an earlier one
+// of the same desktop, whose boot a restart ended. Found live (2026-11-08): a practice desktop restarted between the
+// cases of a learning curve, every few seconds, piled up a reservation per start and was refused its fourth. Under
+// roomMu.
+func (c *Checker) reserve(id string, mb int64, now time.Time) {
+	kept := c.reserved[:0]
+	for _, r := range c.reserved {
+		if r.id != id {
+			kept = append(kept, r)
+		}
+	}
+	c.reserved = append(kept, reservation{id: id, mb: mb, until: now.Add(reserveFor)})
 }
 
 // roundMinutes writes d as "30 minutes".

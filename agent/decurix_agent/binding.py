@@ -22,6 +22,7 @@ import os
 import re
 
 from decurix_agent import llm_client
+from decurix_agent.computer import constraints
 from decurix_agent.logging_utils import log
 from decurix_agent.tools import office
 
@@ -125,6 +126,11 @@ def fill(skill, params, context, strict=False):
 # How many documents one run's lists are read from at once (the gathered documents of a month; a page each).
 MAX_GATHERED = 12
 
+# The item of a list for a document that shows that field's place empty (an inter-state bill's CGST row): the step that
+# types it is left out for that item (skills.expand). Given only where the document's own text shows the empty place
+# (left_blank).
+EMPTY_ITEM = constraints.EMPTY_ITEM
+
 LISTS_NOTE = (
     "This run has SEVERAL documents, listed below in order, and the procedure is done once per document: every value "
     "marked \"list\" takes one item per document, in the documents' order, so that item N of every list belongs to "
@@ -132,12 +138,15 @@ LISTS_NOTE = (
     "list and named under \"left_out\", so the lists stay aligned over the documents that are entered by the procedure: "
     "(1) \"skip\": the person's rules (below) say it is not to be entered at all - cancelled, already in the books, not "
     "of the kind the task enters, a duplicate of another; (2) \"by_hand\": it IS to be entered, but it does not fit the "
-    "procedure's shape as taught - a different number of lines or tax rows, another kind of tax, a field the taught "
-    "fields do not cover, a value you cannot read - so it will be entered separately by hand. A party, ledger or other "
+    "procedure's shape as taught - a different number of lines, a tax or a field the taught fields do not cover, a "
+    "value you cannot read - so it will be entered separately by hand. A field the document shows with its place EMPTY "
+    "for its item (a tax row or column there with no amount, as a bill charging another tax leaves it) takes "
+    "the item \"(empty)\" in that list: the procedure then leaves that field empty for that document. A party, ledger or other "
     "thing the procedure chooses from the application's own lists is read as the document names it: whether it is "
     "already in the application, under which exact name, or has to be made first is for the procedure to find on the "
-    "screen, and is never a reason for \"by_hand\" or \"skip\". Never force such a "
-    "document into the lists with empty or made-up items. Give no \"rows\": the procedure's shape (its number of lines "
+    "screen, and is never a reason for \"by_hand\" or \"skip\". Never force a "
+    "document into the lists with made-up items, and never write \"(empty)\" for a value the document gives or does "
+    "not show a place for. Give no \"rows\": the procedure's shape (its number of lines "
     "and rows) is fixed as taught, and a document with another shape is \"by_hand\". Add to the JSON: "
     '"left_out": [{"document": "<path>", "kind": "skip" or "by_hand", "why": "<in a few words>"}].\n'
 )
@@ -167,12 +176,73 @@ def fill_lists(skill, params, context, files, rules=""):
     left_out = _left_out_paths(left_out, files)
     entered = len(files) - len({x["document"] for x in left_out})
     values, evidence = _clean(params, answer, texts)
+    gone = {x["document"] for x in left_out}
+    entered_files = [f for f in files if f not in gone]
+    for param in params:
+        if not (param.get("list") and param["name"] in values):
+            continue
+        items = split_items(values[param["name"]])
+        if EMPTY_ITEM in items and len(items) == len(entered_files) and not all(
+                left_blank(param.get("label") or param["name"], _document_text(entered_files[i]))
+                for i, item in enumerate(items) if item == EMPTY_ITEM):
+            # "(empty)" only where the document itself shows the field's place with nothing in it.
+            log(f"binding: {param['name']} has an empty item its document does not show empty - left for the work to read")
+            values.pop(param["name"])
+            evidence.pop(param["name"], None)
     for param in params:
         if param.get("list") and param["name"] in values and len(split_items(values[param["name"]])) != entered:
             log(f"binding: {param['name']} has {len(split_items(values[param['name']]))} items for {entered} documents - left for the work to read")
             values.pop(param["name"])
             evidence.pop(param["name"], None)
     return (values, evidence, None, left_out)
+
+
+def left_blank(label, text):
+    """
+    Whether a document shows a field's place with nothing in it: the label's most telling word (the one on the fewest of
+    the document's lines - "CGST" of "CGST amount", not "amount") stands on at least one line, every line holding it is
+    a table row whose cells the text marks ("|" or a tab between them), and no cell of such a row after the word's own
+    holds a figure besides a rate written as a percentage ("| CGST @ 9% | |": an empty amount cell). Decided by
+    structure, never by which words a field may have. Found live (2026-11-09): an inter-state bill's empty CGST and SGST
+    rows sent a whole month of vouchers to the model by hand. A line whose cells the text does not mark is no proof of
+    an empty place, and the value is left to be read (review of freeze 2, A11).
+    """
+
+    lines = (text or "").splitlines()
+    words = {w for w in re.findall(r"[A-Za-z]{3,}", label or "")}
+
+    def holding(word):
+        pattern = re.compile(r"(?<![A-Za-z])" + re.escape(word) + r"(?![A-Za-z])", re.I)
+        return pattern, [line for line in lines if pattern.search(line)]
+
+    found = [(w,) + holding(w) for w in words]
+    if not found or any(not ls for _w, _p, ls in found):
+        return False  # a word of the field the document never writes: it shows no place for that field
+    # The rarest word, and every word as rare (a tie is not settled by which comes first: "CGST" and "amount" on one
+    # line each, the "amount" line a sentence of words, must not stand for the CGST row's figure).
+    fewest = min(len(ls) for _w, _p, ls in found)
+
+    def row_cells(line):
+        cells = re.split(r"[ \t]*[|\t][ \t]*", line.strip(" "))
+        return cells if len(cells) >= 2 else None
+
+    # The rarest words whose every line is a row with marked cells: the field's place in a table. A rarest word that
+    # stands in a sentence (a total's "amount in words") is no place of the field.
+    placed = [(pattern, held) for _w, pattern, held in found
+              if len(held) == fewest and all(row_cells(line) for line in held)]
+    if not placed:
+        return False  # no structured read of the field's place: not proved empty
+    for pattern, held in placed:
+        for line in held:
+            cells = row_cells(line)
+            at = next(i for i, cell in enumerate(cells) if pattern.search(cell))
+            if at == len(cells) - 1:
+                return False  # the word's cell is the row's last: no place after it to be empty
+            after = " ".join(cells[at + 1:])
+            own = pattern.sub(" ", cells[at])
+            if re.search(r"\d", re.sub(r"\d+(?:\.\d+)?\s*%", " ", after + " " + own)):
+                return False
+    return True
 
 
 def _one_path(document, files):
@@ -349,17 +419,19 @@ def _clean(params, answer, texts=(), strict=False):
             items = [str(v).strip() for v in items if str(v).strip()]
             if not items or any(";" in v or "\n" in v for v in items):
                 continue  # an item holding the separator cannot be written as a list value
-            written = [as_written(v, param.get("example"), texts) for v in items]
-            if any(drops_number(v, param.get("example")) for v in written):
+            # (EMPTY_ITEM is what the document leaves empty: kept as it is, and held by its own document in fill_lists.)
+            written = [v if v == EMPTY_ITEM else as_written(v, param.get("example"), texts) for v in items]
+            if any(v != EMPTY_ITEM and drops_number(v, param.get("example")) for v in written):
                 log(f"binding: {name} - an item has no number where the taught one had; left for the work to read")
                 continue
-            if strict and not all(held_by(v, texts) for v in written):
+            if strict and not all(v == EMPTY_ITEM or held_by(v, texts) for v in written):
                 log(f"binding: {name} - not every item is in what this run was given; left for the work to read")
                 continue
             values[name] = "; ".join(written)
         else:
             if isinstance(value, (list, dict)):
                 continue
+            notes = []  # what the harness says of this value, each whole
             written = as_written(str(value).strip(), param.get("example"), texts)
             if drops_number(written, param.get("example")):
                 log(f"binding: {name} = {written!r} has no number where the taught {param.get('example')!r} had; "
@@ -372,26 +444,30 @@ def _clean(params, answer, texts=(), strict=False):
                 # Held by its amount (held_by is sign-blind on purpose), but this run's documents write it only with
                 # the other sign: said to the check, never decided here (review 2026-11-03 rework, E-45).
                 log(f"binding: {name} = {written!r} - the documents show this amount only with the other sign; kept, and said")
-                evidence[name] = OTHER_SIGN
+                notes.append(OTHER_SIGN)
             if numbered_like_example(written, param, texts):
                 log(f"binding: {name} = {written!r} numbers this run's words the way the taught "
                     f"{param.get('example')!r} did, and nothing of this run says it - kept, and said")
-                old = why.get(name) if isinstance(why, dict) else None
-                evidence[name] = (f"{str(old)[:120]} ({NUMBERED})" if old else NUMBERED)[:240]
+                notes.append(NUMBERED)
             if is_example(written, param.get("example")) and not held_by(written, texts) and not (
                     re.search(r"[^\W\d_]{3,}", written) and words_held(written, texts)):
                 # The person's own value from when they taught it, which nothing of this run says.
                 log(f"binding: {name} = {written!r} is the taught example and this run's documents do not hold it - left out")
                 continue
-            if not words_held(written, texts) and name not in evidence:
+            if not words_held(written, texts) and not notes:
                 # Said, never dropped (independent review, 2026-10-22): a value worked out from the documents is
                 # written otherwise than they write it (28-Sep-2026 from 28/09/2026, "Private Limited" from "Pvt Ltd")
                 # and is right. Found live (2026-10-22) the other way: a portal username made up from the
                 # client's name, "srilakshmielev" - so the person and the check see that it is not the documents' own.
                 log(f"binding: {name} = {written!r} is not written so in this run's documents - kept, and said")
-                note = WORKED
+                notes.append(WORKED)
+            if notes:
+                # Every note the harness makes on a value is kept whole, beside the model's own words (cut short): a
+                # second note never overwrites the first (OTHER_SIGN was lost to NUMBERED), and no cut takes the end
+                # of a mark the final check looks for (skill_task._assumed_note).
                 old = why.get(name) if isinstance(why, dict) else None
-                evidence[name] = (f"{str(old)[:150]} ({note})" if old else note)[:200]
+                said = "; ".join(notes)
+                evidence[name] = f"{str(old)[:150]} ({said})" if old else said
             values[name] = written
 
         if isinstance(why, dict) and why.get(name) and name not in evidence:
@@ -553,7 +629,98 @@ def held_by(value, texts):
         # and a discount the field takes as 500 is the document's "-500". Review 2026-11-03 (E-45): the minus was
         # dropped from the texts only, so a negative value was never held, and strict fill dropped every one.
         return any(_plain(n) == plain.lstrip("-") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", joined))
-    return re.search(r"(?<!\w)" + re.escape(plain) + r"(?!\w)", joined) is not None
+    if re.search(r"(?<!\w)" + re.escape(plain) + r"(?!\w)", joined) is not None:
+        return True
+    if date_in(value, texts):
+        return True
+    return wrapped_in(plain, texts)
+
+
+DATE_ORDERS = ("day", "month")
+
+
+def date_in(value, texts):
+    """
+    The date token of the texts a digit date value names, or "": the value is written the way the field takes it (the
+    application's order, when known, else either), the texts as the documents write their dates (a month by name, or
+    digits in the source's order). "" when the value is no date, matches no date of the texts, or its two readings match
+    two different dates written there (which one is meant is not code's to say). Found live (2026-11-08): a bill's
+    "09-Oct-2026" filled as "09-10-2026" - how the form takes it - was "in nothing this run was given", every bill's date
+    was dropped, and the model entered every bill by hand.
+    """
+
+    from decurix_agent import task_context, values
+    from decurix_agent.computer import records
+
+    if not values.parse_date(value):
+        return ""
+    app = task_context.app_date_order()
+    readings = {values.as_iso(value, order) for order in ((app,) if app in DATE_ORDERS else DATE_ORDERS)} - {None}
+    if not readings:
+        return ""
+    source = task_context.source_date_order()
+    found = {}
+    for text in texts:
+        for m in records._DATE_TOKEN.finditer(text or ""):
+            iso = values.as_iso(m.group(0), source)
+            if iso in readings:
+                found.setdefault(iso, m.group(0))
+    return next(iter(found.values())) if len(found) == 1 else ""
+
+
+# How many lines of a wrapped cell's row may stand between two lines of the cell: the row's other columns, read in
+# between as a PDF lays the row out.
+WRAP_LINES_BETWEEN = 1
+
+
+def wrapped_in(plain, texts):
+    """
+    Whether a value of several words stands in a text as one table cell wrapped over lines does: each of its words,
+    whole and in order, within one region of the text (lines with no blank line between: a row as the reader lays it
+    out), each line of the cell at most WRAP_LINES_BETWEEN lines after the last. Found live (2026-11-08): a bill's item
+    "Executive A4 Printing Paper 75 GSM (Box of 10 Reams)" is read from its PDF as "Executive A4 / Printing Paper 75 /
+    1 4802 20 Reams 350.00 7,000.00 / GSM (Box of 10 / Reams)" - the row's other columns between the lines of the
+    cell. Bound to the region and its lines, never to a count of characters (review of freeze 2, A11: a span of
+    characters tuned to one PDF let words of two rows stand for one value).
+    """
+
+    words = re.findall(r"\w+", str(plain or "").casefold())
+    if len(words) < 2:
+        return False
+    patterns = [re.compile(r"(?<!\w)" + re.escape(w) + r"(?!\w)") for w in words]
+    for text in texts:
+        for region in re.split(r"\n[ \t]*\n", str(text or "").casefold()):
+            lines = region.split("\n")
+            if _cell_in(lines, patterns):
+                return True
+    return False
+
+
+def _cell_in(lines, patterns):
+    """Whether the words (patterns) stand in order in these lines of one region as a cell's lines do: each next word
+    straight after its word on the same line (nothing but spaces and marks between), or on a later line at most
+    WRAP_LINES_BETWEEN lines after it, where the cell goes on."""
+
+    for row, line in enumerate(lines):
+        for first in patterns[0].finditer(line):
+            at_row, at = row, first.end()
+            for pattern in patterns[1:]:
+                found = None
+                m = pattern.search(lines[at_row], at)
+                if m and not re.search(r"\w", lines[at_row][at:m.start()]):
+                    found = (at_row, m.end())
+                else:
+                    for r in range(at_row + 1, min(len(lines), at_row + WRAP_LINES_BETWEEN + 2)):
+                        m = pattern.search(lines[r])
+                        if m:
+                            found = (r, m.end())
+                            break
+                if found is None:
+                    break
+                at_row, at = found
+            else:
+                return True
+    return False
 
 
 OTHER_SIGN = "this run's documents show this amount only with the other sign"

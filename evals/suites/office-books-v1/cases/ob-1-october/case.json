@@ -1,0 +1,206 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "ob-1-october",
+  "category": "ordinary",
+  "kind": "sales_bills_to_books",
+  "request": "Suvarna Lift Systems has emailed its sales bills for October 2026 to our Mailbox. Enter each bill as a Sales voucher in the client's company in Bookwell, then check the month's sales in the books against the bills. The attachments are also saved in ~/work/practice/ob-1-october/. Our apps: Mailbox http://mail.example.test, Bookwell http://books.example.test.",
+  "start": {
+    "files": [
+      "1043 Sagar Vista.docx",
+      "1044 Udyavara Apt.docx",
+      "1045 Kadri Heights.docx",
+      "1046 Pai Textiles.docx",
+      "1047 Mithila Towers.docx"
+    ],
+    "mock": "ca-office",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "approves": [
+    {
+      "control": "Save voucher",
+      "role": "button"
+    },
+    {
+      "control": "Save ledger",
+      "role": "button"
+    }
+  ],
+  "date_orders": {
+    "app": "day",
+    "source": "day"
+  },
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "id": "vouchers",
+        "kind": "mock_records",
+        "collection": "vouchers",
+        "exact_count": true,
+        "records": [
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1043",
+            "date": {
+              "date": "2026-10-03"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "24000.00"
+            },
+            "cgst": {
+              "number": "2160.00"
+            },
+            "sgst": {
+              "number": "2160.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "28320.00"
+            },
+            "party": "Sagar Hospitality Group"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1044",
+            "date": {
+              "date": "2026-10-08"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "4350.00"
+            },
+            "cgst": {
+              "number": "391.50"
+            },
+            "sgst": {
+              "number": "391.50"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "5133.00"
+            },
+            "party": "Udyavara Apartments"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1045",
+            "date": {
+              "date": "2026-10-14"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "86100.00"
+            },
+            "cgst": {
+              "number": "7749.00"
+            },
+            "sgst": {
+              "number": "7749.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "101598.00"
+            },
+            "party_gstin": "29AAJFK6610D1ZF"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1046",
+            "date": {
+              "date": "2026-10-21"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "27800.00"
+            },
+            "cgst": {
+              "number": "2502.00"
+            },
+            "sgst": {
+              "number": "2502.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "32804.00"
+            },
+            "party": "Pai Textiles"
+          },
+          {
+            "company": "1",
+            "type": "Sales",
+            "number": "1047",
+            "date": {
+              "date": "2026-10-28"
+            },
+            "sales_ledger": "Sales@18%",
+            "taxable": {
+              "number": "25000.00"
+            },
+            "cgst": {
+              "number": "2250.00"
+            },
+            "sgst": {
+              "number": "2250.00"
+            },
+            "igst": {
+              "number": "0.00"
+            },
+            "total": {
+              "number": "29500.00"
+            },
+            "party": "Mithila Towers Welfare Society"
+          }
+        ]
+      },
+      {
+        "id": "ledgers",
+        "kind": "mock_records",
+        "collection": "ledgers",
+        "exact_count": true,
+        "records": [
+          {
+            "company": "1",
+            "under": "Sundry Debtors",
+            "state": "29-Karnataka",
+            "registration": "Regular",
+            "gstin": "29AAJFK6610D1ZF"
+          }
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'name=Kadri Heights Builders LLP' --data-urlencode 'under=Sundry Debtors' --data-urlencode 'mailing_name=Kadri Heights Builders LLP' --data-urlencode 'address=Kadri Heights, Bejai Main Road, Mangaluru 575004' --data-urlencode 'state=29-Karnataka' --data-urlencode 'pincode=575004' --data-urlencode 'registration=Regular' --data-urlencode 'gstin=29AAJFK6610D1ZF' http://books.example.test/company/1/ledgers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1043' --data-urlencode 'date=03-10-2026' --data-urlencode 'party=Sagar Hospitality Group' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=24000.00' --data-urlencode 'cgst=2160.00' --data-urlencode 'sgst=2160.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1044' --data-urlencode 'date=08-10-2026' --data-urlencode 'party=Udyavara Apartments' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=4350.00' --data-urlencode 'cgst=391.50' --data-urlencode 'sgst=391.50' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1045' --data-urlencode 'date=14-10-2026' --data-urlencode 'party=Kadri Heights Builders LLP' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=86100.00' --data-urlencode 'cgst=7749.00' --data-urlencode 'sgst=7749.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1046' --data-urlencode 'date=21-10-2026' --data-urlencode 'party=Pai Textiles' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=27800.00' --data-urlencode 'cgst=2502.00' --data-urlencode 'sgst=2502.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    "curl $MOCK_ROUTE -fsS -o /dev/null -b \"$HOME/.oracle-cookies\" -c \"$HOME/.oracle-cookies\" --data-urlencode 'type=Sales' --data-urlencode 'number=1047' --data-urlencode 'date=28-10-2026' --data-urlencode 'party=Mithila Towers Welfare Society' --data-urlencode 'sales_ledger=Sales@18%' --data-urlencode 'taxable=25000.00' --data-urlencode 'cgst=2250.00' --data-urlencode 'sgst=2250.00' --data-urlencode 'igst=0.00' http://books.example.test/company/1/vouchers/new",
+    {
+      "answer": "Entered 5 Sales vouchers for October 2026 in Suvarna Lift Systems 2025-26: 1043, 1044, 1045, 1046, 1047."
+    }
+  ],
+  "budget": {
+    "max_minutes": 120,
+    "max_tokens": 8000000
+  },
+  "tags": [
+    "stale-company",
+    "new-ledger",
+    "name-differs"
+  ]
+}

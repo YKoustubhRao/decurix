@@ -498,6 +498,100 @@ def plan_context():
             "changes the plan where it says so - and do not put the plan to them again.")
 
 
+# The person's replies on this task a job is sent at most (soul's skills.MaxEarlierSaid bounds it too).
+MAX_EARLIER_SAID = 20
+
+
+def _earlier_said():
+    """The person's replies on this task so far, each with the question it answered, as the control plane confirms
+    them (person_record.answers): [{"asked", "said"}], oldest first, [] when none or unread. Sent with every job, so a
+    later job of the task (one the final check sent back starts a goal of its own) keeps them: found live (2026-11-08),
+    the review of such a job was shown no reply of the person's and judged a value they gave as backed by nothing.
+    Data beside the prompt, never in it: the prompt's bytes stay as they are."""
+
+    try:
+        from decurix_agent import person_record
+        rows = person_record.answers(task_context.current())
+    except Exception as exc:  # noqa: BLE001 - what cannot be confirmed is not sent
+        log(f"TheBot: could not read the person's replies on this task: {exc}")
+        return []
+    return [{"asked": str(r.get("asked") or ""), "said": str(r.get("text") or "")}
+            for r in rows[-MAX_EARLIER_SAID:] if str(r.get("text") or "").strip()]
+
+
+# The picked fields a job is sent at most (soul's skills.MaxPickedFields bounds it too).
+MAX_PICKED_FIELDS = 40
+
+
+def _picked_fields():
+    """The fields of the taught task this job does that are filled by picking an existing entry from the application's
+    own list, each with the words this run searches with (skill_task._chosen_for): ["Item (item_2): searched with
+    \"...\""], [] when the job is no taught task's. Sent with every job for soul's review, which was told only the run's
+    values and sent a saved bill back twice to put the document's line description where the application's item
+    belonged (found live 2026-11-08). Data beside the prompt, never in it."""
+
+    try:
+        run = (guidance.get() or {}).get("run") or {}
+        skill = run.get("skill")
+        if not skill:
+            return []
+        from decurix_agent import skill_task
+        chosen = skill_task._chosen_for(run)
+        params = {p["name"]: p for p in skill.get("params") or []}
+        bases = (run.get("rows") or {}).get("base") or {}
+        out = []
+        for name, value in (run.get("values") or {}).items():
+            if name not in chosen or not str(value or "").strip():
+                continue
+            param = params.get(name) or params.get(bases.get(name)) or {}
+            out.append(f"{param.get('label') or name} ({name}): searched with {json.dumps(str(value), ensure_ascii=False)}")
+        return out[:MAX_PICKED_FIELDS]
+    except Exception as exc:  # noqa: BLE001 - a fact that cannot be worked out is not sent
+        log(f"TheBot: could not work out the picked fields: {exc}")
+        return []
+
+
+# The values a job is told were entered earlier in its task at most (soul's skills.MaxEnteredEarlier bounds it too).
+MAX_ENTERED_EARLIER = 400
+
+
+def _entered_earlier():
+    """What this task typed or chose into forms the application then saved, from the task's own recording
+    (records.typed_into_saved): a later job of the task - one the final check sent back - is told it, so its review does
+    not ask it to enter again what an earlier job entered (found live 2026-11-08: eight send-backs of a correct second
+    attempt). A value privacy withholds is never sent. [] when the task saved nothing yet, or it cannot be read."""
+
+    try:
+        from decurix_agent.computer import privacy, recording, records
+        task_id = task_context.current()
+        if not task_id:
+            return []
+        _meta, events = recording.load(f"task-{task_id}")
+        out = []
+        for _label, value in records.typed_into_saved(events):
+            text = " ".join(str(value or "").split())
+            if text and privacy.withhold_known(text) == text and text not in out:
+                out.append(text)
+        return out[:MAX_ENTERED_EARLIER]
+    except (FileNotFoundError, ValueError):
+        return []
+    except Exception as exc:  # noqa: BLE001 - a fact that cannot be worked out is not sent
+        log(f"TheBot: could not read what this task entered before: {exc}")
+        return []
+
+
+def _collect_only():
+    """Whether this job is the phase of a taught task that collects its documents and enters nothing (skill_task's
+    gather phase), from the guidance's own phase - structure, never the request's words. Soul's review then asks no
+    document's figures to be entered: found live (2026-11-08), it sent such a phase back four times to enter a bill."""
+
+    try:
+        from decurix_agent import skill_task
+        return (guidance.get() or {}).get("phase") == skill_task.GATHER_PHASE
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _plan_agreed():
     """Whether the job about to start is under a plan the person agreed: this process put the plan to them and they
     answered it (plan_context), or the job is a stage of a planned long request (workflow_task points at a stage of a
@@ -656,6 +750,14 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 # job of a request whose plan the person already answered. Decided from structure here, never from
                 # the request's words (soul stopped reading the marker in the text: a pasted message could hold it).
                 "planAgreed": _plan_agreed(),
+                # The person's replies on this task before this job, with their questions (_earlier_said).
+                "earlierSaid": _earlier_said(),
+                # The taught task's fields filled by picking an application's entry, with their search words (_picked_fields).
+                "pickedFields": _picked_fields(),
+                # This job is a taught task's phase that collects documents and enters nothing (_collect_only).
+                "collectOnly": _collect_only(),
+                # What earlier jobs of this task typed into forms the application saved (_entered_earlier).
+                "enteredEarlier": _entered_earlier(),
                 # The control plane's task this job works for (C2): soul tags every model call it makes for the job
                 # with it, so the proxy's record joins each call to its task.
                 "taskId": task_context.current(),

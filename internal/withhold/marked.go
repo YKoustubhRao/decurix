@@ -14,9 +14,9 @@ import (
 //   - the message whole (HeldValues of it withheld as Secret: as typed and with its spaces folded, and the secrets its
 //     structure spells out), and the message without the block of files it brings, its spaces folded;
 //   - each of its words that has a value's shape: 4 or more code points, with a digit or a punctuation or symbol
-//     character in it, the characters .,;:!?"'()[]{} at its ends aside;
+//     character in it, the characters .,;:!?"'()[]{} at its ends aside (a hyphen is a mark: "correct-horse-battery");
 //   - but not a word that is data by its structure: an amount or a number, a date, a time, an e-mail address, a URL,
-//     a host name, a contraction.
+//     a host name, a contraction, one figure over another (a ratio).
 //
 // A person marks a message because they did not label the value in it: the recorder held only the whole marked text,
 // so an unlabelled value the model restated in its own commands was kept in 42 recorded calls (live L1, 2026-11-04).
@@ -64,7 +64,8 @@ func withoutFiles(text string) string {
 }
 
 // valueShaped reports whether a word has a value's shape: 4 or more code points, with a digit, a punctuation or a
-// symbol character in it.
+// symbol character in it. A hyphen is a mark: a passphrase of hyphenated words is a value (review of freeze 2, A2;
+// agent privacy._value_shaped).
 func valueShaped(word string) bool {
 	if utf8.RuneCountInString(word) < 4 {
 		return false
@@ -83,12 +84,15 @@ var (
 	urlWord     = regexp.MustCompile(`(?i)^(?:[a-z][a-z0-9+.-]*://|www\.)\S+`)
 	hostWord    = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$`)
 	contraction = regexp.MustCompile(`^\pL+['\x{2019}]\pL+$`)
+	// ratioWord is one figure over another: a rate or a share ("100/118").
+	ratioWord = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?/[0-9]+(?:\.[0-9]+)?$`)
 )
 
 // isData reports whether a value-shaped word is data by its structure, as the agent reads it (privacy._is_data).
 func isData(word string) bool {
 	return isAmount(word) || isDate(word) || timeWord.MatchString(word) || emailWord.MatchString(word) ||
-		urlWord.MatchString(word) || hostWord.MatchString(word) || contraction.MatchString(word)
+		urlWord.MatchString(word) || hostWord.MatchString(word) || contraction.MatchString(word) ||
+		ratioWord.MatchString(word)
 }
 
 var (

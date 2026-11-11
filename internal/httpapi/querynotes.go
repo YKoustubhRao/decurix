@@ -48,6 +48,34 @@ func nextNoteID() string {
 	return strconv.FormatInt(id, 10)
 }
 
+// agentWaitingHandler lists the tasks of a desktop that wait on a person (GET ?desktop_id=), for its agent coming
+// back from a restart: each question it no longer holds it reports as interrupted (querytext, interrupted), which
+// closes the task as stopped. A desktop sees only its own (actingAs).
+func (s *Server) agentWaitingHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethod(w, r, http.MethodGet) {
+		return
+	}
+	acting, ok := actingAs(w, r, r.URL.Query().Get("desktop_id"))
+	if !ok {
+		return
+	}
+	id := desktop.SanitizeID(acting)
+	if id == "" {
+		http.Error(w, "desktop_id is required", http.StatusBadRequest)
+		return
+	}
+	waiting, err := s.Tasks.Waiting(id)
+	if err != nil {
+		log.Printf("waiting tasks of %s: %v", id, err)
+		jsonStatusError(w, http.StatusInternalServerError, "The tasks could not be read.")
+		return
+	}
+	if waiting == nil {
+		waiting = []string{}
+	}
+	jsonResponse(w, map[string][]string{"tasks": waiting})
+}
+
 // queryTextHandler records a query note submitted from inside a desktop.
 func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodPost) {
@@ -216,6 +244,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		CachedInputTokens: cachedWithin(nonNegative(req.CachedInputTokens), nonNegative(req.InputTokens)),
 		Checked:           req.Checked,
 		Secret:            req.Secret && (note.Kind == tasks.OutcomeQuery || note.Kind == tasks.OutcomeApproval),
+		Interrupted:       req.Interrupted,
 	})
 	if err != nil {
 		log.Printf("querytext from %s: %v", desktopID, err)

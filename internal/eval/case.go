@@ -53,7 +53,11 @@ const (
 	MaxRefersTo     = 16
 	MaxOracleSteps  = 200
 	MaxRequestBytes = 8000
-	MaxCaseMinutes  = 60
+	MaxCaseMinutes  = 120 // a throttled run (one key, 250k tokens a minute, workers in parallel) is never cut off
+	MaxApproves     = 10
+	// MaxControlName is the longest control name an approval may list: the gate cuts a name it quotes at 80
+	// characters, the last of them an ellipsis, so a longer one could never be matched whole.
+	MaxControlName = 79
 )
 
 // Suite is a loaded, validated suite: its own document plus every case, file and mock it names.
@@ -68,6 +72,14 @@ type Suite struct {
 	// cases before it left. Such a suite runs only when the run asks for it too (MatrixRequest.CarryState), and then
 	// nothing is cleared between a repeat's cases; never the default.
 	CarryState bool `json:"carry_state,omitempty"`
+	// CarryAllowed is a suite whose cases stand alone but MAY run as a sequence on one taught desktop, state carried
+	// from case to case - to show the worker getting cheaper with practice (a learning curve; owner's ask 2026-11-09).
+	// CarryState says a run must carry; this, that it may. Run without --carry-state, every case starts from the snapshot.
+	CarryAllowed bool `json:"carry_allowed,omitempty"`
+	// ConfirmsPlans: the person glances at the plan a taught worker puts to them and says yes, or corrects a value
+	// that contradicts one of their facts (confirm.go). Off, the expert answers a plan as any question (no fact gives
+	// leave to act). Owner's decision 2026-11-08, for suites whose taught route asks a plan.
+	ConfirmsPlans bool `json:"confirms_plans,omitempty"`
 
 	// Filled by Load.
 	Cases       []Case            `json:"-"`
@@ -89,18 +101,24 @@ type Budget struct {
 // Case is one request, its start state, the facts the person knows, what must be true at the end, and a scripted
 // solution that proves it can be done.
 type Case struct {
-	Schema        string       `json:"schema"`
-	ID            string       `json:"id"`
-	Category      string       `json:"category"`
-	Kind          string       `json:"kind"`
-	Request       string       `json:"request"`
-	Start         Start        `json:"start"`
-	Facts         []Fact       `json:"facts"`
-	Expected      Expected     `json:"expected"`
-	Oracle        []OracleStep `json:"oracle"`
-	OracleSecrets []string     `json:"oracle_secrets,omitempty"`
-	Budget        Budget       `json:"budget"`
-	Tags          []string     `json:"tags,omitempty"`
+	// ConfirmsPlans is the suite's (Suite.ConfirmsPlans), copied onto each case by Load.
+	ConfirmsPlans bool       `json:"-"`
+	Schema        string     `json:"schema"`
+	ID            string     `json:"id"`
+	Category      string     `json:"category"`
+	Kind          string     `json:"kind"`
+	Request       string     `json:"request"`
+	Start         Start      `json:"start"`
+	Facts         []Fact     `json:"facts"`
+	Approves      []Approval `json:"approves,omitempty"`
+	// DateOrders is how each side writes digit dates, a fact of the case's apps and documents: "app" and "source", each
+	// "day" (day first) or "month". The expert answers the agent's date-order question from it (confirmReply).
+	DateOrders    map[string]string `json:"date_orders,omitempty"`
+	Expected      Expected          `json:"expected"`
+	Oracle        []OracleStep      `json:"oracle"`
+	OracleSecrets []string          `json:"oracle_secrets,omitempty"`
+	Budget        Budget            `json:"budget"`
+	Tags          []string          `json:"tags,omitempty"`
 
 	// Filled by Load: the input files (by flat name) and the mock's start state.
 	Files   map[string][]byte `json:"-"`
@@ -124,6 +142,14 @@ type Fact struct {
 	// whatever the expert says, so which question is the right one rests on the case's data, not on a model.
 	RefersTo []string `json:"refers_to"`
 	Required *bool    `json:"required"`
+}
+
+// Approval is one action the person approves for a case (Case.Approves), answered by the expert's yes when the
+// approval gate stops it (docs/evals.md): a click on the control named Control (and, when Role is
+// given, of that role), as the approval gate words the action in its signed question.
+type Approval struct {
+	Control string `json:"control"`
+	Role    string `json:"role,omitempty"`
 }
 
 // words splits text into its lower-cased words (letters and digits).

@@ -25,13 +25,13 @@
 | two | 0/1 (hi 0.79); 0 | 0/1 (hi 0.79); 0 |
 | **total** | **0/2 (hi 0.66); 0** | **0/2 (hi 0.66); 0** |
 
-## Questions per run (required / other)
+## Questions per run (required / other / declined approvals)
 
 | case | default | fast+expert |
 |---|---|---|
-| one | 0.0 / 0.0 | 0.0 / 1.0 |
-| two | 1.0 / 0.0 | 1.0 / 0.0 |
-| **total** | **0.5 / 0.0** | **0.5 / 0.5** |
+| one | 0.0 / 0.0 / 0.0 | 0.0 / 1.0 / 0.0 |
+| two | 1.0 / 0.0 / 0.0 | 1.0 / 0.0 / 0.0 |
+| **total** | **0.5 / 0.0 / 0.0** | **0.5 / 0.5 / 0.0** |
 
 ## Tokens per run (median, p90; cached share of input)
 

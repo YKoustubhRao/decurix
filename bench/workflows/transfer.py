@@ -164,7 +164,8 @@ def learn(case, root):
         question = learning.next_question(learned)
         if question is None: break
         answers = {"goal":"skip", "start":"no", "variable":"changes", "variables":"1 changes", "approval":"go ahead",
-                   "confirm":"yes", "optional":"always", "coordinates":"keep", "unsupported":"manual", "loop":"fixed"}
+                   "confirm":"yes", "optional":"always", "coordinates":"keep", "unsupported":"manual", "loop":"fixed",
+                   "gates":"yes"}
         response = learning.answer(learned, question, answers[question["kind"]])
         if response.get("decision"): break
     skills.save(learned)

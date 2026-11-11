@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"strings"
 	"time"
@@ -25,7 +26,7 @@ const (
 
 // callerCache is the address map and the network view, each fetched by one call at a time (refreshed).
 type callerCache struct {
-	byAddr refreshed[map[netip.Addr]string]
+	byAddr refreshed[callerMap]
 	nets   netCache
 
 	// list and netsFetch stand in for Docker in tests.
@@ -34,31 +35,67 @@ type callerCache struct {
 }
 
 // DesktopAt returns the ID of the desktop whose container has addr on the desktop network, and false when no
-// desktop does (or Docker cannot be asked). A known address in a fresh map is answered without waiting; only an
-// address the map does not hold, or a map past callerTTL, waits for Docker, and every caller waiting then shares one
-// question.
+// desktop does (or Docker cannot be asked). CallerAt tells those two apart.
 func (m *Manager) DesktopAt(ctx context.Context, addr netip.Addr) (string, bool) {
-	if m == nil || (m.client == nil && m.callers.list == nil) || !addr.IsValid() {
+	id, found, _ := m.CallerAt(ctx, addr)
+	return id, found
+}
+
+// ErrCallersUnread is CallerAt's answer when Docker could not be asked who has an address and the last map it gave
+// is too old to say: not "this is no desktop" (a stranger, refused for good) but "try again" (found live 2026-11-11: a
+// Docker blip under load answered a desktop's model call "this address is not a desktop's", and the task ended on it).
+var ErrCallersUnread = errors.New("the desktop list could not be read")
+
+// callerMap is what the last question to Docker gave. read is false when Docker could not be asked; byAddr, at and
+// gen are then still the last map Docker did give, used only while it is as young as a map is ever trusted
+// (callerTTL) - never past that, and never for an address it did not hold.
+type callerMap struct {
+	byAddr map[netip.Addr]string
+	read   bool
+	at     time.Time // when Docker gave byAddr
+	gen    uint64    // the desktop list's generation byAddr was read for
+}
+
+// known is the desktop at addr in a map Docker gave for generation gen (or later) less than callerTTL ago.
+func (c callerMap) known(addr netip.Addr, gen uint64) (string, bool) {
+	if c.byAddr == nil || c.gen < gen || time.Since(c.at) >= callerTTL {
 		return "", false
+	}
+	id, ok := c.byAddr[addr]
+	return id, ok
+}
+
+// CallerAt returns the ID of the desktop whose container has addr on the desktop network. found false with a nil
+// error is Docker's answer that no desktop has addr; ErrCallersUnread is that Docker could not be asked and the last
+// map it gave (younger than callerTTL, of this desktop list) does not name addr. A known address in a fresh map is
+// answered without waiting; only an address the map does not hold, or a map past callerTTL, waits for Docker, and
+// every caller waiting then shares one question.
+func (m *Manager) CallerAt(ctx context.Context, addr netip.Addr) (string, bool, error) {
+	if m == nil || (m.client == nil && m.callers.list == nil) || !addr.IsValid() {
+		return "", false, nil
 	}
 	addr = addr.Unmap()
 	gen := m.desktopGeneration()
+	fetch := func(ctx context.Context, prev callerMap) callerMap { return m.fetchCallers(ctx, prev, gen) }
 
-	byAddr, ok := m.callers.byAddr.fresh(ctx, callerTTL, gen, m.fetchCallers)
+	if cm, ok := m.callers.byAddr.fresh(ctx, callerTTL, gen, fetch); ok {
+		if id, found := cm.known(addr, gen); found {
+			return id, true, nil
+		}
+	}
+	// Not in the map: a desktop started a moment ago, or no desktop at all (or the last question failed). Asked again
+	// at most every callerRefreshEvery, so a container that is no desktop cannot make every request wait for Docker.
+	cm, ok := m.callers.byAddr.fresh(ctx, callerRefreshEvery, gen, fetch)
 	if !ok {
-		return "", false
+		return "", false, ErrCallersUnread
 	}
-	if id, found := byAddr[addr]; found {
-		return id, true
+	if id, found := cm.known(addr, gen); found {
+		return id, true, nil
 	}
-	// Not in the map: a desktop started a moment ago, or no desktop at all. Asked again at most every
-	// callerRefreshEvery, so a container that is no desktop cannot make every request wait for Docker.
-	byAddr, ok = m.callers.byAddr.fresh(ctx, callerRefreshEvery, gen, m.fetchCallers)
-	if !ok {
-		return "", false
+	if !cm.read {
+		return "", false, ErrCallersUnread
 	}
-	id, found := byAddr[addr]
-	return id, found
+	return "", false, nil
 }
 
 // desktopGeneration is the desktop list's generation, bumped by every desktop made or removed here.
@@ -68,19 +105,21 @@ func (m *Manager) desktopGeneration() uint64 {
 	return m.listGen
 }
 
-// fetchCallers asks Docker which desktop has which address on the desktop network. Unknown is unknown: when Docker
-// cannot be asked the map is empty, since an old map is not evidence about who is calling now.
-func (m *Manager) fetchCallers(ctx context.Context, _ map[netip.Addr]string) map[netip.Addr]string {
+// fetchCallers asks Docker which desktop has which address on the desktop network, for the desktop list's generation
+// gen. Unknown is unknown: when Docker cannot be asked the answer is unread (read false), carrying the last map Docker
+// gave with its own time and generation, so no failure makes an old map look new (callerMap.known bounds its use).
+func (m *Manager) fetchCallers(ctx context.Context, prev callerMap, gen uint64) callerMap {
+	failed := callerMap{byAddr: prev.byAddr, at: prev.at, gen: prev.gen}
 	if m.callers.list != nil {
 		byAddr, err := m.callers.list(ctx)
 		if err != nil {
-			return map[netip.Addr]string{}
+			return failed
 		}
-		return byAddr
+		return callerMap{byAddr: byAddr, read: true, at: time.Now(), gen: gen}
 	}
 	list, err := m.client.ContainerList(ctx, container.ListOptions{Filters: filters.NewArgs(filters.Arg("label", "desktop-manager=true"))})
 	if err != nil {
-		return map[netip.Addr]string{}
+		return failed
 	}
 	byAddr := make(map[netip.Addr]string, len(list))
 	for _, c := range list {
@@ -94,7 +133,7 @@ func (m *Manager) fetchCallers(ctx context.Context, _ map[netip.Addr]string) map
 			}
 		}
 	}
-	return byAddr
+	return callerMap{byAddr: byAddr, read: true, at: time.Now(), gen: gen}
 }
 
 // desktopIDFromNames is the desktop ID in a container's names ("/desktop_<id>"), "" for any other container.

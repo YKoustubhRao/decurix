@@ -137,14 +137,24 @@ class EnterIsAPressOnTheSubmitControl(_Store):
 class AReplaysCommittingPress(_Store):
     FULL = [["Customer", "Cafe Bloom"], ["Customer PO number", "WA-1810"], ["Quantity", "2"], ["Rate", "149"]]
 
-    def _form(self, **patches):
+    # A taught task whose person confirmed which presses need their OK, and none of its saves do (the lesson's answer).
+    CONFIRMED = {"name": "orders", "approvals": {"confirmed": True, "ask": [], "no_ask": [], "said": ["saves are fine"]}}
+
+    def _form(self, skill=CONFIRMED, **patches):
         save = {"ref": "e2", "role": "button", "name": "Save", "path": "div > button Save", "source": "cdp", "group": "g"}
-        with mock.patch.object(core, "_ledger_check", lambda fields: None),                 mock.patch.object(core, "_unsourced_fields", patches.get("unsourced", lambda fields: [])):
+        with mock.patch.object(core, "_ledger_check", lambda fields, **_: None), \
+                mock.patch.object(core, "_task_skill", lambda: skill), \
+                mock.patch.object(core, "_unsourced_fields", patches.get("unsourced", lambda fields: [])):
             return core._form_check(save, found={"form": "New order", "fields": self.FULL}, listing="ask")
 
     def test_a_replay_saving_sourced_values_asks_nobody(self):
-        # (review 2026-11-03: it asked a person at every save of a form of 3 fields or more)
+        # (review 2026-11-03: it asked a person at every save of a form of 3 fields or more) - once the person has said
+        # which presses need their OK (2026-11-10, owner decision).
         self.assertEqual(self._form(), "")
+
+    def test_until_the_person_has_said_which_saves_need_them_a_replayed_save_is_asked(self):
+        self.assertIsInstance(self._form(skill=None), core.AskFirst)
+        self.assertIsInstance(self._form(skill={"name": "x", "approvals": {"confirmed": False, "ask": []}}), core.AskFirst)
 
     def test_a_replay_saving_a_value_in_no_source_is_refused_not_asked(self):
         held = self._form(unsourced=lambda fields: [("Quantity", "2")])
@@ -246,13 +256,13 @@ class OneNotePerTask(_Store):
         save = {"ref": "e2", "role": "button", "name": "Save", "path": "div > button Save", "source": "cdp", "group": "g"}
         found = {"form": "New order", "fields": AReplaysCommittingPress.FULL}
         with mock.patch.object(core, "_unsourced_fields", lambda fields: []), \
-                mock.patch.object(core, "_ledger_check", lambda fields: None), \
+                mock.patch.object(core, "_ledger_check", lambda fields, **_: None), \
                 mock.patch("decurix_agent.task_context.current", lambda: "t" + "a" * 16):
             self.assertIn("Not pressed yet", core._form_check(save, found=found))
             self.assertEqual(core._form_check(save, checked=True, found=found), "")
             self.assertIn("ta", core._form_check_file().name)
         with mock.patch.object(core, "_unsourced_fields", lambda fields: []), \
-                mock.patch.object(core, "_ledger_check", lambda fields: None), \
+                mock.patch.object(core, "_ledger_check", lambda fields, **_: None), \
                 mock.patch("decurix_agent.task_context.current", lambda: "t" + "b" * 16):
             self.assertIn("Not pressed yet", core._form_check(save, checked=True, found=found))
 
