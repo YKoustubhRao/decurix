@@ -55,11 +55,12 @@ def fingerprint(observation):
 class Patience:
     """One wait: more(observation) says whether to keep polling."""
 
-    def __init__(self, base, clock=time.monotonic, load=load_factor):
+    def __init__(self, base, clock=None, load=None):
         self.base = float(base)
-        self.clock = clock
-        self.started = clock()
-        self.load = load()
+        # (Looked up when the wait starts, not when this module loaded: a test that stands in time.monotonic is obeyed.)
+        self.clock = clock or time.monotonic
+        self.started = self.clock()
+        self.load = (load or load_factor)()
         self.deadline = self.started + self.base * self.load
         self.cap = self.started + self.base * MAX_FACTOR
         self.last = None
