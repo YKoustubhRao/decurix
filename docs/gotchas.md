@@ -1043,3 +1043,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A save answered after its look was reported "declared but never saved" - a save press is watched until answered, and a later look of the tab reads it back
 - [part-6.md](gotchas/part-6.md): A bill with no due date sent the whole run to the model, and "leave it as the app fills it" counted as help - the one field is asked about alone, a leave is no help, left out of the replay and kept on the control plane for the skill
 - [part-6.md](gotchas/part-6.md): Every approval was asked twice, once in the worker's words and once on the gate's card - a worded ask to press a control the gate itself holds is answered locally; the person sees only the card
+- [part-6.md](gotchas/part-6.md): A narrowing of a frozen rule let piped code run through a named module - check a narrowing against every way the named program can still read code from the pipe

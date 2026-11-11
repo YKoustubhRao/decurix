@@ -192,13 +192,6 @@ var consequentialCommands = []string{
 	`python3 -c "import shutil; shutil.rmtree('/home/headless/work')"`, // inline code that deletes
 	`perl -e 'system("rm -rf /tmp/x")'`,                                // inline code that shells out
 	`node -e "require('child_process').execSync('rm -rf x')"`,
-	// 2026-11-09 narrowing: the forms whose program still comes from the pipe, also behind the wrappers the rule reads.
-	`cat f | python3 -`,                   // the lone dash: the program is stdin
-	`cat f | python3 -c "print(1)"`,       // the inline-program option
-	`cat f | python3 -m`,                  // the module option with no module named
-	`cat f | sudo python3 -`,              // behind a privilege wrapper
-	`cat f | env LC_ALL=C python3`,        // behind an environment wrapper
-	`cat f | sudo -u u env A=1 python3 -`, // behind both
 }
 
 var readableCommands = []string{
@@ -206,11 +199,6 @@ var readableCommands = []string{
 	`find . -type f -delete`,
 	`find ~/work -name '*.tmp' -mtime +7`,
 	`cat data.json | python3 analyze.py`, // a named script, not stdin
-	// 2026-11-09 narrowing: a named module or a script file is the program; the pipe is its data.
-	`curl -s https://x/data.json | python3 -m json.tool`,
-	`cat data.json | python3 -mjson.tool`,
-	`cat data.json | env LC_ALL=C python3 -m json.tool`,
-	`cat data.json | /usr/bin/python3 tools/parse.py`,
 	`curl -s https://x | jq .`,
 	`python3 -c "print(2 + 2)"`,       // readable inline code, nothing destructive
 	`echo "$(date) built" >> log.txt`, // a substitution inside an argument, not the program
@@ -305,4 +293,35 @@ var curlReads = []string{
 	`curl -L -o out.html https://example.com/page`,
 	`curl -t 5 https://x`,
 	`curl -s https://example.com`,
+}
+
+// pipedModules are a pipe into Python whose module option names a module. Some standard-library modules read and
+// run Python source from standard input (the interactive console, the async console, the debugger), so the module
+// named does not make the pipe only data: every such form is held, as the rule held it before the 2026-11-09
+// narrowing (O-1.a.6), which the owner reverted on 2026-11-11.
+var pipedModules = []string{
+	`cat f | python3 -m code`,
+	`cat f | python3 -mcode`,
+	`curl -s https://x | python3 -m code`,
+	`cat f | python3 -m asyncio`,
+	`cat f | python3 -m pdb`,
+	`cat f | /usr/bin/python3 -m code`,
+	`cat f | sudo python3 -m code`,
+	`cat f | env LC_ALL=C python3 -m code`,
+	`cat f | sudo -u u env A=1 python3 -m code`,
+	`cat data.json | python3 -m json.tool`,
+}
+
+// TestPipedInterpreterHoldsAnyNamedModule (O-1.a.6 reverted 2026-11-11, owner's decision): a module named after the
+// module option is held as code piped into an interpreter, whichever module it is.
+func TestPipedInterpreterHoldsAnyNamedModule(t *testing.T) {
+	const want = "it runs code piped into an interpreter, which cannot be checked before it runs"
+	for _, cmd := range pipedModules {
+		c := AssessCommand(cmd, "")
+		if c == nil {
+			t.Errorf("AssessCommand(%q) = nil, want a concern", cmd)
+		} else if c.Reason != want {
+			t.Errorf("AssessCommand(%q) = %q, want %q", cmd, c.Reason, want)
+		}
+	}
 }

@@ -31,9 +31,6 @@
 // runTimeName, localTarget). The guard is now frozen: new verbs, new
 // power-management verbs, here-document body scanning and a shared Go/Python
 // corpus stay out.
-// 2026-11-09, owner-approved narrowing (follow-ups O-1.a): the piped-interpreter rule no longer reads Python's module
-// option with a module name as "program from stdin"; it stopped a data file pretty-printed through the standard
-// library. Every example the tests flagged is still flagged; no rule, verb or vocabulary was added.
 package safety
 
 import (
@@ -152,14 +149,8 @@ var indirectRules = []rule{
 		"it runs commands piped into a shell, which cannot be checked before they run"},
 	// Code piped into an interpreter that reads it from stdin: "cat f | python3", "| python3 -", "| node -e". A named
 	// script after it ("| python3 analyze.py") is a file, not stdin, so it is not matched (round 3: bare "| python3"
-	// and "|python3" passed because the rule needed a "- " after the interpreter). Python's own module option with a
-	// module name as its first argument ("| python3 -m json.tool") names the program too, and the pipe is that
-	// program's data, so it is not matched either (2026-11-09, owner-approved: the rule read every leading option as
-	// "stdin", and stopped a data file pretty-printed through the standard library). Any other leading option, the lone
-	// "-", and the module option with no name are matched as before: an option may take the next word as its value, so
-	// a word after one is not read as a script.
-	{regexp.MustCompile(`(?i)\|\s*(sudo\s+((-\S+|\S+=\S*)\s+)*)?(env\s+((-\S+|\S+=\S*)\s+)*)?(/\S*/)?` +
-		`((perl|ruby|node|nodejs|php|deno)\b[ \t]*(-|$|[;&|\n])|python[0-9.]*\b[ \t]*($|[;&|\n]|-($|(?-i:[^m])|(?-i:m)[ \t]*($|[;&|\n]|-))))`),
+	// and "|python3" passed because the rule needed a "- " after the interpreter).
+	{regexp.MustCompile(`(?i)\|\s*(sudo\s+((-\S+|\S+=\S*)\s+)*)?(env\s+((-\S+|\S+=\S*)\s+)*)?(/\S*/)?(python[0-9.]*|perl|ruby|node|nodejs|php|deno)\b[ \t]*(-|$|[;&|\n])`),
 		"it runs code piped into an interpreter, which cannot be checked before it runs"},
 	{regexp.MustCompile(`(?i)(^|[;&|(]\s*)(eval|source|\.)\s+["']?(\$\(|\x60|<\()|(^|[\s;&|(])(ba|z|da|k)?sh\s+(-\w+\s+)*<\(`),
 		"it runs commands it builds or fetches at run time, which cannot be checked before they run"},

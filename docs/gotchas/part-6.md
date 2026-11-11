@@ -446,7 +446,7 @@ A hole in the documents' own numbered series is now found in code and put to the
 
 ### The guard stopped a data file pretty-printed through a named module
 
-TheBot's piped-interpreter rule read any option after the interpreter as "the program comes from stdin", so a named module (Python's module option) fed a downloaded file was stopped; it now decides by the interpreter's first argument (owner-approved narrowing of the frozen guard, 2026-11-09, follow-ups O-1.a.6).
+TheBot's piped-interpreter rule read any option after the interpreter as "the program comes from stdin", so a named module (Python's module option) fed a downloaded file was stopped; it now decides by the interpreter's first argument (owner-approved narrowing of the frozen guard, 2026-11-09, follow-ups O-1.a.6). Reverted 2026-11-11: see "A narrowing of a frozen rule let piped code run through a named module" below.
 
 ### No gathered month could ever earn trust
 
@@ -890,3 +890,11 @@ without quotes, so it got "I don't know"; and every worded ask counted toward th
 at Verify. Now an approved control named right after a press verb, quoted or not, is an approval ask
 (asksToPressUnquoted), and a worded ask the expert approves is counted with the gate's cards (maxListedApprovals),
 never toward MaxQuestions.
+
+### A narrowing of a frozen rule let piped code run through a named module
+
+O-1.a.6 stopped holding a pipe into Python when its module option named a module, on the premise that the pipe is
+then only that module's data. It is not: some standard-library modules (the interactive console, the async console,
+the debugger) read and run Python source from standard input, so arbitrary piped code ran unheld. The owner reverted
+the narrowing on 2026-11-11: any leading option on a piped interpreter is held again (`TestPipedInterpreterHoldsAnyNamedModule`).
+A narrowing of a frozen rule must be checked against every way the named program can still read code from the pipe.
