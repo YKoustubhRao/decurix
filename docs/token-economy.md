@@ -172,6 +172,81 @@ What this makes cheaper, and when:
 - Not yet: trust per step (rungs, promotion), the judge reading the ledger instead of screenshots, each document's
   extraction kept by content hash.
 
+## Tools a worker builds (2026-11-11)
+
+The owner's question, the same day: with experience the tokens should fall - "have each worker create tools for things
+it can automate without token expenditure". The diagnosis of 26 curve runs (3,042 model calls, 85.2M input tokens)
+said why they did not: 92% of the tokens were the model's own turns at ~34k tokens each, one control per turn, and
+every mechanism meant to remove turns was blocked. Ranked by the tokens each blocker cost:
+
+| Blocker | Share | What was built | Where |
+|---|---|---|---|
+| B1: work that writes no record (export, import, upload, file) never replayed and could never earn trust | 66% | Code-checkable effects derived from the taught steps' structure | `effects.py` |
+| B2: a replay stop handed the model the whole rest of the run, which then never counted | ~20% | Bounded one-step repair; the harness resumes the program | `repairs.py` |
+| B2/B4 recurring: the same stop paid for by the model every month | (in B2) | The repair compiled into a candidate branch, tried by code first, proven by code | `computer/branches.py` |
+| B3: the documents the request names were collected again by the model | ~8% | Documents in hand read before any gather | `skill_task._prepare` |
+| B5: fixed replay waits ran out on a loaded host | (3 of 5 stops) | Load-aware waits | `computer/waits.py` |
+| B6: a person's confirmation never counted | - | A plain confirmation of an unhelped run counts on the `person` basis | `final_gate._confirm_reply` |
+
+**Bounded repair** (SkillDroid: at most 2 consecutive and 5 total single-step model calls; AutoRPA: resume). A replay
+that stops at step N (`_execute`) no longer hands the model everything after N. `repairs.on_halt` first tries a branch
+the worker kept for a stop of the same shape (below), then gives the model ONE job in the phase `repair`: make step N
+possible and leave the screen there (or, when N acted and its result never came, bring that result about; or click the
+control a step kept only as a spot), with at most `REPAIR_ACTIONS` (30) actions, counted from the task's recording and
+refused past that by the gui command (`repairs.budget_refusal`). Its guidance is short: the step, why it stopped,
+the steps around it, this item's values, the person's rules. When it reports, the harness looks, by code: a step that
+did not act is done by the replay itself (with every check: the approval gate, the pre-save comparison, its recorded
+result); a result that never came must be on the screen now (`replay.unmet`). Then `replay.run` goes on from there.
+Two repairs in a row that did not get past their step, or five in a run, and the model takes the rest as before. Only
+the repaired step is marked as needing help (`run["repaired_ids"]` -> the step's history), never the whole run, so
+the program's other steps still earn evidence; a run with a repair or an unproven branch is never "verified" by the
+replay alone, so the final check always looks.
+
+**A repair becomes a tool** (ASI's re-run gate; SkillDroid's versions; Skyvern's progressive caching). What the model
+pressed in a repair that then got its step through is compiled (`replay.compile_program` over the model's own events
+since the repair began) into a CANDIDATE branch of the skill, kept in `skill["branches"]` beside the person's steps
+(never in them), keyed by the stop's structural shape: before / after / manual, the step's kind, its control's role
+and name, its stable id - never words of a reason. Next time the same shape stops a replay, the branch runs first
+(code, through `core.act`), and its effect is checked by code: the stopped step then goes through with its recorded
+result, or the missing result is on the screen. Promoted after it worked in `PROMOTE_AFTER` (2) later tasks; a
+candidate's failure demotes it and the model repairs again; a promoted one is demoted after two failures in a row or
+when more than half of 3+ uses failed; at most 3 versions are ever compiled for one shape. What a branch may hold:
+presses, typing, choices, keys and scrolls on controls known by role and name, only in the applications the taught
+steps use; every literal that equals a value of the source run is that value's parameter (the stopped step's own, or
+another of the same item), a literal from the run's documents that is no value refuses the candidate, and so does a
+control named for a run value. A branch has no approval of its own: a press the gate holds stops it, and the model
+makes that press, the person's card deciding.
+
+**Effects code reads back.** From the taught steps' structure (`effects.file_effects`, `coverage`): a typed value that
+is a file path, saved by a committing press within 4 steps, is a file the run writes; a consequential press with a
+recorded result is a status the application shows. A skill whose every consequential step has one may replay while
+still being learned, with every value filled from the request and its documents (the plan put to the person first, as
+for a declared record). After the replay, `effects.check` reads each file back - there, written during this run, opens
+as its kind, holds each identifier and amount the run typed before saving it - and looks up each status the replay saw
+appear after its press. A missing, stale, broken or wrong-total file fails the run; all effects read back by code ->
+the `code` basis, which counts towards trust. The judge still runs while the skill is learned, and the read-back runs
+on every run whatever trust says: an effect adds a check, never removes one.
+
+**Documents in hand first.** A per-document run whose request names its documents (a folder, files) reads the lists
+from those files (`binding.fill_lists`) before anything is gathered; the model gathers only when they do not give every
+list. Only the files directly in a folder the request names - never its subfolders.
+
+What to measure, per workflow and per run (all from what is already kept: `/api/llm/calls` by purpose and task, the
+task record's executions, `experience` on the skill):
+- tokens per run, and `operator.turn` calls per run, against the month before and the engine on the same month;
+- repairs per run, turns per repair (the calls between the repair's guidance and its report), share of repairs that
+  resumed the program, takeovers of the rest (should fall to ~0);
+- branches per skill by status, trials, promotions, demotions; replayed steps per run, and steps a branch ran;
+- gather turns per run (0 when the request names its documents);
+- counted runs (`verdict_counted`) per workflow, and the basis each rests on (code, ledger, person);
+- correct-run share, which must not fall: the cheaper path never replaces a check.
+
+Expected effect (not yet measured live): a new customer's stop (145 turns, 6.3M in the sample) becomes one repair of a
+few turns plus the replay, and from the next month a branch with no model call; a load stop becomes a longer wait or a
+repair of 1-3 turns; a month whose bills sit in the folder its request names loses its gather (14-59 turns); an
+export/filing skill whose consequential steps have effects replays from its first run with every value filled, its
+model turns falling to the repairs, and can earn trust on the `code` basis.
+
 ## Measuring it
 
 Per skill, per run (`experience.note_verdict` tokens, the task record's executions): tokens by phase (gather / fill /

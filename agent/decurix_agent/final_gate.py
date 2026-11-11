@@ -1397,6 +1397,18 @@ def _check_not_made(verdict):
     return str((verdict or {}).get("why") or "").startswith("the check could not be made")
 
 
+def _confirmation_follows_help(run):
+    """Whether a run the person now confirms had been helped before (asked_person, a stuck step put to them, a
+    takeover, work redone after a send-back): then the confirmation does not make it a clean run. True with no run."""
+
+    if run is None:
+        return True
+    try:
+        return bool(run.get("asked_person") or run.get("asked_ids") or run.get("taken_over") or _reworked(run))
+    except Exception:  # noqa: BLE001 - not known: helped, the safe side
+        return True
+
+
 def _confirm_reply(paused, reply):
     """The person's answer to "I cannot confirm this is done" - after an engine's run or a replay's."""
 
@@ -1495,10 +1507,16 @@ def _confirm_reply(paused, reply):
                                  engine=engine, checked=True, verdict=_success_verdict("model", basis))
 
     if choice == "done":
+        # A person CONFIRMING the outcome is a check, not help (research 2026-11-11: "the person confirmed the stated
+        # outcome" is kept apart from "the person helped do the work"): a plain confirmation of a run nobody helped
+        # counts on the `person` basis. A confirmation that says more ("done, but ...") is help, and so is any help the
+        # run had before (a value given, a step put to them, a takeover, work redone after a send-back).
+        helped = bool(told.strip()) or _confirmation_follows_help(run)
         if run is not None and paused.get("result") is not None:
-            return _succeed(run, paused["result"], "person", helped=True)
+            return _succeed(run, paused["result"], "person", helped=helped)
         if run is not None:
-            _record_verdict(run, True, checked_by="person", helped=True, basis=["person"])
+            _record_verdict(run, True, checked_by="person", helped=helped, basis=["person"],
+                            why="" if helped else "the person confirmed the outcome")
         return write_final_reply(f"{claim}\n\nYou confirmed it was done.", kind="final", engine=engine, checked=True,
                                  verdict=_success_verdict("person", ["person"]))
 
