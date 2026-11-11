@@ -186,7 +186,7 @@ every mechanism meant to remove turns was blocked. Ranked by the tokens each blo
 | B2/B4 recurring: the same stop paid for by the model every month | (in B2) | The repair compiled into a candidate branch, tried by code first, proven by code | `computer/branches.py` |
 | B3: the documents the request names were collected again by the model | ~8% | Documents in hand read before any gather | `skill_task._prepare` |
 | B5: fixed replay waits ran out on a loaded host | (3 of 5 stops) | Load-aware waits | `computer/waits.py` |
-| B6: a person's confirmation never counted | - | A plain confirmation of an unhelped run counts on the `person` basis | `final_gate._confirm_reply` |
+| B6: a person's confirmation never counts | - | Not changed: a plain confirmation stays helped until the owner decides whether a person's yes may earn trust (a rubber-stamped yes would build trust nothing checked) | `final_gate._confirm_reply` |
 
 **Bounded repair** (SkillDroid: at most 2 consecutive and 5 total single-step model calls; AutoRPA: resume). A replay
 that stops at step N (`_execute`) no longer hands the model everything after N. `repairs.on_halt` first tries a branch
