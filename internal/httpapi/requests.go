@@ -135,8 +135,12 @@ func (s *Server) markWithheld(ctx context.Context, desktopID string, route tasks
 	stored, withheld := s.Tasks.StoredForm(route, content, marked)
 	var values []string
 	if withheld {
+		// What the records withhold is always known to the call recorder; the desktop is told "secret" by
+		// structure (tasks.Store.MarksSecret): a lesson's reply is not marked for the words withhold finds in it.
 		values = s.rememberWithheld(desktopID, content, stored)
-		ctx = context.WithValue(ctx, withheldKey{}, true)
+		if s.Tasks.MarksSecret(route, content, marked) {
+			ctx = context.WithValue(ctx, withheldKey{}, true)
+		}
 	}
 	if marked {
 		// A message the person marked holds the same values the agent holds for it (withhold.MarkedValues,

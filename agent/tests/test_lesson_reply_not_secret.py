@@ -1,15 +1,13 @@
 """
-A lesson's words are what the worker is taught: a person's reply is withheld as a secret only where it answers a
-question asked for one ("secret" by structure), never because it names the OTP, a password or a code while explaining
-the work (found live 2026-11-10, build 83f4a53d, two lessons; follow-ups "The word "ask" became a secret").
+A lesson's words are what the worker is taught: a person's reply is marked secret on the desktop only where it answers
+a question asked for one ("secret" by structure) or the person marked it, never because it names the OTP, a password
+or a code while explaining the work (found live 2026-11-10, build 83f4a53d, two lessons). The control plane decides
+the mark (tasks.Store.MarksSecret); here the desktop keeps a reply sent with "secret": false as typed.
 
-- "Only the client has the OTP: ask me for it" kept "ask" as the OTP's value, and every "ask" after it read
-  [withheld]: a plain lowercase word running on into its sentence after a label is an instruction (privacy._runs_on).
-- Possessives ("receiver's", "client's") read as quote marks: an apostrophe between two letters is never one.
-- A reply flagged secret had every value-shaped word held: hyphenated words of letters ("tax-inclusive") have no
-  value's shape, and one figure over another ("100/118") is data, like an amount ("1,00,000").
-- Kept: "OTP: 604217", "password: Lift$2026", "pwd=x7#k", a quoted value, and a reply to a question asked for a secret
-  withheld whole.
+Over-withholding stays (review of freeze 2, A1-A2): a plain word after "password:" or "OTP:" is withheld whatever
+follows it ("password: letmein then press login" is a password), and a hyphen gives a word of a marked message a
+value's shape (a passphrase "correct-horse-battery"). Possessives are still no quote marks, and a ratio or an amount
+is still data.
 The two replies are the lessons' replies as the person wrote them (fictional clients and apps).
 """
 
@@ -47,8 +45,10 @@ CHAT = ("Mostly right; corrections. 6: buyers vary by month - a buyer with a GST
         "The invoices are tax-inclusive round amounts: the taxable value is the amount times 100/118, with 9 percent "
         "CGST plus 9 percent SGST inside the state or 18 percent IGST between states.")
 
-BOOKS_KEPT = ("ask me for it", "(the app", "receiver's", "client's", "month's", "(an earlier", "(each client")
+BOOKS_KEPT = ("(the app", "receiver's", "client's", "month's", "(an earlier", "(each client")
 CHAT_KEPT = ("B2B", "B2C", "1,00,000", "100/118", "tax-inclusive", "made-up", "one-time", "inter-state")
+# What a marked message holds by shape among them: hyphenated words (A2). Ratios and amounts are data.
+CHAT_HYPHENATED = ("tax-inclusive", "made-up", "one-time", "inter-state")
 
 VECTORS = Path(__file__).resolve().parents[2] / "internal" / "withhold" / "testdata" / "marked-values.json"
 
@@ -61,30 +61,26 @@ class SecretFirst(unittest.TestCase):
 
 
 class ALessonReplyIsNotASecret(SecretFirst):
-    def test_otp_then_an_instruction_keeps_the_instruction(self):
-        self.assertEqual(privacy.request_secrets(BOOKS), [])
-        privacy.remember_secrets(BOOKS)
-        self.assertEqual(privacy.withhold_known(BOOKS), BOOKS)
-        later = "Either way I always stop and ask before a step that sends. Reply `ask first` or `go ahead`."
-        self.assertEqual(privacy.withhold_known(later), later)
-
-    def test_said_with_is_a_running_word_is_no_value(self):
-        for text in ("the OTP is sent to the client's phone", "password: ask the client for it, never guess",
-                     "OTP: don't guess it, ask the client", "the OTP isn't here and the password wasn't sent"):
-            self.assertEqual(privacy.request_secrets(text), [], text)
-            self.assertEqual(privacy.withhold_spoken_secrets(text), text)
-            self.assertIsNone(privacy.credential_in(text), text)
+    def test_a_word_running_on_after_a_label_is_still_withheld(self):
+        for text, value in (("password: letmein then press login", "letmein"),
+                            ("Only the client has the OTP: ask me for it", "ask"),
+                            ("password: ask the client for it, never guess", "ask")):
+            self.assertIn(value, privacy.request_secrets(text), text)
+        self.assertEqual(privacy.withhold_spoken_secrets("password: letmein then press login"),
+                         "password: [withheld] then press login")
 
     def test_a_reply_not_marked_secret_keeps_every_word(self):
         # Through the agent's own /request: the reply the control plane sends with "secret": false.
         path = self.send(BOOKS, secret=False)
         watchers._mark_handled(path)
-        self.assertEqual((self.root / "command" / (path.name + ".done")).read_text(encoding="utf-8"), BOOKS)
-        self.assertEqual(task_context.secret_values(TASK), [])
+        kept = (self.root / "command" / (path.name + ".done")).read_text(encoding="utf-8")
+        for word in BOOKS_KEPT:
+            self.assertIn(word, kept)
+        # Only the word after "OTP:" is a secret (labelled, A1); nothing is held by its shape (not marked).
+        self.assertEqual(task_context.secret_values(TASK), ["ask"])
         stored = privacy.withhold_known(BOOKS)
         for word in BOOKS_KEPT:
             self.assertIn(word, stored)
-        self.assertNotIn("[withheld]", stored)
 
     def test_a_reply_not_marked_secret_keeps_its_codes_figures_and_hyphenated_words(self):
         self.send(CHAT, secret=False)
@@ -92,7 +88,6 @@ class ALessonReplyIsNotASecret(SecretFirst):
         stored = privacy.withhold_known(CHAT)
         for word in CHAT_KEPT:
             self.assertIn(word, stored)
-        self.assertNotIn("[withheld]", stored)
 
     def test_an_apostrophe_between_letters_is_no_quote_mark(self):
         text = "Send the OTP to the client's phone, then check the receiver's GSTIN 'today' and stop."
@@ -102,13 +97,14 @@ class ALessonReplyIsNotASecret(SecretFirst):
         self.assertEqual(privacy.withhold_spoken_secrets("the password 'Tom's9' works"), "the password '[withheld]' works")
         self.assertEqual(privacy.withhold_spoken_secrets("otp: '1234' came"), "otp: '[withheld]' came")
 
-    def test_hyphenated_words_ratios_amounts_and_short_codes_are_not_held_from_a_marked_message(self):
+    def test_a_marked_message_holds_its_hyphenated_words_but_not_its_ratios_or_amounts(self):
         held = [v[len(privacy.WHOLE_TOKEN):] for v in privacy.marked_values(CHAT) if v.startswith(privacy.WHOLE_TOKEN)]
-        for word in CHAT_KEPT:
+        for word in CHAT_HYPHENATED:
+            self.assertIn(word, held)
+        for word in ("1,00,000", "100/118", "B2B", "B2C"):
             self.assertNotIn(word, held)
-        self.assertEqual(privacy.withhold_held(CHAT, [privacy.WHOLE_TOKEN + v for v in held]), CHAT)
-        # A value that has a digit or another mark is still held.
-        self.assertIn(privacy.WHOLE_TOKEN + "Zebra-42-quiet", privacy.marked_values("sign in with Zebra-42-quiet"))
+        self.assertIn(privacy.WHOLE_TOKEN + "correct-horse-battery",
+                      privacy.marked_values("sign in with correct-horse-battery"))
 
     def test_marked_values_follow_the_shared_vectors(self):
         cases = json.loads(VECTORS.read_text(encoding="utf-8"))["cases"]
@@ -123,6 +119,7 @@ class ALessonReplyIsNotASecret(SecretFirst):
 class SecretsAreStillWithheld(SecretFirst):
     def test_a_labelled_value_is_still_one(self):
         for text, value in (("Use OTP: 604217 now", "604217"), ("password: Lift$2026", "Lift$2026"),
+                            ("password: letmein then press login", "letmein"),
                             ("pwd=x7#k", "x7#k"), ("the password is Lift$2026", "Lift$2026"),
                             ("password: tiger.", "tiger"), ("password: tiger", "tiger"),
                             ('the password "blue horse" then sign in', "blue horse")):

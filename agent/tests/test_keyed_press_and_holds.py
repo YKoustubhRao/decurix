@@ -275,8 +275,7 @@ class AWordedAskTheGateHolds(_Store):
             return core.act("click", ref=element["ref"], check_form=True)
 
     def test_an_ask_to_press_a_control_the_skills_approvals_hold_is_answered_and_the_gate_still_asks(self):
-        asked = ('I am about to click "Save to portal" for Sahyadri Lift Services\' January 2027 GSTR-1. '
-                 "May I proceed?")
+        asked = 'May I click "Save to portal"?'
         self.assertEqual(self.eq._gate_held_press(asked), ["Save to portal"])
         self.assertIsNone(self.messaging.ask_for_query(asked, kind="query"))
         self.send.assert_not_called()                                      # not put to the person, not counted
@@ -293,6 +292,28 @@ class AWordedAskTheGateHolds(_Store):
         pending = approval._local_pending()
         self.assertIn('"Save to portal"', pending["action"])
         self.assertIn("when you taught", pending["reason"])
+
+    def test_an_ask_to_press_that_says_more_than_the_press_goes_to_the_person(self):
+        # Review of freeze 2 (A8): a figure, a doubt or a second sentence beside the press is the person's to read.
+        for asked in ('I am about to click "Save to portal" for Sahyadri Lift Services\' January 2027 GSTR-1. '
+                      "May I proceed?",
+                      'May I click "Save to portal"? The total is 1,24,000.',
+                      'Should I press "Save to portal" even though two invoices look wrong to me?',
+                      'May I click "Save to portal" - I am not sure the receivers are right'):
+            self.send.reset_mock()
+            self.assertEqual(self.eq._gate_held_press(asked), ["Save to portal"], asked)
+            self.assertIsNotNone(self.messaging.ask_for_query(asked, kind="query"), asked)
+            self.send.assert_called_once()
+        self.assertEqual(self.told, [])
+
+    def test_only_a_bare_ask_to_press_is_answered_here(self):
+        for asked in ('May I click "Save to portal"?', "Shall I press Save to portal now?",
+                      'Should I go ahead and click the "Save to portal" button?'):
+            self.assertTrue(self.eq._bare_press_question(asked, ["Save to portal"]), asked)
+        for asked in ('May I click "Save to portal" for the January 2027 return?',
+                      'May I click "Save to portal"? I am unsure.',
+                      'May I click "Save to portal" though the GSTIN of one receiver is cancelled in the register?'):
+            self.assertFalse(self.eq._bare_press_question(asked, ["Save to portal"]), asked)
 
     def test_an_ask_to_press_a_control_the_gate_does_not_hold_goes_to_the_person(self):
         asked = 'May I click "Import from books" to bring in the January invoices?'

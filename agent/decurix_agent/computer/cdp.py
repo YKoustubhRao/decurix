@@ -1999,7 +1999,7 @@ def type_text(element, text, replace=True, check_later=False):
         if any(v in ((getattr(page, "target", None) or {}).get("url") or "") for v in RELAYED_VIEWER_PATHS):
             return True
 
-        # Did it stay? ERPNext's date field empties itself after text arrives
+        # Did it stay? A web ERP's date field empties itself after text arrives
         # in one piece while its date picker is open (found live: every
         # "type 10-12-2026 into Delivery Date" reported success and left the
         # field empty, so the order could not be saved). The same text typed
@@ -2184,14 +2184,62 @@ _LINK_TARGET = """function() {
   if (!a) return '';
   const raw = (a.getAttribute('href') || '').trim();
   if (!raw || raw.startsWith('#')) return '';
+  // A link a script or a framework may turn into an act: an inline handler, or the markup that makes a link send a
+  // request of its own (data-method="post|delete", data-remote, data-turbo-method) - unsure is not navigation.
+  for (let n = this; n; n = n.parentElement) {
+    for (const name of ['onclick', 'onmousedown', 'onmouseup', 'onpointerdown', 'onpointerup', 'data-method',
+                        'data-remote', 'data-turbo-method', 'data-turbo-stream', 'hx-post', 'hx-put', 'hx-delete',
+                        'hx-patch']) {
+      if (n.hasAttribute && n.hasAttribute(name)) return '';
+    }
+    if (n === a) break;
+  }
   try { const u = new URL(a.href, document.baseURI); return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : ''; }
   catch (e) { return ''; }
 }"""
 
+# The nodes whose listeners a press reaches: the control, every element above it, the document and the window.
+_PRESS_PATH = """function() {
+  const out = [];
+  for (let n = this; n; n = n.parentNode) out.push(n);
+  out.push(window);
+  return out;
+}"""
+
+# Events a press of a link fires that a script may act on.
+_PRESS_EVENTS = {"click", "auxclick", "mousedown", "mouseup", "pointerdown", "pointerup", "touchstart", "touchend",
+                 "keydown", "keyup", "keypress"}
+
+
+def _press_listened(page, object_id):
+    """Whether a script listens for a press anywhere on its way (the control, its ancestors, the document, the
+    window), as DevTools reads listeners; None when that cannot be read. A framework that delegates its handlers to
+    the root is listening: such a link may act by script whatever its address."""
+
+    path = page.call("Runtime.callFunctionOn", {"objectId": object_id, "functionDeclaration": _PRESS_PATH})
+    array_id = (path.get("result") or {}).get("objectId")
+    if not array_id:
+        return None
+    props = page.call("Runtime.getProperties", {"objectId": array_id, "ownProperties": True}).get("result") or []
+    nodes = [p["value"]["objectId"] for p in props
+             if str(p.get("name", "")).isdigit() and (p.get("value") or {}).get("objectId")]
+    if not nodes:
+        return None
+    for node in nodes:
+        listeners = page.call("DOMDebugger.getEventListeners", {"objectId": node}).get("listeners")
+        if listeners is None:
+            return None
+        if any(str(listener.get("type") or "") in _PRESS_EVENTS for listener in listeners):
+            return True
+    return False
+
 
 def link_target(element):
     """The web address a press on this control goes to, as the page's own markup says (an anchor's href, http or https,
-    not a script and not a spot on the same page), or "" when it is no such link or the page cannot be asked."""
+    not a script and not a spot on the same page), or "" when it is no such link, when a script may act on the press
+    (an inline handler or a request-sending attribute on its way to the anchor, or a press listener anywhere from the
+    control up to the window: _press_listened), or when the page cannot be asked. Review of freeze 2 (A6): a link
+    with a click handler or data-method="post" was read as navigation."""
 
     page = None
     try:
@@ -2199,7 +2247,11 @@ def link_target(element):
         object_id = _object(page, element["handle"]["backend_id"])
         value = page.call("Runtime.callFunctionOn", {"objectId": object_id, "returnByValue": True,
                                                      "functionDeclaration": _LINK_TARGET}).get("result", {}).get("value")
-        return value if isinstance(value, str) else ""
+        if not isinstance(value, str) or not value:
+            return ""
+        if _press_listened(page, object_id) is not False:
+            return ""
+        return value
     except (ComputerError, KeyError, TypeError, ValueError, OSError):
         return ""
     finally:
@@ -2968,7 +3020,7 @@ def _navigate_or_refuse_to_leave(page, url):
     Page.navigate, unless the page asks whether to leave with unsaved changes
     ("Leave site? Changes you made may not be saved"): then stay, and say so.
 
-    Found on ERPNext, which asks that of any form with changes: Page.navigate
+    Found on a web ERP, which asks that of any form with changes: Page.navigate
     does not answer while the question is open, so an open timed out after
     20 s and left the dialog on the screen for whatever came next. Leaving
     would throw the changes away without anyone deciding to, so the answer is

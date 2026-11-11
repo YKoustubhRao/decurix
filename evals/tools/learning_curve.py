@@ -26,7 +26,7 @@ asked / failed); an outside audit (a ledger read back from the application) can 
 
 Each row: workflow, n (the case's place in --cases, 1 first), case, build, arm, run, task, correct (the graders
 passed), false_done, minutes, tokens in / cached / out, model_turns (operator.turn calls), q_required, q_other,
-questions, sendbacks (the final check's "Not done yet" send-backs), replayed_steps (the taught replay's last step
+q_declined (gate approvals the case does not list, which the scripted expert declined; None on a row stored before it), questions, sendbacks (the final check's "Not done yet" send-backs), replayed_steps (the taught replay's last step
 reached), model_steps (commands the model ran), trust_stage and verdict_counted (from the skill's own experience
 record, which --skill-cmd prints; None without it), finished_at. A row is written once (run, case, repeat), by a
 write to a temporary file then a rename, under a lock file, so two followers may share one file.
@@ -136,6 +136,7 @@ def eval_rows(cp, suite):
                 "arm": r.get("arm"), "repeat": r.get("repeat"), "case": r.get("case_id"), "minutes": round(r.get("minutes") or 0, 1),
                 "tokens_in": r.get("tokens_in"), "tokens_cached": r.get("tokens_cached"), "tokens_out": r.get("tokens_out"),
                 "operator_turns": (by.get("operator.turn") or [0])[0], "q_required": r.get("q_required"), "q_other": r.get("q_other"),
+                "q_declined": r.get("q_declined"),
                 "questions": [(q.get("question") or "")[:90] for q in r.get("questions") or []],
                 "passed": r.get("passed"), "false_done": r.get("false_done"), "observed": r.get("observed"),
                 "failed_graders": [g["id"] for g in graders if g.get("result") == "fail"],
@@ -244,7 +245,7 @@ def live_row(cp, r, a, order, skill):
         "minutes": round(r.get("minutes") or 0, 1),
         "tokens_in": r.get("tokens_in"), "tokens_cached": r.get("tokens_cached"), "tokens_out": r.get("tokens_out"),
         "model_turns": (by.get("operator.turn") or [0])[0], "calls": tot[0] if tot else r.get("calls"),
-        "q_required": r.get("q_required"), "q_other": r.get("q_other"),
+        "q_required": r.get("q_required"), "q_other": r.get("q_other"), "q_declined": r.get("q_declined"),
         "questions": [(q.get("question") or "")[:160] for q in r.get("questions") or []],
         "sendbacks": sendbacks, "replayed_steps": replayed, "model_steps": model,
         "trust_stage": stage, "verdict_counted": counted, "verdict_why": why,
@@ -356,14 +357,15 @@ def md_tasks(title, rows, notes=()):
 
 def md_evals(title, rows, notes=()):
     lines = [f"## {title}", ""] + [f"- {n}" for n in notes] + ["",
-             "| run | arm | starts from | state | case | rep | min | tokens total | in (cached) | turns | q (req/other) | result | failed graders |",
+             "| run | arm | starts from | state | case | rep | min | tokens total | in (cached) | turns | q (req/other/declined) | result | failed graders |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         res = "FALSE DONE" if r["false_done"] else ("PASS" if r["passed"] else "fail (%s)" % r["observed"])
         total = (r["tokens_in"] or 0) + (r["tokens_out"] or 0)
-        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s (%s) | %s | %s/%s | %s | %s |" % (
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s (%s) | %s | %s/%s/%s | %s | %s |" % (
             r["run"][:9], r["arm"], r["from_worker"] or "empty desktop", r["state"], r["case"], r["repeat"], r["minutes"],
-            fmt_tok(total), fmt_tok(r["tokens_in"]), fmt_tok(r["tokens_cached"]), r["operator_turns"], r["q_required"], r["q_other"], res,
+            fmt_tok(total), fmt_tok(r["tokens_in"]), fmt_tok(r["tokens_cached"]), r["operator_turns"], r["q_required"], r["q_other"],
+            r.get("q_declined") or 0, res,
             ", ".join(r["failed_graders"])))
     return "\n".join(lines) + "\n"
 

@@ -532,7 +532,7 @@ def _keys_home():
     """
     Before keys sent to no element: the window the last action left in front, when an older window has taken the
     keyboard since. Found live (2026-10-15): Impress, left open by an earlier task, took the focus while the worker
-    filled TallyPrime's Company Creation screen; "Escape" and "Enter" went to Impress, and the worker reported that
+    filled a desktop accounting app's company creation screen; "Escape" and "Enter" went to Impress, and the worker reported that
     the focus "kept going to other apps" and gave up. A window that appeared after that action (a dialog the app
     opened) is where keys belong and is left alone. Returns the title keys were sent back to, or None.
     """
@@ -679,7 +679,7 @@ def _keys_went_to(before, after):
                   and e.get("role") in ("textbox", "combobox", "searchbox", "spinbutton")
                   and (e.get("name") or "").strip()), None)
     # Not for an app read from its picture: there the field "with the cursor" is a vision model's estimate, and it named
-    # the wrong field as often as the right one (found live, 2026-10-16: "Search" for TallyPrime's ledger Name).
+    # the wrong field as often as the right one (found live, 2026-10-16: "Search" for a desktop accounting app's ledger Name).
     if field is None:
         return ""
     if privacy.secret_field(field):
@@ -1483,33 +1483,109 @@ _SAVE_REFUSED = re.compile(r"(?i)\b(?:error|invalid|does not exist|doesn't exist
 _REF_LABEL = re.compile(r"(?i)(?:^|\b)(?:no\.?|number|num|#|ref(?:erence)?|invoice|bill|voucher|document|doc)(?:\b|$)")
 
 
-def _saved(change):
-    """Whether an action's answer shows the record saved: a saved/created answer, and no error beside it."""
+# A control named in a change (`button "Saved Filters" (e1753)`): its label is what it does, not what the page answered.
+_NAMED_CONTROL = re.compile(r'(?i)\b(?:button|link|menuitem|menu|tab|checkbox|radio|combobox|textbox|option|switch|'
+                            r'listbox|searchbox|spinbutton|slider) "[^"]*"')
 
-    return bool(_SAVED_ANSWER.search(change)) and not _SAVE_REFUSED.search(change)
+
+def _saved(change):
+    """Whether an action's answer shows the record saved: a saved/created answer in what the page said - never in a
+    control's own label - and no error beside it. Found live (2026-11-11, a web ERP): a link to the list page made a
+    button "Saved Filters" appear, and an unsaved bill was taken for saved."""
+
+    return bool(_SAVED_ANSWER.search(_NAMED_CONTROL.sub("", change or ""))) and not _SAVE_REFUSED.search(change or "")
 
 
 # What an application says once it has removed a record.
 _DELETED_ANSWER = re.compile(r"(?i)\b(?:deleted|removed|moved to (?:the )?(?:trash|bin))\b")
 
 
-# The last part of an address that names one record (it holds a digit): ".../purchase-invoice/PINV-26-00011".
-_RECORD_PAGE = re.compile(r"(?i)page is now (\S*/[^/\s;?#]*\d[^/\s;?#]*)/?(?=[\s;?#]|$)")
+# The last part of a new record's address: ".../new", ".../create", ".../add", ".../new-purchase-invoice-x1y2".
+_NEW_RECORD_PART = re.compile(r"(?i)^(?:new|create|add)(?:$|[-_.])")
 
 
-def _became_a_record(before, change):
-    """Whether a press took the browser from a new record's page (".../new...", ".../new-purchase-invoice-x1y2") to a
-    page that names one record, with no refusal beside it: how a web application answers a save that says no "saved".
-    Found live (2026-11-08, ERPNext): every bill's save answered only "page is now .../PINV-26-00011", so no saved bill
-    was ever read back against its declared record ("declared but never saved")."""
+def _route(url):
+    """(origin, [parts of the path]) of an address - its route after "#/" for an app that routes there - or None."""
+
+    try:
+        parts = urllib.parse.urlsplit(str(url or "").strip())
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.netloc:
+        return None
+    path = parts.path
+    if parts.fragment.startswith("/") and path.rstrip("/") in ("", "/index.html"):
+        path = parts.fragment.split("?")[0]
+    return (parts.scheme.lower(), parts.netloc.lower()), [urllib.parse.unquote(p) for p in path.strip("/").split("/")]
+
+
+def _new_to_record(before_url, after_url):
+    """Whether the address went from a new record's page to that same place's page of one record: the same origin and
+    the same parent path, its last part changed from the new-record marker to a record's own id (holding a digit). A
+    list page, another place, or an address whose query string alone changed is not (found live 2026-11-11: a link to
+    the list ".../purchase-invoice?bill_no=SC/TAX/26-27/104" was taken for the bill's page, its query's digits for an id)."""
+
+    then, now = _route(before_url), _route(after_url)
+    if then is None or now is None or then[0] != now[0] or not then[1] or not now[1]:
+        return False
+    old, new = then[1], now[1]
+    if len(old) != len(new) or old[:-1] != new[:-1] or old[-1] == new[-1]:
+        return False
+    return bool(_NEW_RECORD_PART.match(old[-1])) and bool(re.search(r"\d", new[-1])) \
+        and not _NEW_RECORD_PART.match(new[-1])
+
+
+def _became_a_record(before, change, after=None):
+    """Whether a press took the browser from a new record's page (".../new...", ".../new-purchase-invoice-x1y2") to the
+    page of one record (_new_to_record), with no refusal beside it: how a web application answers a save that says no
+    "saved". The address after is `after`'s own, or else the one the change names. Only a save press may be judged by
+    it (_commit_press). Found live (2026-11-08, a web ERP): every bill's save answered only "page is now
+    .../PINV-26-00011", so no saved bill was ever read back against its declared record ("declared but never saved")."""
 
     url = str((before or {}).get("page_url") or "")
     if not url or _SAVE_REFUSED.search(change or ""):
         return False
-    came_from_new = bool(_NEW_RECORD_PAGE.search("page is now " + url)) or bool(
-        re.search(r"(?i)/new[-_][^/]*$", url.split("?")[0].rstrip("/")))
-    landed = _RECORD_PAGE.search(change or "")
-    return came_from_new and landed is not None and not _NEW_RECORD_PAGE.search(landed.group(0))         and not re.search(r"(?i)/new[-_]", landed.group(1))
+    landed = str((after or {}).get("page_url") or "")
+    if not landed:
+        moved = re.search(r"page is now (\S+)", change or "")
+        landed = moved.group(1).rstrip(";,") if moved else ""
+    return bool(landed) and _new_to_record(url, landed)
+
+
+# The keys that commit a form besides Ctrl+S (_saves): Enter submits it.
+_COMMIT_KEYS = ("return", "kp_enter", "ctrl+return", "ctrl+kp_enter")
+# A control named for keeping what a form holds (_SAVE_CONTROL), or for applying it.
+_COMMIT_CONTROL = re.compile(r"(?i)\b(?:update|apply|ok|done)\b")
+
+
+def _commit_press(kind, element, keys):
+    """
+    Whether a press may be a save: a save press (_save_press), Enter, or a click on a control (not a link) named for
+    keeping a record - never a link that names no save, nor a click at a point that names no control. Found live
+    (2026-11-11, a web ERP): a click on the breadcrumb link "Purchase Invoice" on an unsaved bill's form went to the list
+    page, and the ledger said the bill was "saved" with 0 of 3 values shown.
+    """
+
+    if kind not in ("click", "key"):
+        return False
+    if _save_press(kind, element, keys):
+        return True
+    if kind == "key":
+        try:
+            return any(xinput.normalize_combo(k).lower() in _COMMIT_KEYS for k in keys or ())
+        except ComputerError:
+            return False
+    if element is None or str(element.get("role") or "").lower() == "link":
+        return False
+    name = str(element.get("name") or "")
+    return bool(_SAVE_CONTROL.search(name) or _COMMIT_CONTROL.search(name))
+
+
+def _link_press(kind, element):
+    """A click on a link that names no save (_SAVE_PRESS): it goes to another page and saves nothing."""
+
+    return (kind == "click" and element is not None and str(element.get("role") or "").lower() == "link"
+            and not _SAVE_PRESS.match(str(element.get("name") or "")))
 
 
 def _released(save, answer, page):
@@ -2145,11 +2221,12 @@ def _not_the_apps(fields):
 
 def _not_picked(fields, picks=None):
     """
-    The form's fields the filler check judges, less a value chosen from the application's own list for that field: an
-    entry its list offered, or the one a pick took. An entry of the application's vocabulary is not text the worker
-    made up, whatever it looks like. Found live (2026-11-09): a return's unit field set to the portal's own "NA" (the
-    unit of a service, as the person chose in the demonstration) was refused as an invented filler at every save.
-    Whether it was the right entry is the pick checks' to say (records.pick_backed), not this one's.
+    The form's fields the filler check judges, less a value a pick took from the application's own list for that
+    field. An entry of the application's vocabulary that a pick took is not text the worker made up, whatever it looks
+    like. Found live (2026-11-09): a return's unit field set to the portal's own "NA" (the unit of a service, as the
+    person chose in the demonstration) was refused as an invented filler at every save. Only the entry TAKEN backs the
+    value: an entry the list merely offered does not (review of freeze 2, A11: a typed filler that matched one of the
+    offered entries passed). Whether it was the right entry is the pick checks' to say (records.pick_backed).
     """
 
     from decurix_agent import values
@@ -2158,14 +2235,8 @@ def _not_picked(fields, picks=None):
         picks = records.picks(open_form=True)
 
     def listed(label, value):
-        for p in picks:
-            if not records.label_matches(p.get("label"), label):
-                continue
-            if p.get("taken") and values.same_value(value, p["taken"]) is True:
-                return True
-            if any(values.same_value(value, entry) is True for entry in p.get("offered") or ()):
-                return True
-        return False
+        return any(records.label_matches(p.get("label"), label) and p.get("taken")
+                   and values.same_value(value, p["taken"]) is True for p in picks)
 
     return [(label, value) for label, value in fields if not listed(label, value)]
 
@@ -2764,7 +2835,7 @@ def _await_save_answer(kind, element, keys, before, after, change, change_text):
     that does, watched for up to SAVE_SETTLE_SECONDS (an answer, or the page moved: then let settle and looked at
     again), or the screen as it is once that time is over. The after-look is taken as soon as the screen is quiet, and
     an application that disables its Save while its server works is quiet with the save still on its way. Found live
-    (2026-11-11, ERPNext): the look caught only `button "Save" [-] -> [disabled]`, the bill's page moved to its record
+    (2026-11-11, a web ERP): the look caught only `button "Save" [-] -> [disabled]`, the bill's page moved to its record
     a moment later, and the bill was reported "declared but never saved" - its read-back never ran.
     """
 
@@ -2789,9 +2860,8 @@ def _await_save_answer(kind, element, keys, before, after, change, change_text):
 def _on_new_record_page(url):
     """Whether an address is a new record's page (".../new", ".../new-purchase-invoice-x1y2")."""
 
-    url = str(url or "")
-    return bool(url) and (bool(_NEW_RECORD_PAGE.search("page is now " + url))
-                          or bool(re.search(r"(?i)/new[-_][^/]*$", url.split("?")[0].rstrip("/"))))
+    route = _route(url)
+    return route is not None and bool(route[1]) and bool(_NEW_RECORD_PART.match(route[1][-1]))
 
 
 def _page_tab(observation):
@@ -2852,7 +2922,7 @@ def pending_save_readback(observation):
     then = {"elements": observation.get("elements") or [], "windows": observation.get("windows") or [],
             "active_title": pending.get("title") or "", "page_url": pending.get("url") or ""}
     change_text = summarize(compare(then, observation))
-    if not _became_a_record(then, change_text):
+    if not _became_a_record(then, change_text, observation):
         return ""
     return (f"\nThe save pressed on {privacy.reduce_url(pending.get('url') or '')} was answered after its look: this "
             f"tab is now {privacy.reduce_url(url)}." + _ledger_readback(observation, change_text))
@@ -3516,7 +3586,7 @@ def _gate_spot(kind, element, point, grounded, before):
 
     A press found by eye for a description (grounded) asks the page first, as a press at a point does: the page names
     what is there. Only when the page names nothing is the worker's own description what the press is judged by.
-    Found live (2026-11-08, ERPNext): "row in Purchase Invoice list", found by eye, was judged by its description's
+    Found live (2026-11-08, a web ERP): "row in Purchase Invoice list", found by eye, was judged by its description's
     words as a purchase, and each yes was bound to the pixel - each new look at the screen put the point elsewhere on
     the row, and the person was asked about the same press three times.
     """
@@ -3544,9 +3614,22 @@ def _signs_in(form):
     password field that is not a one-time code, beside one filled field naming who signs in, and nothing else. It
     proves who is signing in and keeps nothing. Found in an eval (2026-11-09): a tax portal's "Sign in" was held as
     the save the agreed plan makes "with your OK first", and the run ended there. An OTP to verify a filing, or a
-    signing PIN alone, is no such form, and a control whose label commits ("Sign and file") is still a save."""
+    signing PIN alone, is no such form, and a control whose label commits ("Sign and file") is still a save.
 
-    return isinstance(form, dict) and form.get("signs_in") is True
+    A form that may hold a secret the person gave in THIS task is an authorisation, never a sign-in (review of freeze
+    2, A7: an OTP typed into a password-type field read as a sign-in): one of their secrets (privacy.literals) is among
+    its readable values, or its secret field is filled while they gave any - its value never leaves the page, so it
+    cannot be told from theirs."""
+
+    if not (isinstance(form, dict) and form.get("signs_in") is True):
+        return False
+    from decurix_agent import task_context
+    task = task_context.current()
+    given = {" ".join(str(v).split()) for v in privacy.literals(task)} if task else set()
+    if not given:
+        return True
+    values = {" ".join(str(v).split()) for _, v in ((list(f) + ["", ""])[:2] for f in form.get("fields") or [])}
+    return not (given & values) and not form.get("secret_filled")
 
 
 def _only_navigates(kind, element):
@@ -3761,7 +3844,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     # In a viewer of an app running elsewhere (a Windows app read from its picture, a phone's app) a point IS where the
     # app's field is: the click reaches the app and the keys follow it. Found live (2026-10-15): refused here, a worker
-    # filling TallyPrime spelled "Northwind Traders" out one key at a time and made a company named "N".
+    # filling a desktop accounting app spelled "Northwind Traders" out one key at a time and made a company named "N".
     if kind == "type" and point is not None and element is None and before.get("page_url") \
             and not _relayed_page(before):
         raise ComputerError("that point does not resolve to a browser field to type into - click the editor, "
@@ -3869,9 +3952,6 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     context = _context(before)
     if kind == "key" and element is None:
         context["focused"] = _keyboard_field(before) or _location_bar(before)
-    if element is not None and approval.opens_new_record(element):
-        # Read from the page only for the presses it decides (approval.opens_new_record): a label alone never is.
-        context["submits"] = _press_submits(kind, element) is not False
     if element is not None and element.get("role") == "link" and approval.press_effect(element) == "asks":
         # A link whose label reads like an act: the page says whether the press only goes somewhere (_only_navigates).
         context["navigates"] = _only_navigates(kind, element)
@@ -4323,7 +4403,12 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     if _relayed_page(before) and _saves(kind, element, keys):
         note += _shared_save_note(acted_at)
-    if kind in ("click", "key") and (_saved(change_text) or _became_a_record(before, change_text)):
+    # A save is only a press that may save: a saved answer to anything but a link that names no save, or the page
+    # moved to the record's own after a save press (_commit_press). Found live (2026-11-11): a breadcrumb link from an
+    # unsaved form to the list was taken for the bill's save.
+    if kind in ("click", "key") and ((_saved(change_text) and not _link_press(kind, element))
+                                     or (_commit_press(kind, element, keys)
+                                         and _became_a_record(before, change_text, after))):
         note += _ledger_readback(after, change_text)
     elif _save_press(kind, element, keys) and _on_new_record_page(before.get("page_url")) \
             and (after.get("page_url") or "") == (before.get("page_url") or "") \
@@ -4440,7 +4525,7 @@ def _nothing_typed(kind, element, text, change_text, observation=None):
     """
     True for typing aimed at no field whose result changed nothing on the screen: it did not land anywhere. Never for
     an app read from its picture, or whose copy is still behind: there the typing lands and the look shows it only
-    later - found live (2026-10-18) in TallyPrime, where the note said "nothing was typed" over text that had gone
+    later - found live (2026-10-18) in a desktop accounting app, where the note said "nothing was typed" over text that had gone
     into the field, and the worker typed the same ledger name again ("Name already exists").
     """
     # Nor in a viewer of an app running elsewhere: a cell being edited there shows its text only once it is entered.

@@ -68,6 +68,34 @@ class TestAPickBackedByTheRequestsFolder(unittest.TestCase):
                 mock.patch.object(records.config, "WORK_DIR", self.home / "work"):
             self.assertEqual([p for p in records._request_folder_files("t7") if "case-7" in p], [])
 
+    def test_a_subfolder_or_another_periods_document_backs_nothing(self):
+        # Review of freeze 2 (A11): only the folder's own files, and never another period's document as this run's.
+        (self.folder / "204_invoice.txt").unlink()
+        old = self.folder / "october"
+        old.mkdir()
+        (old / "198_invoice.txt").write_text("TAX INVOICE\nPlace of Supply: Karnataka\n", encoding="utf-8")
+        (self.folder / "199_invoice.txt").write_text(
+            "TAX INVOICE\nInvoice date: 12-Oct-2026\nPlace of Supply: Karnataka\n", encoding="utf-8")
+        request = "File the November 2026 GSTR-1 of the client. Its documents are in ~/work/practice/case-7/."
+        with self.started(time.time() + 60), \
+                mock.patch.object(task_context, "current_request", return_value=request):
+            listed = records._request_folder_files("t7")
+            self.assertEqual([Path(p).name for p in listed], ["199_invoice.txt"])
+            self.assertFalse(records.pick_backed(PICK, records.given_sources("t7")))
+        (self.folder / "200_invoice.txt").write_text(
+            "TAX INVOICE\nInvoice date: 03-Nov-2026\nPlace of Supply: Karnataka\n", encoding="utf-8")
+        with self.started(time.time() + 60), \
+                mock.patch.object(task_context, "current_request", return_value=request):
+            self.assertTrue(records.pick_backed(PICK, records.given_sources("t7")))
+
+    def test_the_periods_a_request_names(self):
+        self.assertEqual(records.request_periods("File the November 2026 and Dec-2026 returns, also 01/2027"),
+                         {(2026, 11), (2026, 12), (2027, 1)})
+        self.assertEqual(records.request_periods("File the return"), set())
+        self.assertFalse(records.of_another_period("no dates here", {(2026, 11)}))
+        self.assertTrue(records.of_another_period("Invoice date: 12-Oct-2026", {(2026, 11)}))
+        self.assertFalse(records.of_another_period("Invoice date: 12-Oct-2026", set()))
+
 
 if __name__ == "__main__":
     unittest.main()

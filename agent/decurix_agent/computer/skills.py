@@ -355,6 +355,33 @@ def _picks_from_list(step, following):
             and ((following.get("target") or {}).get("role") or "") in LIST_ENTRY_ROLES)
 
 
+# The roles of a labelled field a value is typed or chosen into (skill_task.FIELD_ROLES).
+LABELLED_ROLES = ("textbox", "combobox", "searchbox", "spinbutton")
+
+
+def field_label(skill, param):
+    """The label of the field a value goes into: its step's field as the demonstration found it, else the value's own
+    label."""
+
+    steps = {s.get("n"): s for s in skill.get("steps") or []}
+    target = (steps.get(param.get("step")) or {}).get("target") or {}
+    label = target.get("name") if target.get("role") in LABELLED_ROLES else ""
+    return " ".join(str(label or param.get("label") or param["name"]).split())
+
+
+def may_leave(skill, param):
+    """Whether a value no document gives may be left as the application fills it in (left_alone): one field's value,
+    typed or chosen into it - not a list, a row of a repeated part, a secret, a file or an address."""
+
+    from decurix_agent.computer import learning  # (learning imports this module)
+    if param.get("list") or param.get("secret") or param.get("file") or learning._is_address(param.get("example")):
+        return False
+    group = repeated_rows(skill)
+    if param["name"] in {name for row in (group or {"rows": []})["rows"] for name in row}:
+        return False
+    return any(s.get("param") == param["name"] and s.get("kind") in ("type", "select") for s in skill.get("steps") or [])
+
+
 def left_alone(steps, names):
     """
     Copies of `steps` without what enters the values `names` - fields a run leaves as the application fills them in:

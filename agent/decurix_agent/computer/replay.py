@@ -400,7 +400,7 @@ def _stable_title(title, reference=None):
         if any(segment.lower().startswith(slug + "-") and " " not in segment for slug in slugs):
             continue
         # One unbroken token of 20+ letters, digits, "-" and "_" is a name a
-        # program made up, as it is in a URL path (_volatile_segment): ERPNext
+        # program made up, as it is in a URL path (_volatile_segment): a web ERP
         # titles a new form "New Sales Order - new-sales-order-gwaniocbxa", a
         # different name every time, and a check that waited for it halted
         # the next run at its first step.
@@ -1357,9 +1357,27 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
                                            "now": {"role": element.get("role"), "name": element.get("name")}})
         return done
     except ActedError as exc:
-        raise _Halt(str(exc), acted=True)
+        raise _Halt(_error_reason(step, exc), _screen_now(), acted=True)
     except ComputerError as exc:
-        raise _Halt(str(exc))
+        raise _Halt(_error_reason(step, exc), _screen_now())
+
+
+def _error_reason(step, exc):
+    """Why a step's action failed, in words that are never blank: the screen tools' own, or - an error that came with
+    none (a timeout under load) - its kind and the step. Found live (2026-11-11, a web ERP's bill): a halt at a click
+    reached the trace as "The replay stopped at step 7" with no reason at all."""
+
+    said = " ".join(str(exc or "").split())
+    return said or f"{_summary(step)} failed with {type(exc).__name__}, which said nothing more"
+
+
+def _screen_now():
+    """What the screen shows now, briefly, for a halt that read nothing of it ("" when it cannot be read)."""
+
+    try:
+        return _screen_brief(core.observe())
+    except Exception as exc:  # noqa: BLE001 - a halt is said whatever the screen
+        return f"the screen could not be read ({type(exc).__name__})"
 
 
 SELECT_ALL = {"ctrl+a", "control+a", "cmd+a", "meta+a"}
@@ -1768,6 +1786,10 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
         if (raised and step and step["n"] > raised["step"] and outcome in (HALTED, HALTED_BEFORE_EFFECT)
                 and title_matches(raised["window"], _stable_title(step.get("window")) or "")):
             reopen = dict(raised)
+        if outcome in (HALTED, HALTED_BEFORE_EFFECT, RECONCILIATION_REQUIRED) and not str(reason or "").strip():
+            # Every halt says why (found live 2026-11-11: a takeover's trace said only "stopped at step 7").
+            reason = (f"{_summary(step)} stopped and its check gave no reason" if step
+                      else "the replay stopped and gave no reason")
         result = dict(
             counts, outcome=outcome, total=total, step=step["n"] if step else None,
             reason=reason, resume_from=resume_from, evidence=evidence,

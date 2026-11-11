@@ -144,30 +144,15 @@ def _request_value(m):
         return False
     if value.isalpha() and value.lower() in {"number", "no", "code", "id", "field", "box", "reset"}:
         return False
-    if m.group(3):
+    if m.group(2) or m.group(3):
+        # A plain word after "OTP:" or "password is" is withheld even where it reads as an instruction ("OTP: ask me
+        # for it"): a word too many withheld is harmless, and "password: letmein then press login" is a password
+        # running on into its sentence (review of freeze 2, A1: a running-word exemption let it through).
         return True
-    if m.group(2):
-        # "OTP: ask me for it" is an instruction, not a code (found live 2026-11-10, _runs_on).
-        return not _runs_on(m.string, value, m.end(4))
     if m.group("label").lower().startswith(("token", "api", "secret")):
         return len(value) >= 16 and re.search(r"[A-Za-z]", value) is not None and re.search(r"\d", value) is not None
     return not _APOSTROPHE_RE.sub("", value).isalpha()  # ("the OTP isn't here": a word, its apostrophe aside)
 
-
-# What follows a word that runs on into its sentence: spaces on the same line, then another word.
-_RUNS_ON = re.compile(r"[ \t]+[^\W\d_]")
-
-
-def _runs_on(text, value, end):
-    """Whether `value`, unquoted after a secret's name and ending at `end` in `text`, is a word of a running sentence
-    rather than a value: a plain lowercase word (an apostrophe between its letters aside: "don't") with more words of
-    the same clause straight after it - no punctuation between, the same line ("OTP: ask me for it", "the OTP is sent
-    to the client"). A value written after its name is digits, mixed, marked, or stands alone at the end of its clause
-    ("password: tiger."). Found live (2026-11-10): "Only the client has the OTP: ask me for it" kept "ask" as a
-    secret, and every "ask" of a taught lesson read [withheld]."""
-
-    bare = _APOSTROPHE_RE.sub("", value or "")
-    return bool(bare) and bare.isalpha() and bare.islower() and _RUNS_ON.match(text, end) is not None
 
 
 def remember_secrets(text):
@@ -920,7 +905,7 @@ _SECRET_NAME = (r"pass(?:word|code|phrase)|passwd|pwd|api[ _-]?(?:key|secret)|se
                 r"|access[ _-]?(?:key|token)|refresh[ _-]?token|auth(?:entication)?[ _-]?token|private[ _-]?key|token")
 # The value runs to a space or a quote ("password: Abc;123xyz" is all secret; review 2026-11-03 found the part after
 # ";" let through); the punctuation that ends it is left out. An apostrophe between two letters is part of it
-# ("password: don't guess" is one word, _runs_on).
+# ("password: don't guess" is one word, and withheld).
 LABELLED_SECRET = re.compile(
     r"(?i)(?<![A-Za-z])(?:" + _SECRET_NAME + r")(?![A-Za-z])\s*[:=]\s*[`\"'“‘]?((?:[^\s`\"'”’]|" + _APOSTROPHE
     + r"){2,199}?[^\s`\"'”’.,;:!?)\]])(?=[.,;:!?)\]]*(?:`|" + _VALUE_END + r"))")
@@ -977,17 +962,12 @@ def _entropy(value):
 
 def _is_secret_value(label, value, match=None, group=0):
     """Whether what a GENERIC_SECRETS pattern caught is a secret's value (and not already withheld). `match` and
-    `group`, when given, say where it stands: a plain word running on into its sentence after "password:" is an
-    instruction ("password: ask the client for it", _runs_on), unless it was quoted."""
+    `group` say where it stands (kept for callers; a plain word after "password:" is a value whatever follows it:
+    "password: letmein then press login", review of freeze 2, A1)."""
 
     value = value or ""
     if not value or value.startswith("[withheld") or value.startswith("[held back"):
         return False
-    if label == "password" and match is not None and group:
-        at = match.start(group)
-        quoted = at > 0 and match.string[at - 1] in "`\"'“‘"
-        if not quoted and _runs_on(match.string, value, match.end(group)):
-            return False
     if label in ("private key", "password in a web address", "one-time code", "card security code"):
         return True
     if label == "password said":
@@ -1078,20 +1058,12 @@ _CONTRACTION = re.compile(r"[^\W\d_]+['\u2019][^\W\d_]+")
 _RATIO = re.compile(r"[0-9]+(?:\.[0-9]+)?/[0-9]+(?:\.[0-9]+)?")
 
 
-def _letter_words(word):
-    """Whether a word is words of letters joined by hyphens ("tax-inclusive", "made-up", "one-time"): a hyphen alone
-    gives no word a value's shape (found live 2026-11-10: a lesson's hyphenated words were held as secrets)."""
-
-    parts = word.split("-")
-    return len(parts) > 1 and all(part and part.isalpha() for part in parts)
-
-
 def _value_shaped(word):
     """Whether a word of a marked message has a value's shape: 4 or more characters with a digit or a mark
-    (punctuation or a symbol) in it, but not letters joined by hyphens alone (_letter_words). Go's valueShaped."""
+    (punctuation or a symbol) in it. A hyphen is a mark: a passphrase of hyphenated words ("correct-horse-battery") is
+    a value (review of freeze 2, A2). Go's valueShaped."""
 
-    return (len(word) >= 4 and any(ch.isdigit() or unicodedata.category(ch)[0] in "PS" for ch in word)
-            and not _letter_words(word))
+    return len(word) >= 4 and any(ch.isdigit() or unicodedata.category(ch)[0] in "PS" for ch in word)
 
 
 def _is_data(word, data_words):

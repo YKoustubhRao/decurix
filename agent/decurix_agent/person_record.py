@@ -298,6 +298,37 @@ def keep_left_to_app(task_id, judgement_id, skill, param, label, reply, asked=""
     return thread
 
 
+def leave_sentence(label):
+    """The sentence of the question that offers leaving the field `label` as the application fills it in
+    (skill_task._ask_lacking): a decision is taken as one only where the question the person answered holds it."""
+
+    return f'Reply 1 to leave the field "{" ".join(str(label or "").split())}" as the application fills it in'
+
+
+def left_decision(skill, param, label, task_id=None, judgement=""):
+    """
+    The judgement id of the person's decision to leave the field `label` (the skill's value `param`) as the application
+    fills it in, or "": a decision kept for `skill` on an earlier run (left_to_app), or - given `judgement`, the one a
+    run of this task read as that decision (skill_task's run["left_to_app"], handed on through guidance) - that person's
+    judgement on this task. Either way only where the question they answered, as the control plane recorded it, offered
+    exactly that (leave_sentence). Read from any process; what cannot be read decides nothing (fail closed).
+    """
+
+    sentence = leave_sentence(label)
+    label = " ".join(str(label or "").split())
+    for row in reversed(left_to_app()):
+        if (row["skill"] == skill and row["param"] == param and " ".join(row["label"].split()) == label
+                and sentence in " ".join(row["source_asked"].split())):
+            return row["judgement"]
+    if judgement and task_id:
+        # (Read again, not from the cache, when the cached read predates the reply.)
+        for fresh in (False, True):
+            for row in judgements(task_id, fresh=fresh):
+                if row["id"] == judgement and sentence in " ".join(str(row.get("asked") or "").split()):
+                    return judgement
+    return ""
+
+
 def _learned(kind):
     """[(row, its text as JSON, its source)] of the control plane's learned rows of `kind` for this desktop that are
     derived from a person's judgement whose text is sent ([] when none or unread)."""

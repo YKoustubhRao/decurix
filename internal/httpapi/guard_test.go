@@ -18,11 +18,11 @@ func guardedServer(t *testing.T) (*Server, http.Handler) {
 	t.Helper()
 	s := &Server{}
 	s.netsFor = staticNets("172.30.0.0/16", "172.30.0.1")
-	s.callerAt = func(r *http.Request) (string, bool) {
+	s.callerAt = func(r *http.Request) (string, bool, error) {
 		if strings.HasPrefix(r.RemoteAddr, "172.30.0.5:") {
-			return "box-a", true
+			return "box-a", true, nil
 		}
-		return "", false
+		return "", false, nil
 	}
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		who, ok := actingAs(w, r, r.URL.Query().Get("desktop_id"))
@@ -137,6 +137,44 @@ func TestGuardLimitsDesktopsToTheirCallbacks(t *testing.T) {
 	// The host itself (the network's gateway, as a published port arrives) is a person.
 	if got := guardDo(h, http.MethodPost, "/api/desktops/send?desktop_id=box-b", "172.30.0.1:40000", map[string]string{"Host": "127.0.0.1:8080"}); got.Code != http.StatusOK || got.Body.String() != "box-b" {
 		t.Errorf("the host was not served as itself: %d %q", got.Code, got.Body.String())
+	}
+}
+
+// Found live (2026-11-11): Docker did not answer under load for a few seconds, the caller map read as empty, and a
+// desktop's model call was answered 403 "this address is not a desktop's" - which its worker rightly took as final,
+// and the task failed. A caller Docker could not place is answered 503 with a Retry-After, whoever it is, and is not
+// let through; an address Docker answered for and that is no desktop's is still refused 403.
+func TestGuardAnswersAnUnreadDesktopListWithTryAgain(t *testing.T) {
+	s, h := guardedServer(t)
+	unread := true
+	s.callerAt = func(r *http.Request) (string, bool, error) {
+		if unread {
+			return "", false, desktop.ErrCallersUnread
+		}
+		if strings.HasPrefix(r.RemoteAddr, "172.30.0.5:") {
+			return "box-a", true, nil
+		}
+		return "", false, nil
+	}
+	for _, remote := range []string{"172.30.0.5:40000", "172.30.0.9:40000"} {
+		w := guardDo(h, http.MethodPost, "/api/llm/azure/chat", remote, map[string]string{"Host": "decurix:8080"})
+		if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+			t.Errorf("%s with the desktop list unread: got %d (Retry-After %q), want 503 with a Retry-After", remote, w.Code, w.Header().Get("Retry-After"))
+		}
+		if strings.Contains(w.Body.String(), "box-a") {
+			t.Errorf("%s with the desktop list unread was served: %q", remote, w.Body.String())
+		}
+	}
+	// A route a desktop may never call is refused before the list is asked: unread changes nothing there.
+	if got := guardDo(h, http.MethodPost, "/api/desktops/create", "172.30.0.5:40000", map[string]string{"Host": "decurix:8080"}).Code; got != http.StatusForbidden {
+		t.Errorf("a route closed to desktops, list unread: got %d, want 403", got)
+	}
+	unread = false
+	if got := guardDo(h, http.MethodPost, "/api/llm/azure/chat", "172.30.0.9:40000", map[string]string{"Host": "decurix:8080"}).Code; got != http.StatusForbidden {
+		t.Errorf("an address Docker says is no desktop's: got %d, want 403", got)
+	}
+	if got := guardDo(h, http.MethodPost, "/api/llm/azure/chat", "172.30.0.5:40000", map[string]string{"Host": "decurix:8080"}); got.Code != http.StatusOK || got.Body.String() != "box-a" {
+		t.Errorf("the desktop once the list reads again: %d %q", got.Code, got.Body.String())
 	}
 }
 

@@ -180,5 +180,89 @@ class ALaterLookAnswersIt(Base):
         self.assertIsNone(self.saved_at())
 
 
+LIST_URL = "http://localhost:8000/desk/purchase-invoice?bill_no=SC/TAX/26-27/104"
+LIVE_LIST_URL = ("http://localhost:8000/desk/purchase-invoice?bill_no=%5B%22like%22%2C%22%25SC%2FTAX%2F26-27%2F104"
+                 "%25%22%5D")
+LIST_TITLE = "Purchase Invoice - Chromium"
+SAVED_FILTERS = {"ref": "e1753", "role": "button", "name": "Saved Filters", "source": "cdp", "group": "cdp:T1",
+                 "path": "page > button Saved Filters", "box": [300, 40, 60, 20], "states": []}
+BREADCRUMB = {"ref": "e1600", "role": "link", "name": "Purchase Invoice", "source": "cdp", "group": "cdp:T1",
+              "path": "page > link Purchase Invoice", "box": [10, 40, 60, 20], "states": [], "handle": {"backend": 1600}}
+
+
+class ANavigationIsNoSave(Base):
+    """Found live (2026-11-11, ERPNext, bill 10): a click on the breadcrumb link "Purchase Invoice" on the unsaved bill's
+    form went to the list ".../purchase-invoice?bill_no=SC/TAX/26-27/104", and the step said "Record ...: saved; the
+    page now shows 0 of 3 declared value(s)" - the query's digits were taken for a record's id."""
+
+    def ledger(self):
+        rec = records.load(TASK)[0]
+        return rec.get("saved_at"), rec.get("window"), rec.get("readback")
+
+    def test_the_live_step_a_link_from_the_form_to_the_list_is_not_a_save(self):
+        # As it was: the list's address with its filter encoded, and its "Saved Filters" button among what appeared.
+        form = look(NEW_URL, NEW_TITLE, extra=[BREADCRUMB])
+        listing = look(LIVE_LIST_URL, LIST_TITLE, saved_fields=False, extra=[SAVED_FILTERS])
+        result = self.act([form, listing, listing], ref="e1600")
+        self.assertIn('button "Saved Filters"', result["text"])
+        self.assertNotIn("Record TC/2026/0455", result["text"])
+        self.assertEqual(self.ledger(), (None, "", {}), "the ledger is unchanged")
+        self.assertFalse(core.PENDING_SAVE_FILE.exists())
+
+    def test_a_controls_label_is_no_saved_answer(self):
+        self.assertFalse(core._saved('page is now ' + LIVE_LIST_URL + '; 48 element(s) appeared: button "List View" '
+                                     '(e1751), button "Saved Filters" (e1753)'))
+        self.assertTrue(core._saved('1 element(s) appeared: alert "Saved"'))
+        self.assertTrue(core._saved('1 element(s) appeared: text "Purchase Invoice PINV-26-00002 saved"'))
+        # ...whatever was pressed: a button that only shows the list is not a save either.
+        form = look(NEW_URL, NEW_TITLE, extra=[dict(BREADCRUMB, role="button", ref="e1601", path="page > button PI")])
+        listing = look(LIVE_LIST_URL, LIST_TITLE, saved_fields=False, extra=[SAVED_FILTERS])
+        result = self.act([form, listing, listing], ref="e1601")
+        self.assertNotIn("Record TC/2026/0455", result["text"])
+        self.assertEqual(self.ledger(), (None, "", {}))
+
+    def test_a_list_page_or_a_query_is_never_a_records_page(self):
+        new = {"page_url": NEW_URL}
+        self.assertFalse(core._became_a_record(new, "page is now " + LIST_URL))
+        self.assertFalse(core._became_a_record(new, "", {"page_url": LIST_URL}))
+        self.assertFalse(core._became_a_record(new, "", {"page_url": NEW_URL + "?bill_no=PINV-26-00002"}))
+        self.assertFalse(core._became_a_record(new, "", {"page_url": "http://localhost:8000/desk/supplier/SUP-0001"}))
+        self.assertFalse(core._became_a_record(new, "", {"page_url": "http://other.test/desk/purchase-invoice/PINV-26-00002"}))
+        self.assertTrue(core._became_a_record(new, "", {"page_url": RECORD_URL}))
+        self.assertTrue(core._became_a_record({"page_url": "http://books.test/#/v/new"}, "",
+                                              {"page_url": "http://books.test/#/v/1054"}))
+
+    def test_only_a_press_that_may_save_is_judged_by_the_page_it_left(self):
+        self.assertFalse(core._commit_press("click", BREADCRUMB, []))
+        self.assertFalse(core._commit_press("click", None, []))
+        self.assertFalse(core._commit_press("key", None, ["alt+Left"]))
+        self.assertTrue(core._commit_press("click", {"role": "button", "name": "Save"}, []))
+        self.assertTrue(core._commit_press("click", {"role": "button", "name": "Create Invoice"}, []))
+        self.assertTrue(core._commit_press("key", None, ["ctrl+s"]))
+        self.assertTrue(core._commit_press("key", None, ["Return"]))
+
+    def test_a_save_to_the_list_page_is_no_save_and_not_left_waiting_as_one(self):
+        listing = look(LIST_URL, LIST_TITLE, saved_fields=False)
+        result = self.act([FORM, listing, listing])
+        self.assertNotIn("Record TC/2026/0455: saved", result["text"])
+        self.assertEqual(self.ledger(), (None, "", {}))
+
+    def test_a_records_page_that_shows_nothing_of_the_record_is_not_its_save(self):
+        empty = look(RECORD_URL, RECORD_TITLE, saved_fields=False)
+        result = self.act([FORM, empty, empty])
+        self.assertIn("Record TC/2026/0455: NOT saved", result["text"])
+        self.assertEqual(self.ledger(), (None, "", {}))
+
+    def test_the_backstop_keeps_the_same_rules(self):
+        self.act([FORM, IN_FLIGHT, IN_FLIGHT])
+        self.assertEqual(core.pending_save_readback(look(LIST_URL, LIST_TITLE, saved_fields=False)), "")
+        self.assertEqual(self.ledger(), (None, "", {}))
+
+    def test_a_save_to_the_records_page_still_reads_back(self):
+        result = self.act([FORM, SAVED, SAVED])
+        self.assertIn("Record TC/2026/0455: saved; the page now shows 3 of 3", result["text"])
+        self.assertTrue(self.ledger()[0])
+
+
 if __name__ == "__main__":
     unittest.main()

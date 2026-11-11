@@ -223,6 +223,11 @@ func clipText(s string, n int) string {
 // no model reading it.
 const ApprovalYes = "Yes, go ahead."
 
+// ApprovalNo is the expert's reply to a gate-signed approval its case does not list: a plain no (every word on the
+// agent's plain-no list, approval._PLAIN_NO), which the gate settles as declined in code, with no model reading it.
+// It grants nothing; the worker must route around the held action.
+const ApprovalNo = "No, do not."
+
 // gateClick is how the approval gate words a click it stops (approval.request_text over describe_action and
 // elements.describe): `Approval needed before I click <role> "<name>"`, then the ref, the window and the reason. The
 // gate quotes a name with its own double quotes turned to single ones, so the name holds none.

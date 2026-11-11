@@ -1,5 +1,5 @@
 {
-  "rule": "The values a message the person marked secret makes secret (agent privacy.marked_values, Go withhold.MarkedValues): the message whole (without the block of files it brings, its spaces folded), the secrets its structure spells out, and each word - split on white space, the characters .,;:!?\"'()[]{} trimmed from its ends - of 4 or more code points with a digit or a punctuation or symbol character in it, not words of letters joined by hyphens, that is not data by its structure: an amount or number (values.parse_amount), a date (values.parse_date), a time, an e-mail address, a URL, a host name, a contraction, or one figure over another (a ratio). Values are compared as a set.",
+  "rule": "The values a message the person marked secret makes secret (agent privacy.marked_values, Go withhold.MarkedValues): the message whole (without the block of files it brings, its spaces folded), the secrets its structure spells out, and each word - split on white space, the characters .,;:!?\"'()[]{} trimmed from its ends - of 4 or more code points with a digit or a punctuation or symbol character in it (a hyphen is a mark), that is not data by its structure: an amount or number (values.parse_amount), a date (values.parse_date), a time, an e-mail address, a URL, a host name, a contraction, or one figure over another (a ratio). Values are compared as a set.",
   "cases": [
     {
       "text": "Create ~/work/out/b.txt holding hello, then make ~/work/out/b.zip from it, encrypted with Plum7Orbit.",
@@ -73,6 +73,9 @@
       "text": "An inter-state B2C sale above 1,00,000 is tax-inclusive: taxable is the amount times 100/118, never made-up rows; sign in with Zebra-42-quiet.",
       "values": [
         "An inter-state B2C sale above 1,00,000 is tax-inclusive: taxable is the amount times 100/118, never made-up rows; sign in with Zebra-42-quiet.",
+        "inter-state",
+        "tax-inclusive",
+        "made-up",
         "Zebra-42-quiet"
       ]
     }

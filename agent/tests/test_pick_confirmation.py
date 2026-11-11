@@ -60,6 +60,13 @@ class EachRecordsOwnParty(unittest.TestCase):
             self.assertTrue(records.pick_backed(dict(PICK, party=B1), NONE))
             self.assertFalse(records.pick_backed(dict(PICK, party=B2), NONE))
 
+    def test_a_row_kept_with_no_party_backs_no_partys_pick(self):
+        # Review of freeze 2 (A12): a legacy row kept before answers carried their party backed every party's pick.
+        with mock.patch("decurix_agent.person_record.field_answers", return_value=kept_for("")):
+            self.assertFalse(records.pick_backed(dict(PICK, party=B1), NONE))
+            self.assertFalse(records.pick_backed(dict(PICK, party=B2), NONE))
+            self.assertTrue(records.pick_backed(dict(PICK, party=""), NONE))  # a pick with no party: as kept
+
     def test_a_different_entry_is_still_held(self):
         with mock.patch("decurix_agent.person_record.field_answers", return_value=kept_for(B1)):
             self.assertFalse(records.pick_backed(dict(PICK, party=B1, option="33-Tamil Nadu"), NONE))

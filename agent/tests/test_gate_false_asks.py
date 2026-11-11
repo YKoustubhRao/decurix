@@ -2,8 +2,9 @@
 The approval gate's false asks found on ERPNext bills (2026-11-08, O-11), each fixed by structure, never by a word
 taken off a list, and the real commits beside them still asked:
 
-- a button that opens a new, empty record ("+ Add Purchase Invoice") is let through only when the page says the press
-  submits no form holding values (approval.opens_new_record, context "submits");
+- a button that opens a new, empty record ("+ Add Purchase Invoice") was let through by its label's shape; since the
+  review of freeze 2 (A5) a button is asked whatever its label: "Create Payment Order" in an app that submits by
+  script shows no form;
 - a press found by eye is judged by the control the page names at the point, and its yes is bound to that control, not
   to the pixel (core._gate_spot) - three looks at one list row asked three times;
 - after Ctrl+L and an address typed, Return is Return in the browser's address bar (core._location_bar), not a press
@@ -25,28 +26,21 @@ def button(name):
 
 
 class ANewRecordButton(unittest.TestCase):
+    """Review of freeze 2 (A5): a label shaped like "opens a new record" let "Create Payment Order" and "Make Payment
+    Entry" through in apps that submit by script (no form the page can show). A button is asked by its label."""
 
-    def test_opening_an_empty_record_is_let_through_only_when_the_page_says_it_sends_nothing(self):
-        add = button("+ Add Purchase Invoice")
-        self.assertTrue(approval.opens_new_record(add))
-        self.assertIsNone(approval.assess("click", add, context={"submits": False}))
-        self.assertIsNotNone(approval.assess("click", add, context={"submits": True}))
-        self.assertIsNotNone(approval.assess("click", add, context={}))  # not read from the page: asked
-
-    def test_the_label_shape_is_narrow(self):
-        for name in ("New Purchase Invoice", "Create Purchase Order", "Make Payment Entry", "Add Purchase Receipt"):
-            self.assertTrue(approval.opens_new_record(button(name)), name)
-        for name in ("Purchase", "Buy now", "Pay", "Create Payment", "Add and pay", "Create and send invoice",
-                     "Place order", "New payment - pay now", "Confirm Purchase Order", "Purchase Invoice"):
-            self.assertFalse(approval.opens_new_record(button(name)), name)
-        self.assertFalse(approval.opens_new_record({"role": "link", "name": "Add Purchase Invoice"}))
+    def test_a_button_that_reads_like_opening_a_record_is_asked(self):
+        for name in ("+ Add Purchase Invoice", "Create Payment Order", "Make Payment Entry", "Create Payment Entry"):
+            for context in ({"submits": False}, {}, {"submits": False, "navigates": True}):
+                self.assertIsNotNone(approval.assess("click", button(name), context=context), (name, context))
+        self.assertFalse(hasattr(approval, "opens_new_record"))
 
     def test_real_commits_still_ask(self):
         for name in ("Pay", "Buy now", "Purchase", "Place order", "Confirm Purchase Order",
                      "Send invoice", "Submit and pay", "+ Pay"):
             self.assertIsNotNone(approval.assess("click", button(name), context={"submits": False}), name)
 
-    def test_the_page_is_asked_only_for_such_a_button(self):
+    def test_the_page_says_whether_a_press_submits(self):
         with mock.patch.object(core.cdp, "submit_form_fields", return_value=None) as asked:
             self.assertFalse(core._press_submits("click", button("Add Purchase Invoice")))
         asked.assert_called_once()
@@ -110,9 +104,16 @@ class ALinkThatOnlyGoesSomewhere(unittest.TestCase):
                      "Continue to payment and pay now", "Buy now", "Go to checkout - buy now"):
             self.assertIsNotNone(approval.assess("click", self.link(name), context={}), name)  # asks today
             self.assertIsNotNone(approval.assess("click", self.link(name), context={"navigates": True}), name)
-        for name in ("Proceed to file / summary", "Continue to payment", "Go to checkout", "Proceed to filing"):
+        for name in ("Proceed to file / summary", "Go to checkout", "Proceed to filing"):
             self.assertTrue(approval.only_steps_into_an_act(name), name)
             self.assertIsNone(approval.assess("click", self.link(name), context={"navigates": True}), name)
+
+    def test_a_step_into_an_act_is_still_asked(self):
+        # Review of freeze 2 (A6): the destination is itself the act.
+        for name in ("Proceed to pay", "Proceed to submit", "Proceed to transfer", "Continue with purchase",
+                     "Continue to payment", "Go to payment", "Proceed to send"):
+            self.assertFalse(approval.only_steps_into_an_act(name), name)
+            self.assertIsNotNone(approval.assess("click", self.link(name), context={"navigates": True}), name)
 
     def test_only_a_link_by_its_role_and_never_a_button(self):
         for name in ("File with EVC", "Pay", "Proceed to file / summary", "Send invoice"):
@@ -134,6 +135,58 @@ class ALinkThatOnlyGoesSomewhere(unittest.TestCase):
             self.assertFalse(core._only_navigates("click", link))
         self.assertFalse(core._only_navigates("click", button("Proceed to file")))
         self.assertFalse(core._only_navigates("click", {"role": "link", "name": "Proceed to file"}))  # not the page's
+
+
+class ALinkAScriptMayActOn(unittest.TestCase):
+    """Review of freeze 2 (A6): a link with a click handler, an inline handler or data-method="post" was read as
+    navigation. cdp.link_target gives no address for such a link, so it is asked."""
+
+    def page(self, href, listeners):
+        """A fake DevTools page: the anchor's markup check answers href ('' for a refused one); the press path is two
+        nodes, whose listeners are `listeners` (a list per node, None for unreadable)."""
+
+        calls = []
+
+        class Page:
+            def call(self, method, params=None, timeout=None):
+                calls.append(method)
+                if method == "Runtime.callFunctionOn" and params.get("returnByValue"):
+                    return {"result": {"value": href}}
+                if method == "Runtime.callFunctionOn":
+                    return {"result": {"objectId": "path"}}
+                if method == "Runtime.getProperties":
+                    return {"result": [{"name": "0", "value": {"objectId": "n0"}},
+                                       {"name": "1", "value": {"objectId": "n1"}},
+                                       {"name": "length", "value": {"value": 2}}]}
+                if method == "DOMDebugger.getEventListeners":
+                    found = listeners[int(params["objectId"][1:])]
+                    return {} if found is None else {"listeners": found}
+                raise AssertionError(method)
+
+            def close(self):
+                pass
+
+        return Page(), calls
+
+    def target(self, href, listeners):
+        page, _ = self.page(href, listeners)
+        with mock.patch.object(core.cdp, "_page_for", return_value=page), \
+                mock.patch.object(core.cdp, "_object", return_value="el"):
+            return core.cdp.link_target({"handle": {"backend_id": 3}})
+
+    def test_a_plain_link_is_navigation(self):
+        self.assertEqual(self.target("http://x.test/summary", [[], [{"type": "scroll"}]]), "http://x.test/summary")
+
+    def test_a_press_listener_anywhere_on_the_way_is_not(self):
+        self.assertEqual(self.target("http://x.test/summary", [[{"type": "click"}], []]), "")
+        self.assertEqual(self.target("http://x.test/summary", [[], [{"type": "pointerdown"}]]), "")  # delegated
+
+    def test_unreadable_listeners_are_not_navigation(self):
+        self.assertEqual(self.target("http://x.test/summary", [[], None]), "")
+
+    def test_markup_that_makes_a_link_act_is_refused_in_the_page(self):
+        for attribute in ("onclick", "data-method", "data-remote", "data-turbo-method", "hx-post"):
+            self.assertIn("'" + attribute + "'", core.cdp._LINK_TARGET, attribute)
 
 
 class ASignIn(unittest.TestCase):
@@ -167,6 +220,19 @@ class ASignIn(unittest.TestCase):
             self.assertFalse(core._signs_in(form))
         said, pressed = self.check(button("Verify"), dict(self.LOGIN, signs_in=False))
         self.assertEqual(len(pressed), 1)
+
+    def test_a_form_that_may_hold_a_secret_the_person_gave_in_this_task_is_no_sign_in(self):
+        # Review of freeze 2 (A7): an OTP the person gave, typed into a password-type field beside a filled name,
+        # has a sign-in's shape; it authorises, and is asked.
+        filled = dict(self.LOGIN, secret_filled=True)
+        with mock.patch("decurix_agent.task_context.current", return_value="t1"), \
+                mock.patch.object(core.privacy, "literals", return_value=["552901"]):
+            self.assertFalse(core._signs_in(filled))
+            self.assertFalse(core._signs_in(dict(self.LOGIN, fields=[["Code", "552901"]])))
+            self.assertTrue(core._authorises(filled, button("Sign in")))
+        with mock.patch("decurix_agent.task_context.current", return_value="t1"), \
+                mock.patch.object(core.privacy, "literals", return_value=[]):
+            self.assertTrue(core._signs_in(filled))  # no secret given in this task: a sign-in
 
 
 class APressFoundByEye(unittest.TestCase):

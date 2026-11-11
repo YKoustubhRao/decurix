@@ -1440,7 +1440,7 @@ func (s *Session) Type(text string) error {
 // SetKeyedText says how the app takes typed text. An app whose controls Windows describes (Office) takes characters
 // as characters: a key going down is turned into a character by the app itself, after anything already queued, so
 // spaces and line breaks sent as keys landed among the next letters and twice ("replacemen tlamp"). An app that draws
-// its own screen (TallyPrime) dropped spaces sent as characters, and takes them as keys. Sent only when it changes.
+// its own screen (a desktop accounting app) dropped spaces sent as characters, and takes them as keys. Sent only when it changes.
 func (s *Session) SetKeyedText(keyed bool) {
 	s.mu.Lock()
 	if s.keyedSet && s.keyedText == keyed {

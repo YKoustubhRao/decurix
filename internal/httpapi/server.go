@@ -199,8 +199,8 @@ type Server struct {
 	hostVisionMu sync.Mutex
 	hostVision   map[string]*hostVision
 
-	// callerAt stands in for Desktops.DesktopAt in callerDesktop, in tests.
-	callerAt func(r *http.Request) (string, bool)
+	// callerAt stands in for Desktops.CallerAt in callerDesktop, in tests.
+	callerAt func(r *http.Request) (string, bool, error)
 
 	// agentRequest stands in for Desktops.AgentRequest there, in tests.
 	agentRequest func(ctx context.Context, id, method, path string, body io.Reader) (*http.Response, error)

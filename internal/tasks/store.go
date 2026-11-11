@@ -829,6 +829,47 @@ func (s *Store) StoredForm(route Route, text string, marked bool) (string, bool)
 	return stored, stored != text
 }
 
+// LearnEngine is the engine a desktop names while it is being taught (the agent's LEARN_ENGINE): its questions are
+// the lesson's read-back, whose replies are what the worker is taught.
+const LearnEngine = "learn"
+
+// MarksSecret reports whether content sent along route goes to the desktop marked "secret", so the desktop holds it
+// and its value-shaped words as secrets (C14.1). The records may withhold more than this (StoredForm): the mark rests
+// on structure. It is set by:
+//   - the person's own mark;
+//   - a question asked for a secret;
+//   - for anything else, whatever the records withhold - except a reply to a question the learner asked that was not
+//     asked for a secret, which is never marked by the words withhold finds in it.
+//
+// A lesson's reply that names the OTP while explaining the work had every code, amount, ratio and hyphenated word of
+// it held as a secret, and the lesson read "[withheld]" (found live 2026-11-10; review of freeze 2). Its labelled
+// secrets ("password: x") are still withheld on the desktop by the desktop's own privacy rules.
+func (s *Store) MarksSecret(route Route, content string, marked bool) bool {
+	if marked {
+		return true
+	}
+	_, withheld := s.StoredForm(route, content, false)
+	if !withheld {
+		return false
+	}
+	if route.Kind != RouteReply {
+		return true
+	}
+	var askedSecret bool
+	var engine string
+	err := s.db.QueryRow(`SELECT i.secret, e.engine FROM interventions i JOIN executions e ON e.id = i.execution_id
+		WHERE i.execution_id = ? AND i.replied_ns = 0 ORDER BY i.requested_ns DESC LIMIT 1`, route.ExecutionID).
+		Scan(&askedSecret, &engine)
+	if err != nil && route.InterventionID != "" {
+		err = s.db.QueryRow(`SELECT i.secret, e.engine FROM interventions i JOIN executions e ON e.id = i.execution_id
+			WHERE i.id = ?`, route.InterventionID).Scan(&askedSecret, &engine)
+	}
+	if err != nil {
+		return true // the question is unknown: marked, as the records withhold it (fails closed)
+	}
+	return askedSecret || engine != LearnEngine
+}
+
 // commit is Commit's body. It may withhold *stored further (a reply to a question asked for a secret), and leaves in
 // it what it recorded.
 func (s *Store) commit(route Route, worker Worker, stored *string, by ReplyBy, secret bool, raw string) (Route, error) {

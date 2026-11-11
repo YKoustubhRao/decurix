@@ -419,11 +419,11 @@ func TestHostBridgeOpenNeedsALaunchersToken(t *testing.T) {
 
 	srv := &Server{HostGUISecret: []byte("secret")}
 	srv.netsFor = staticNets("172.30.0.0/16", "172.30.0.1")
-	srv.callerAt = func(r *http.Request) (string, bool) {
+	srv.callerAt = func(r *http.Request) (string, bool, error) {
 		if strings.HasPrefix(r.RemoteAddr, "172.30.0.5:") {
-			return "box-a", true
+			return "box-a", true, nil
 		}
-		return "", false
+		return "", false, nil
 	}
 	mux := http.NewServeMux()
 	srv.RegisterLocalRoutes(mux)

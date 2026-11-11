@@ -130,21 +130,17 @@ func TestLooksSecretReadsValuesNotWords(t *testing.T) {
 	}
 }
 
-// A plain lowercase word running on into its sentence after "password:" is the person's instruction, not a password
-// (found live 2026-11-10: "Only the client has the OTP: ask me for it" in a lesson kept "ask" as a secret on the
-// desktop). A value is digits, mixed, marked, quoted, or stands alone at the end of its clause.
-func TestAWordRunningOnAfterAPasswordLabelIsAnInstruction(t *testing.T) {
+// A plain word after "password:" is withheld even where it runs on into its sentence (review of freeze 2, A1: a
+// running-word exemption let "password: letmein then press login" through). A word too many withheld is harmless.
+func TestAPlainWordAfterAPasswordLabelIsStillWithheld(t *testing.T) {
 	for in, want := range map[string]string{
-		"password: ask the client for it, never guess": "password: ask the client for it, never guess",
-		"Only the client has the OTP: ask me for it":   "Only the client has the OTP: ask me for it",
-		"the password is sent to the client's phone":   "the password is sent to the client's phone",
-		"password: hunter then sign in":                "password: hunter then sign in",
-		"password: don't guess it, ask":                "password: don't guess it, ask",
+		"password: letmein then press login":           "password: [withheld] then press login",
+		"password: ask the client for it, never guess": "password: [withheld] the client for it, never guess",
+		"password: hunter then sign in":                "password: [withheld] then sign in",
 		"password: hunter.":                            "password: [withheld].",
 		"password: hunter":                             "password: [withheld]",
 		"password: hunter, then sign in":               "password: [withheld], then sign in",
 		"password: 'hunter' then sign in":              "password: '[withheld]' then sign in",
-		"password: Hunter then sign in":                "password: [withheld] then sign in",
 		"password: Lift$2026 then sign in":             "password: [withheld] then sign in",
 		"one-time password is swordfish":               "one-time password is [withheld]",
 		"The OTP is 552910 and it expires":             "The OTP is [withheld] and it expires",
@@ -152,8 +148,8 @@ func TestAWordRunningOnAfterAPasswordLabelIsAnInstruction(t *testing.T) {
 		if got := RedactSecrets(in); got != want {
 			t.Errorf("RedactSecrets(%q) = %q, want %q", in, got, want)
 		}
-		if LooksSecret(in) != (in != want) {
-			t.Errorf("LooksSecret(%q) = %v, disagrees with RedactSecrets", in, LooksSecret(in))
+		if !LooksSecret(in) {
+			t.Errorf("LooksSecret(%q) = false", in)
 		}
 	}
 }

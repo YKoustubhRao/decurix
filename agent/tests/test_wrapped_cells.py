@@ -35,6 +35,15 @@ class AWrappedCell(unittest.TestCase):
         far = "Executive summary of the year." + " filler" * 200 + " Printing Paper was bought."
         self.assertFalse(binding.held_by("Executive Printing Paper", [far]))
 
+    def test_words_of_two_regions_or_apart_on_one_line_are_not_one_cell(self):
+        # Review of freeze 2 (A11): bound to one region (no blank line between) and to the cell's lines, never to a
+        # count of characters.
+        two_rows = "   Executive A4      5     100.00\n\n   Printing Paper 75 GSM (Box of 10 Reams)\n"
+        self.assertFalse(binding.held_by("Executive A4 Printing Paper 75 GSM (Box of 10 Reams)", [two_rows]))
+        self.assertFalse(binding.held_by("Executive Paper", ["Executive A4 Printing Paper 75"]))
+        far_lines = "Executive A4\nx 1\ny 2\nz 3\nPrinting Paper"
+        self.assertFalse(binding.held_by("Executive A4 Printing Paper", [far_lines]))
+
     def test_one_word_and_numbers_are_as_before(self):
         self.assertTrue(binding.held_by("Reams", [BILL]))
         self.assertFalse(binding.held_by("Ream", [BILL]))

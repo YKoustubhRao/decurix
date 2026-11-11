@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
@@ -230,7 +231,7 @@ func TestTheWorkerColumnsMigrateAnExistingDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := sqlitedb.Migrate(db, "eval", schema[:len(schema)-1]); err != nil {
+	if err := sqlitedb.Migrate(db, "eval", schema[:5]); err != nil { // (the steps before the worker's)
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO eval_runs (id, created_ns, suite_name, suite_sha, arms, repeats, status) VALUES ('e1', 1, 's', 'x', '[]', 1, 'done')`); err != nil {
@@ -249,5 +250,42 @@ func TestTheWorkerColumnsMigrateAnExistingDatabase(t *testing.T) {
 	}
 	if run, err := store.Get("e2"); err != nil || run.FromWorker != "desk-7" || run.SnapshotSHA != "s1" || run.WorkerTreeSHA != "t1" {
 		t.Fatalf("new run: %+v %v", run, err)
+	}
+}
+
+// The step that counts declined approvals applies on a database every earlier step made: a row stored before it reads
+// back with q_declined 0, and a new row keeps its count.
+func TestTheDeclinedColumnMigratesAnExistingDatabase(t *testing.T) {
+	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), "eval.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := sqlitedb.Migrate(db, "eval", schema[:6]); err != nil { // (every step before q_declined's)
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO eval_runs (id, created_ns, suite_name, suite_sha, arms, repeats, status) VALUES ('e1', 1, 's', 'x', '[]', 1, 'done')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO eval_rows (run_id, arm, repeat, case_id, observed, passed, false_done, done_unchecked_wrong, q_required, q_other, at_ns)
+		VALUES ('e1', 'arm', 1, 'c1', 'complete', 1, 0, 0, 2, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRow(Row{RunID: "e1", Arm: "arm", Repeat: 2, CaseID: "c1", Observed: OutcomeComplete, QRequired: 1, QDeclined: 3, At: time.Unix(2, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.Rows("e1")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows: %+v %v", rows, err)
+	}
+	if old := rows[0]; old.QDeclined != 0 || old.QRequired != 2 || old.QOther != 1 {
+		t.Fatalf("old row: %+v", old)
+	}
+	if rows[1].QDeclined != 3 {
+		t.Fatalf("new row: %+v", rows[1])
 	}
 }

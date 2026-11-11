@@ -50,7 +50,7 @@ func approvalReply(c Case, question string) string {
 
 // asksToPressUnquoted reports whether the question asks to press one of the case's approved controls by its name written
 // without quotes right after a press verb ("I am about to enter the OTP and click Verify"). Found live (2026-11-10,
-// freeze 2.3, og-5): that question went unanswered as an approval, the expert said "I don't know", and the run ran out
+// freeze 2.3, a return-filing case): that question went unanswered as an approval, the expert said "I don't know", and the run ran out
 // of questions at Verify.
 func asksToPressUnquoted(c Case, question string) bool {
 	for _, a := range c.Approves {
@@ -139,7 +139,8 @@ const DoneQuestionMark = "Reply `done` if it is done, `retry`"
 const PlanYes = "Yes, go ahead."
 
 // NotConfirmed is the expert's reply to "is it done?": it cannot check, so the result stands as reported, unchecked -
-// the graders decide. The agent reads it as "leave it" (final_gate.NOT_CONFIRMED_REPLY), never as done or a retry.
+// the graders decide. The agent reads it as it reads any person's reply ("leave it"), never as done or a retry; the
+// harness holds no copy of this sentence.
 const NotConfirmed = "I can't check that from here - report it as you see it, not confirmed."
 
 // planPairRe is a value a plan shows: `Label = "value"` or `Label: "value"` (the agent's _record_plan_text).

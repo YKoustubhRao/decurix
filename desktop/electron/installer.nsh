@@ -1,3 +1,78 @@
+; What the stock installer does not do for Decurix: turn on what Windows needs to
+; run its Linux, so the app opens after one restart (Windows 10 2004+ and 11).
+;
+; wsl\prepare-windows.ps1 turns on the WSL and Virtual Machine Platform
+; features, installs WSL itself and lets the hypervisor start, behind one
+; administrator prompt, only when something is missing. Its exit code is 100 plus bits:
+; 1 restart, 2 virtualization off in the firmware, 4 failed, 8 prompt declined,
+; 16 unsupported computer. A restart sets the reboot flag, so the finish page
+; offers "Reboot now" in place of starting the app. What is left undone, the
+; app does or explains at its first start (main.js linuxReady). An update skips
+; all of this: the computer was made ready by the first install, and a silent
+; update must not raise a prompt.
+;
+; 64-bit PowerShell (Sysnative), as in customUnInstall: a 32-bit one's dism.exe
+; cannot change a 64-bit Windows.
+
+!macro customInstall
+  ${ifNot} ${isUpdated}
+    Push $R2
+    Push $R3
+    Push $R4
+    Push $R5
+    StrCpy $R5 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+    ${ifNot} ${FileExists} $R5
+      StrCpy $R5 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+    ${endIf}
+    DetailPrint "Checking that Windows can run Decurix's Linux (WSL, Virtual Machine Platform). Windows may ask you to allow changes; this can take a few minutes."
+    nsExec::ExecToLog `"$R5" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\wsl\prepare-windows.ps1" -Action ensure`
+    Pop $R4
+    ; 100 plus the bits. Anything else ("error", "timeout", PowerShell's own 1
+    ; for a script it would not run) is a failure, never a restart.
+    ${if} $R4 < 100
+    ${orIf} $R4 > 131
+      StrCpy $R4 "4"
+    ${else}
+      IntOp $R4 $R4 - 100
+    ${endIf}
+
+    IntOp $R3 $R4 & 16
+    ${if} $R3 != 0
+      MessageBox MB_OK|MB_ICONEXCLAMATION "Decurix is installed, but this computer cannot run it: Decurix needs a 64-bit Intel or AMD computer with Windows 10 version 2004 or newer, or Windows 11. On Windows 10, install the latest updates from Windows Update, then install Decurix again." /SD IDOK
+    ${else}
+      IntOp $R3 $R4 & 8
+      ${if} $R3 != 0
+        MessageBox MB_OK|MB_ICONINFORMATION "Decurix is installed, but the Windows features it needs (Windows Subsystem for Linux, Virtual Machine Platform) were not turned on, because the administrator prompt was declined. Open Decurix and allow the prompt it shows, or install Decurix again." /SD IDOK
+      ${endIf}
+      IntOp $R3 $R4 & 4
+      ${if} $R3 != 0
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Decurix is installed, but Windows Subsystem for Linux could not be fully set up (often: no internet connection, or a Windows 10 that lacks its latest updates). Restart Windows and open Decurix: it tries again. Details are in %LOCALAPPDATA%\Decurix\logs\prepare-windows.log." /SD IDOK
+      ${endIf}
+      IntOp $R2 $R4 & 1
+      IntOp $R3 $R4 & 2
+      ${if} $R3 != 0
+        MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "One more step, which only you can do: virtualization is switched off in this computer's firmware (BIOS/UEFI) settings, and Decurix's workers need it. Windows cannot turn it on.$\r$\n$\r$\nIn the firmware settings, turn on the option named Intel Virtualization Technology (VT-x), SVM Mode or AMD-V (often under Advanced, CPU Configuration or Security), save and exit. Then open Decurix.$\r$\n$\r$\nRestart into the firmware settings now? (Save your work first. If you choose No, restart and press the setup key, usually F2, F10, Del or Esc, while the computer starts.)" /SD IDNO IDNO firmwareLater
+          nsExec::Exec `"$R5" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\wsl\prepare-windows.ps1" -Action firmware`
+          Pop $R3
+          ${if} $R3 == "0"
+            ; Windows restarts into the firmware settings in 30 seconds.
+            StrCpy $R2 "0"
+          ${else}
+            MessageBox MB_OK|MB_ICONINFORMATION "This computer cannot be restarted into its firmware settings from Windows. Restart it and press the setup key (usually F2, F10, Del or Esc) while it starts." /SD IDOK
+          ${endIf}
+        firmwareLater:
+      ${endIf}
+      ${if} $R2 != 0
+        SetRebootFlag true
+      ${endIf}
+    ${endIf}
+    Pop $R5
+    Pop $R4
+    Pop $R3
+    Pop $R2
+  ${endIf}
+!macroend
+
 ; What the stock uninstaller does not know about Decurix.
 ;
 ; It ends every process running from the install folder (the window,

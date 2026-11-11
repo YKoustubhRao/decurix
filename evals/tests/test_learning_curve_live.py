@@ -20,7 +20,7 @@ NOW = time.time()
 STAMP = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW))
 ROW = {"case_id": "oc-6-february", "repeat": 1, "task_id": "t1", "passed": True, "false_done": False, "observed": "complete",
        "minutes": 20.5, "tokens_in": 900000, "tokens_cached": 700000, "tokens_out": 40000, "q_required": 2, "q_other": 1,
-       "questions": [{"question": "May I file with EVC?"}], "at": STAMP,
+       "q_declined": 1, "questions": [{"question": "May I file with EVC?"}], "at": STAMP,
        "checks": {"graders": [{"id": "tn-b2b", "result": "pass"}, {"id": "reports-arn", "result": "fail"}]}}
 STEPS = ("Running: gui click 10,20\nReplay step 7/9 done\nNot done yet: the ARN is not in the report. Trying again.\n"
          "Running: gui replay step 8\nRunning: office read x.pdf")
@@ -66,11 +66,12 @@ class TestLiveRows(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         r = rows[0]
         for key in ("workflow", "n", "case", "build", "arm", "run", "task", "correct", "minutes", "tokens_in",
-                    "tokens_cached", "tokens_out", "model_turns", "q_required", "q_other", "sendbacks",
+                    "tokens_cached", "tokens_out", "model_turns", "q_required", "q_other", "q_declined", "sendbacks",
                     "replayed_steps", "model_steps", "trust_stage", "verdict_counted", "finished_at"):
             self.assertIn(key, r)
         self.assertEqual((r["n"], r["case"], r["correct"], r["model_turns"]), (2, "oc-6-february", True, 2))
         self.assertEqual((r["sendbacks"], r["replayed_steps"], r["model_steps"]), (1, 7, 2))
+        self.assertEqual((r["q_required"], r["q_other"], r["q_declined"]), (2, 1, 1))
         self.assertEqual(r["failed_graders"], ["reports-arn"])
         self.assertFalse(r["graders_pass"])
         self.assertNotIn("pilot", r)

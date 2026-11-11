@@ -79,6 +79,8 @@ var schema = []string{
 	`ALTER TABLE eval_runs ADD COLUMN from_worker TEXT NOT NULL DEFAULT '';
 	ALTER TABLE eval_runs ADD COLUMN snapshot_sha TEXT NOT NULL DEFAULT '';
 	ALTER TABLE eval_runs ADD COLUMN worker_tree_sha TEXT NOT NULL DEFAULT '';`,
+	// Gate-signed approvals the case did not list, which the expert declined and the case went on (freeze 2.4).
+	`ALTER TABLE eval_rows ADD COLUMN q_declined INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // Blobs keeps a run's suite tar by content (*blobstore.Store), so a run can be read again later.
@@ -157,6 +159,9 @@ type Row struct {
 	// Calls is how many model calls the case made through the broker (the expert's are not the worker's): a learning
 	// curve shows them beside the tokens.
 	Calls int `json:"calls"`
+	// QDeclined is how many gate-signed approvals the case does not list the expert answered no, the case going on
+	// (counted apart from q_required and q_other).
+	QDeclined int `json:"q_declined"`
 }
 
 // Store keeps eval runs and their rows in SQLite.
@@ -272,11 +277,11 @@ func (s *Store) AddRow(r Row) error {
 	}
 	_, err := s.db.Exec(`INSERT INTO eval_rows (run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done,
 		done_unchecked_wrong, q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns,
-		invalid, infra, trajectory_id, calls)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		invalid, infra, trajectory_id, calls, q_declined)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.Arm, r.Repeat, r.CaseID, r.TaskID, r.Observed, r.Checked, r.Passed, r.FalseDone, r.DoneUncheckedWrong,
 		r.QRequired, r.QOther, r.TokensIn, r.TokensCached, r.TokensOut, r.Minutes, string(deps), string(checks), string(probs),
-		sqlitedb.ToNS(r.At), r.Invalid, r.Infra, r.TrajectoryID, r.Calls)
+		sqlitedb.ToNS(r.At), r.Invalid, r.Infra, r.TrajectoryID, r.Calls, r.QDeclined)
 	return err
 }
 
@@ -339,7 +344,7 @@ func (s *Store) query(where string, args ...any) ([]Run, error) {
 func (s *Store) Rows(runID string) ([]Row, error) {
 	rows, err := s.db.Query(`SELECT run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done, done_unchecked_wrong,
 		q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns, invalid, infra,
-		trajectory_id, calls
+		trajectory_id, calls, q_declined
 		FROM eval_rows WHERE run_id=? ORDER BY rowid`, runID)
 	if err != nil {
 		return nil, err
@@ -352,7 +357,7 @@ func (s *Store) Rows(runID string) ([]Row, error) {
 		var at int64
 		if err := rows.Scan(&r.RunID, &r.Arm, &r.Repeat, &r.CaseID, &r.TaskID, &r.Observed, &r.Checked, &r.Passed, &r.FalseDone,
 			&r.DoneUncheckedWrong, &r.QRequired, &r.QOther, &r.TokensIn, &r.TokensCached, &r.TokensOut, &r.Minutes, &deps, &checks, &probs, &at,
-			&r.Invalid, &r.Infra, &r.TrajectoryID, &r.Calls); err != nil {
+			&r.Invalid, &r.Infra, &r.TrajectoryID, &r.Calls, &r.QDeclined); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(deps), &r.Deployments)

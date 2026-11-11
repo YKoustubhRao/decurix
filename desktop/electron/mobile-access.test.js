@@ -257,3 +257,73 @@ test('a gated listener that answers on a later try still gets its tunnel', async
   assert.equal(h.spawns.length, 1);
   await access.stop();
 });
+
+// What main.js passes for the permanent name: the token in the environment only.
+const permanentCommand = (token) => ({ file: 'cloudflared.exe', args: ['tunnel', '--no-autoupdate', 'run'], env: { TUNNEL_TOKEN: token } });
+
+test('a permanent name is used first: its connector gets the token only in its environment, and its link is published', async () => {
+  const h = harness();
+  const asked = [];
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand, {
+    permanentCommand, firstCheckMs: 1,
+    permanent: async (port) => { asked.push(port); return { url: 'https://calm-river-4821.decurix.computer', token: 'tok-1' }; },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(asked, [8123]);
+  assert.equal(h.spawns.length, 1);
+  assert.equal(h.spawns[0].args.join(' ').includes('tok-1'), false);
+  assert.equal(h.spawns[0].options.env.TUNNEL_TOKEN, 'tok-1');
+  // Its log never changes the link, even if it names another address.
+  h.child.stderr.emit('data', 'https://blue-flower.trycloudflare.com');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(h.state.lan_tunnel_url, 'https://calm-river-4821.decurix.computer');
+  await access.stop();
+  assert.equal(h.state.lan_tunnel_url, '');
+});
+
+test('when the link service fails, that start uses a quick tunnel', async () => {
+  const h = harness();
+  const logs = [];
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand, {
+    permanentCommand, log: (line) => logs.push(line),
+    permanent: async () => { throw new Error('link service /v1/claim: HTTP 503'); },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(h.spawns.length, 1);
+  assert.deepEqual(Array.from(h.spawns[0].args), ['tunnel', '--url', 'http://127.0.0.1:8123']);
+  assert.ok(logs.some((line) => line.includes('HTTP 503')));
+  h.child.stderr.emit('data', 'https://blue-flower.trycloudflare.com');
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.state.lan_tunnel_url, 'https://blue-flower.trycloudflare.com');
+  await access.stop();
+});
+
+test('a permanent connector that exits is started again with a fresh token, under the same link', async () => {
+  const h = harness();
+  let n = 0;
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand, {
+    permanentCommand, firstCheckMs: 1, retryMs: 1,
+    permanent: async () => ({ url: 'https://calm-river-4821.decurix.computer', token: `tok-${++n}` }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(h.state.lan_tunnel_url, 'https://calm-river-4821.decurix.computer');
+  h.child.emit('close', 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(h.spawns.length, 2);
+  assert.equal(h.spawns[1].options.env.TUNNEL_TOKEN, 'tok-2');
+  assert.equal(h.state.lan_tunnel_url, 'https://calm-river-4821.decurix.computer');
+  await access.stop();
+});
+
+test('stopping while the link service is still answering starts no connector', async () => {
+  const h = harness();
+  let answer;
+  const access = await h.api.setupMobileAccess('/profile/AppData/decurix', tunnelCommand, {
+    permanentCommand,
+    permanent: () => new Promise((resolve) => { answer = resolve; }),
+  });
+  await access.stop();
+  answer({ url: 'https://calm-river-4821.decurix.computer', token: 'tok' });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(h.spawns.length, 0);
+});

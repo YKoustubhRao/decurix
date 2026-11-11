@@ -38,6 +38,7 @@ type Cell struct {
 	DoneUncheckedWrong int      `json:"done_unchecked_wrong"`
 	QRequired          float64  `json:"q_required_mean"`
 	QOther             float64  `json:"q_other_mean"`
+	QDeclined          float64  `json:"q_declined_mean"`
 	TokensMedian       int64    `json:"tokens_median"`
 	TokensP90          int64    `json:"tokens_p90"`
 	CachedShare        float64  `json:"cached_share"`
@@ -158,13 +159,14 @@ func cell(all []Row) Cell {
 		}
 		c.QRequired += float64(r.QRequired)
 		c.QOther += float64(r.QOther)
+		c.QDeclined += float64(r.QDeclined)
 		tokens = append(tokens, r.TokensIn+r.TokensOut)
 		minutes = append(minutes, r.Minutes)
 		in += r.TokensIn
 		cached += r.TokensCached
 	}
 	n := float64(len(rows))
-	c.QRequired, c.QOther = c.QRequired/n, c.QOther/n
+	c.QRequired, c.QOther, c.QDeclined = c.QRequired/n, c.QOther/n, c.QDeclined/n
 	c.PassLo, _ = Wilson(c.Pass, c.N, Z95)
 	_, c.FalseDoneHi = Wilson(c.FalseDone, c.N, Z95)
 	sort.Slice(tokens, func(i, j int) bool { return tokens[i] < tokens[j] })
@@ -258,11 +260,11 @@ func (t Table) Markdown() string {
 		}
 		return fmt.Sprintf("%d/%d (hi %.2f); %d", c.FalseDone, c.N, c.FalseDoneHi, c.DoneUncheckedWrong) + infraNote(c)
 	})
-	section("Questions per run (required / other)", func(c Cell) string {
+	section("Questions per run (required / other / declined approvals)", func(c Cell) string {
 		if c.N == 0 {
 			return "-"
 		}
-		return fmt.Sprintf("%.1f / %.1f", c.QRequired, c.QOther)
+		return fmt.Sprintf("%.1f / %.1f / %.1f", c.QRequired, c.QOther, c.QDeclined)
 	})
 	section("Tokens per run (median, p90; cached share of input)", func(c Cell) string {
 		if c.N == 0 {

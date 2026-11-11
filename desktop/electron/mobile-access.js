@@ -88,9 +88,15 @@ function requestJSON(route, method = 'GET', body) {
 // tunnel, and the Mobile menu handed out that dead link for good. So the old
 // link is cleared at once and a new tunnel started; a tunnel that ends on its
 // own (the network dropped) takes its link with it and is started again.
+//
+// permanent(port), when given, is tried first on every start: it returns this
+// install's permanent name and connector token from the link service
+// (public-name.js), and permanentCommand(token) runs cloudflared for it. When it
+// returns null or fails, that start uses a quick tunnel instead.
 async function setupMobileAccess(dataDir, tunnelCommand, {
   retryMs = 5000, maxRetryMs = 60000, startupMs = 45000, checkMs = 15000,
   probe, provider = tunnelProvider(dataDir), log = () => {}, checkPort = gatedPort, portTries = 3,
+  permanent = null, permanentCommand = null, firstCheckMs = 3000,
 } = {}) {
   probe = probe || ((url) => probeURL(url, log));
   const port = lanPort(dataDir);
@@ -136,16 +142,21 @@ async function setupMobileAccess(dataDir, tunnelCommand, {
 
   // Only the code-gated listener is exposed. The primary :8080 dashboard
   // remains local to this machine and its own worker containers.
-  const launch = () => {
+  const launch = async () => {
     timer = null;
     if (stopping) return;
-    const { file, args } = tunnelCommand(port, currentProvider);
-    log(`Public link: starting ${currentProvider} on gated port ${port}`);
+    let link = null;
+    if (permanent && permanentCommand) {
+      try { link = await permanent(port); } catch (error) { log(`Public name unavailable (${error.message}); using a quick tunnel`); }
+      if (stopping) return;
+    }
+    const { file, args, env } = link ? permanentCommand(link.token) : tunnelCommand(port, currentProvider);
+    log(link ? `Public link: starting ${link.url} on gated port ${port}` : `Public link: starting ${currentProvider} on gated port ${port}`);
     let output = '';
     let candidate = '';
     let checking = false;
     let failures = 0;
-    const tunnel = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const tunnel = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env } : {}) });
     child = tunnel;
     const retire = () => {
       if (stopping || child !== tunnel) return;
@@ -184,7 +195,8 @@ async function setupMobileAccess(dataDir, tunnelCommand, {
       retire();
     }, startupMs);
     const onOutput = (chunk) => {
-      if (stopping) return;
+      // A permanent name is known up front; its connector's log has no link to find.
+      if (stopping || link) return;
       output = (output + chunk.toString()).slice(-8192);
       const match = output.match(currentProvider === 'cloudflare' ? quickTunnelPattern : alternativePattern);
       if (!match || match[0] === candidate) return;
@@ -199,6 +211,11 @@ async function setupMobileAccess(dataDir, tunnelCommand, {
     tunnel.once('close', () => {
       retire();
     });
+    if (link) {
+      candidate = link.url;
+      log(`Public link: checking ${candidate}`);
+      healthTimer = setTimeout(check, firstCheckMs);
+    }
   };
   launch();
 

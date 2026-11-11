@@ -122,8 +122,8 @@ func replaceGroup(text string, re *regexp.Regexp, g int, secret func(string) boo
 
 // withholdLabelled withholds the value after every secret's label. An apostrophe between two letters is part of its
 // word, never a quote mark ("the password wasn't accepted", "the receiver's GSTIN": maskApostrophes), "is" or "was"
-// running on into more letters is no separator ("isn't"), and a plain word running on into its sentence after the
-// label is an instruction, not a value ("OTP: ask me for it": runsOn).
+// running on into more letters is no separator ("isn't"). A plain word after the label is withheld whatever follows
+// it ("password: letmein then press login"; review of freeze 2, A1): a word too many withheld is harmless.
 func withholdLabelled(text string) string {
 	masked := maskApostrophes(text)
 	var b strings.Builder
@@ -153,8 +153,7 @@ func withholdLabelled(text string) string {
 		}
 		// A word's own apostrophe is no mark of a value: "password hunter's" is a word, "password O'Brien7" a value.
 		shape := strings.ReplaceAll(trimmed, string(apostropheMask), "")
-		if shape == "" || strings.HasPrefix(value, Marker) || !labelledSecret(label, sep, shape, quoted) ||
-			!quoted && runsOn(masked, trimmed, vs+len(trimmed)) {
+		if shape == "" || strings.HasPrefix(value, Marker) || !labelledSecret(label, sep, shape, quoted) {
 			continue
 		}
 		b.WriteString(text[last:vs])
@@ -187,37 +186,6 @@ func maskApostrophes(text string) string {
 		}
 	}
 	return string(out)
-}
-
-// runsOn reports whether value, unquoted after a secret's label and ending at end in text (both masked:
-// maskApostrophes), is a word of a running sentence rather than a value: a plain lowercase word (an apostrophe between
-// its letters aside: "don't") with more words of the same clause straight after it - spaces on the same line, then a
-// letter, no punctuation between ("OTP: ask me for it"). A value written after its label is digits, mixed, marked, or
-// stands alone at the end of its clause ("password: tiger."). Found live (2026-11-10): a lesson reply's "Only the
-// client has the OTP: ask me for it" kept "ask" as a secret (agent privacy._runs_on).
-func runsOn(text, value string, end int) bool {
-	letters := false
-	for _, r := range value {
-		if r == apostropheMask {
-			continue
-		}
-		if !unicode.IsLetter(r) || !unicode.IsLower(r) {
-			return false
-		}
-		letters = true
-	}
-	if !letters {
-		return false
-	}
-	i := end
-	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
-		i++
-	}
-	if i == end || i >= len(text) {
-		return false
-	}
-	r, _ := utf8.DecodeRuneInString(text[i:])
-	return unicode.IsLetter(r)
 }
 
 // labelledSecret reports whether value, after label and sep (quoted or not), is a secret's value. A dash is as
@@ -425,24 +393,15 @@ var asksForSecret = regexp.MustCompile(`(?i)\b(?:password|passcode|passphrase|ot
 // postalAsked is a question about a postal code, whose answer is no secret.
 var postalAsked = regexp.MustCompile(`(?i)\bpin[\s_-]*code\b|\bpincode\b|\bpostal\b|\bzip\b`)
 
-// shortAnswerWords is the most words a reply may have and still be read as a bare answer (Reply): "552901", "it is
-// 4821.", "here: Lift$2026".
-const shortAnswerWords = 5
-
 // Reply is a person's answer to a question the worker asked, as the records keep it: Text, and when the question
-// names a secret (a password, an OTP, a PIN) and the answer is a bare one - one line of at most shortAnswerWords
-// words - every word of it with a digit or a mark in it withheld too, so a bare "552901" answering "What is the OTP?"
-// is not kept (review 2026-11-03: only a labelled value was). A longer reply explains, and is kept as Text keeps it:
-// a reply is withheld as a secret where it answers a question asked for one (the question's "secret", by structure:
-// replyForm), never because the question names the OTP while explaining the work. Found live (2026-11-10): two
-// lessons whose read-back named "the OTP" lost every word with a digit or a mark (a code, an amount, a ratio, a
-// hyphenated word, a possessive, a word after "("), and the desktop, told the reply was secret, held them as secrets.
+// names a secret (a password, an OTP, a PIN), every word of the answer with a digit or a mark in it withheld too,
+// however long the answer: "the OTP is 552901, go ahead" keeps no code (review 2026-11-03: only a labelled value was;
+// review of freeze 2, A3: a five-word limit let a code in a sentence through). This over-withholds the records of a
+// long reply that names a secret while explaining the work; what the desktop is told is a secret rests on structure
+// instead (the person's mark, a question asked for a secret: tasks.Store.MarksSecret), so a lesson is not garbled.
 func Reply(question, reply string) string {
 	reply = Text(reply)
 	if reply == "" || reply == Secret || !asksForSecret.MatchString(question) || (postalAsked.MatchString(question) && !secretAsked(question)) {
-		return reply
-	}
-	if trimmed := strings.TrimSpace(reply); strings.ContainsAny(trimmed, "\r\n") || len(strings.Fields(trimmed)) > shortAnswerWords {
 		return reply
 	}
 	fields := strings.Fields(reply)

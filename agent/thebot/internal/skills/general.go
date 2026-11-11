@@ -12,7 +12,7 @@ import (
 // "Done." in any case is the same claim: found live, a request to correct an application record reached this skill and came
 // back "Done. I updated the record ... and verified the date now shows", nothing having been done.
 // needsTheScreenRe is a reply that says the work needs the screen or an app this skill cannot reach. Found live
-// (2026-10-15): asked to set up books in TallyPrime, this skill answered "I don't have the current on-screen state ...
+// (2026-10-15): asked to set up books in a desktop accounting app, this skill answered "I don't have the current on-screen state ...
 // I need to use the UI directly" - and that was reported as the task's result.
 var needsTheScreenRe = regexp.MustCompile(`(?i)\b(?:i|i'd|i would|i will|i'll)\s+(?:need|have)\s+to\s+(?:use|see|access|open|work in|look at|operate)\b[^.\n]{0,40}\b(?:ui|screen|desktop|app|application|interface|window)\b|\bi\s+(?:don'?t|do not|can'?t|cannot)\s+(?:have|see|access)\b[^.\n]{0,30}\b(?:on-?screen|screen|desktop|ui)\b`)
 

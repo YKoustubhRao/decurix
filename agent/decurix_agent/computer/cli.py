@@ -294,7 +294,7 @@ USAGE = """gui - see and use this desktop's screen
                                  do a taught task, with no model
 
   gui guide [NAME]               how a well-known app is worked here (Excel, Calc,
-                                 TallyPrime, Word, PowerPoint, Impress, GIMP...)
+                                 an accounting app, Word, PowerPoint, Impress, GIMP...)
   gui ask SERVICE "QUESTION"     put one question to chatgpt, google, duckduckgo,
                                  wikipedia or youtube and print its answer
 

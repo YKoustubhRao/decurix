@@ -368,6 +368,52 @@ The curves run on one frozen build; these were seen on it or on the pilot build 
   names a step (its number or its own action as done) removes steps; a "never X" about an action the demonstration did
   not do, or a rule about how to do a step, is a rule and never a removal.
 
+- **The worker re-checks finished work just before an irreversible step.** gstr1-books og-5 on freeze 2.4: after File
+  with EVC was approved and before the OTP, the worker re-read the exported JSON's receivers, though validation was done
+  (and graded right) long before; the re-read used inline Python, the frozen command guard held it, and the case ended.
+  A step the run has verified (validation, a read-back) should not be re-derived at the commit point unless something
+  changed since.
+
+- **A request sent to a desktop just paused or unpaused vanishes.** decurix-dev on freeze 2.4 (ERPNext bill 10): the
+  idle-pause sweep paused erpcurve2; it was unpaused and a request sent a minute later; the control plane's POST of the
+  screen password to the gate (:8083/secrets) timed out, `sendRequest` logged "find desktop erpcurve2: desktop not
+  found", and no task, chat entry or error appeared - the person's request was silently dropped. Fix: a send to a
+  desktop that is paused or waking waits for its agent (or unpauses it and retries); a send that still fails is said in
+  the thread; "desktop not found" is never said of a desktop that exists (see the 503 entry above).
+
+- **A screen-broker timeout under load reads as "not running".** ERPNext bill 10 (2.4): "gui: cannot reach the screen:
+  the screen broker did not take this command (it is not running)" at 04:33 and 05:07 while the broker daemon was alive.
+  A broker that did not answer in time should be said so ("busy, try again"), not reported dead.
+
+- **Freeze 2.5 shipped the tripwire, not these two (deferred, 2026-11-11).**
+  - **What shipped.** Soul's operator does not run a command that crosses the desktop's boundary and ends the task as
+    a boundary attempt (`skills/boundary.go`, outside the frozen guard). It catches:
+    - acting as another user;
+    - attaching to or reading another process;
+    - a unix socket driven by hand;
+    - naming the gate's or broker's folder or the agent token;
+    - a desktop service's loopback port;
+    - the browser's debugging flags.
+  - **`gui restart APP` (deferred).** When an app hangs, the worker needs a way to close and reopen it through the
+    broker. Today only a person's "restart" at a skill's halt does this (`launchers.close_recorded`). An unprompted
+    restart loses whatever is unsaved in the app, so whether the worker may restart on its own is a design call. It
+    goes through `screen_call` like `close_recorded` and needs a held-yes rule for windows with unsaved changes.
+  - **Socket refuse-and-report (deferred).** The broker's `peer_allowed` and `REFUSE_PROTOCOL` refusals, and the gate's
+    refusals, are logged only inside their own daemons. Each probe should leave one line in the task's record and in
+    the control plane's boundary log, shown to the person. This needs a channel from the screen user's daemon to the
+    task record, which does not exist yet. The gate's own log is the nearest place to start.
+
+- **Review of freeze 2: what is left (2026-11-11).**
+  - **A5, observed exemption.** The label exemption for a button that "opens a new record" is gone, so "+ Add
+    Purchase Invoice" is asked about on every bill again (one question per run on the curves). The owner's rule
+    allows an exemption only once the press is observed to go to a new-record address with no network write. That
+    needs press-time observation: the CDP watch would have to record non-GET requests and the address after the
+    press, and the yes would have to be bound to that evidence from an earlier press in the same task. Not built.
+  - **A11c, ask instead of read.** An "(empty)" place not proved by a marked row now leaves the value to be read by
+    the work (the model), as before. The rule says "else ask"; the fill (`binding.fill_lists`) has no question path
+    yet.
+  - **A4 (frozen guard)** was the owner's call: reverted in 452a2c1a.
+
 ## Live checks after the next build
 
 The writers could not run these. Run them on the next build, before calling this review done.
@@ -376,6 +422,12 @@ The writers could not run these. Run them on the next build, before calling this
 - Rebuild the desktop and tools images, then **recreate every desktop**. Desktop state is fixed at creation; these changes reach a desktop only then: no-new-privileges, the setuid and setgid strip, per-desktop caches, new host session ids, the tools populator, `-nolisten tcp`, no `xhost +`, the browser-agent removal.
 - On the first start, remove this instance's own old-tagged helpers and hops by hand ([running.md](running.md), "Upgrading to the random instance tag").
 - The practice reset on the new image: `DECURIX_PRACTICE_IMAGE=decurix-desktop:basic go test ./internal/desktop -run TestPracticeResetLive -count=1 -v` in the Decurix distro ([running.md](running.md)). It skips without the variable.
+
+**The Windows installer prepares Windows** (`wsl/prepare-windows.ps1`, 2026-11-11). Owed on real machines, not this host (it has WSL):
+- A Windows 11 and a Windows 10 22H2 PC that never had WSL: install, one administrator prompt, the finish page offers "Reboot now"; after it Decurix opens with no further prompt. `%LOCALAPPDATA%\Decurix\logs\prepare-windows.log` says what ran.
+- The same with the restart skipped: the app says "Restart Windows to finish" and asks for nothing.
+- A PC with virtualization off in the BIOS: the installer says so; "Yes" restarts into the UEFI settings (`shutdown /r /fw`).
+- A reinstall on a ready PC and an update: no prompt.
 
 **Security and the gate.**
 - `sh bench/security/boundary.sh --layer` on the new image (as root in the Decurix distro).

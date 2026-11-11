@@ -354,6 +354,10 @@ def _answers_a_held_press(problem):
         return False
     if not labels:
         return False
+    if not _bare_press_question(problem, labels):
+        log("The engine's question asks to press a control the gate holds but says more than the press (a figure, a "
+            "doubt, a second sentence): it goes to the person.")
+        return False
     _gate_held["count"] += 1
     named = " and ".join(f'"{name}"' for name in labels)
     progress.emit(f"Not asking you twice: the approval gate asks you itself when {named} is pressed.")
@@ -362,6 +366,35 @@ def _answers_a_held_press(problem):
     # On a thread of its own: the engine is still inside the call that asked.
     threading.Thread(target=_answer_held_press, args=(GATE_HELD_ANSWER.format(named=named),), daemon=True).start()
     return True
+
+
+# The most words a question may keep besides its press phrase and still be a bare "may I press X" (_bare_press_question):
+# "May I", "Should I go ahead and", "Shall I now".
+MAX_BARE_PRESS_WORDS = 6
+
+
+def _bare_press_question(problem, labels):
+    """
+    Whether the engine's question is only a request to press the controls `labels` ("May I click "Save to portal"?"):
+    with each press phrase (approval.asks_to_press's verb, bridge and label) taken out, what is left is one sentence of
+    at most MAX_BARE_PRESS_WORDS words, with no figure and no other quoted text. Anything more - a figure the person
+    should see, a doubt, a second sentence - is put to the person (review of freeze 2, A8: a question carrying a doubt
+    beside the press was answered locally).
+    """
+
+    from decurix_agent.computer import approval
+
+    text = " ".join(str(problem or "").split())
+    for name in sorted(labels, key=len, reverse=True):
+        label = " ".join(str(name).split())
+        text = re.sub(r"\b" + approval._PRESS_VERB + approval._PRESS_BRIDGE + re.escape(label) + r"(?!\w)[\"'“”‘’]?",
+                      " ", text, flags=re.IGNORECASE)
+    rest = text.strip()
+    if re.search(r"\d|[\"“”‘’]|(?<![^\W\d_])'|'(?![^\W\d_])", rest):
+        return False
+    if len(re.findall(r"[.?!;:]+(?=\s+\S)", rest)) > 0:
+        return False
+    return len(re.findall(r"[^\W_]+(?:'[^\W_]+)?", rest)) <= MAX_BARE_PRESS_WORDS
 
 
 def _answer_held_press(answer):
@@ -415,7 +448,7 @@ def _secret_given(asked, reply):
     Whether a reply to a question raised for a secret gives that value and nothing more: the OTP of a filing, a
     password, a PIN - a value the person gives on every run, which no document holds, so not help (owner's ruling
     2026-11-10). `secret` is the caller's, from structure (soul marked the question, or the control plane withheld the
-    reply), never from words. Found live (GSTR-1 curve, 2026-11-10): every month asks for the OTP by design, that answer
+    reply), never from words. Found live (a monthly return's curve, 2026-11-10): every month asks for the OTP by design, that answer
     made every run "helped", and the skill could never earn trust.
 
     Read with every word that holds a digit masked and every known secret withheld (privacy.scrub): a reply of nothing

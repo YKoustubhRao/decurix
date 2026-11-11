@@ -21,7 +21,7 @@ import (
 // the gateway of a Docker network the control plane knows (a browser on the host reaching a port compose publishes
 // arrives from the control plane's own network's gateway). An address inside any Docker network is a container. Any
 // other address is unknown: not a person on the primary listener (a container on a network made by someone else - an
-// ERPNext stack, a compose project - read the access code and the backup that way), while the gated listener, which
+// an ERP stack, a compose project - read the access code and the backup that way), while the gated listener, which
 // has a login of its own, lets it try that login (a phone, a LAN laptop, the tunnel).
 
 // Origin is where a request's source address puts it.

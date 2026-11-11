@@ -53,7 +53,6 @@ func TestTheConfirmationWordsAreTheAgents(t *testing.T) {
 	for file, want := range map[string]string{
 		"../../agent/decurix_agent/thebot_harness.py": `PLAN_QUESTION = "` + PlanQuestionOpening + `"`,
 		"../../agent/decurix_agent/skill_task.py":     "Reply `done` if it is done, `retry` ",
-		"../../agent/decurix_agent/final_gate.py":     `NOT_CONFIRMED_REPLY = "` + NotConfirmed + `"`,
 	} {
 		b, err := os.ReadFile(file)
 		if err != nil {
@@ -62,6 +61,15 @@ func TestTheConfirmationWordsAreTheAgents(t *testing.T) {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("%s no longer holds %q", file, want)
 		}
+	}
+	// The expert's own "cannot check" reply is read by the agent like any person's reply: the harness holds no copy of
+	// it (review of freeze 2, B).
+	b, err := os.ReadFile("../../agent/decurix_agent/final_gate.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), NotConfirmed) {
+		t.Fatalf("final_gate.py holds the expert's reply %q", NotConfirmed)
 	}
 }
 

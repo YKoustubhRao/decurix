@@ -557,3 +557,176 @@ class AFieldLeftOutOfTheReplay(unittest.TestCase):
         self.assertNotIn("Cost Center", names)
         self.assertNotIn("Main - NW", names)
         self.assertIn("Supplier", names)
+
+
+TASK = "t58c3989f80a74412"
+
+
+def kept_leave_row(skill="enter-bill"):
+    """A leave the control plane keeps for `skill`'s due date, as it serves it (desktopLearnedList)."""
+
+    return {"id": "j_kept0001", "kind": "field_answer", "derived_from": "j_earlier01",
+            "text": json.dumps({"host": "", "label": "Due Date", "left_to_app": True, "option": REPLY,
+                                "param": "due_date", "skill": skill}),
+            "source": {"actor": {"kind": "person"}, "text": REPLY,
+                       "asked": "The documents for this run do not give Due Date. "
+                                + skill_task._leave_sentence("Due Date") + " - or reply with it."}}
+
+
+class GuiDoLeavesTheFieldToo(unittest.TestCase):
+    """
+    Freeze 2.5 (live: ERPNext bill 10, task t58c3989f80a74412). The plan said the due date was left as the application
+    fills it in, and the model's own `gui do` refused the run without it ("it needs due_date - ask the human") and with
+    it empty ("a replay cannot leave a field out"). `gui do` honours the same decision: kept for the skill, or the run's
+    own (handed over through guidance, its judgement read on the control plane).
+    """
+
+    def setUp(self):
+        from decurix_agent.computer import skill_engine
+        from decurix_agent import person_record
+        self.engine, self.person_record = skill_engine, person_record
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.learned, self.judgements, self.replayed = [], [], []
+        person_record.clear_cache()
+        self.addCleanup(person_record.clear_cache)
+
+        def get(path, query, fresh=False):
+            if path == person_record.LEARNED_PATH:
+                return {"learned": list(self.learned)}
+            return {"judgements": list(self.judgements)}
+
+        def replay_run(program, params=None, start=1, ladder=None):
+            self.replayed.append((program, dict(params or {})))
+            return {"outcome": skill_engine.replay.COMPLETED_UNVERIFIED, "text": "ran", "step": None, "resume_from": None}
+
+        patches = [
+            mock.patch.object(skill_engine, "REPLAYED_DIR", Path(self.tmp.name) / "replayed"),
+            mock.patch.object(guidance, "RUN_FILE", Path(self.tmp.name) / "guided-run.json"),
+            mock.patch("decurix_agent.task_context.current", return_value=TASK),
+            mock.patch.object(person_record, "_get", get),
+            mock.patch.object(skill_engine.replay, "run", replay_run),
+            mock.patch.object(skill_engine.learning, "start_checks", return_value=[]),
+            mock.patch.object(skill_engine, "other_system", return_value=""),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def run_gui_do(self, **given):
+        return self.engine.run(due_date_skill(), params=dict(filled_values(), **given))
+
+    def assert_replayed_without_the_field(self, result):
+        self.assertEqual(result["outcome"], self.engine.replay.COMPLETED_UNVERIFIED, result.get("text"))
+        program, params = self.replayed[0]
+        self.assertFalse([s for s in program["steps"] if s.get("param") == "due_date"])
+        self.assertNotIn("due_date", params)
+
+    def test_a_kept_leave_replays_without_the_field_given_or_given_empty(self):
+        self.learned.append(kept_leave_row())
+        self.assert_replayed_without_the_field(self.run_gui_do())
+        self.replayed.clear()
+        self.engine._note_replayed(self.engine._note_key({"name": "enter-bill"}, None), 0)  # (a fresh request)
+        self.assert_replayed_without_the_field(self.run_gui_do(due_date=""))
+
+    def test_the_runs_own_leave_is_honoured_when_its_judgement_offered_it(self):
+        guidance.begin(skill="enter-bill", task="Enter this bill", text="", values=filled_values(),
+                       run={"left_to_app": {"due_date": {"label": "Due Date", "judgement": "j_reply0001"}}})
+        self.addCleanup(guidance.end)
+        self.judgements.append({"id": "j_reply0001", "task_id": TASK, "actor": {"kind": "person"}, "text": REPLY,
+                                "asked": "The documents for this run do not give Due Date. "
+                                         + skill_task._leave_sentence("Due Date") + " - or reply with it."})
+        self.assert_replayed_without_the_field(self.run_gui_do())
+
+    def test_no_decision_or_one_the_question_never_offered_still_needs_the_value(self):
+        guidance.begin(skill="enter-bill", task="Enter this bill", text="", values=filled_values(),
+                       run={"left_to_app": {"due_date": {"label": "Due Date", "judgement": "j_reply0001"}}})
+        self.addCleanup(guidance.end)
+        self.judgements.append({"id": "j_reply0001", "task_id": TASK, "actor": {"kind": "person"}, "text": REPLY,
+                                "asked": "What due date should I enter?"})  # (the guidance file alone backs nothing)
+        self.learned.append(kept_leave_row(skill="enter-other-bill"))
+        result = self.run_gui_do()
+        self.assertEqual(result["outcome"], self.engine.replay.HALTED_BEFORE_EFFECT)
+        self.assertIn("due_date", result["text"])
+        self.assertEqual(self.replayed, [])
+
+
+class EveryHaltSaysWhy(unittest.TestCase):
+    """
+    Freeze 2.5 (live: ERPNext bill 10): "Replay step 7/34: click textbox "Supplier Invoice No"" was followed two minutes
+    later by "The replay stopped at step 7; the model is taking it from there" and nothing else. Every halt says the
+    step, what stopped it and what the screen showed - in the replay's result, and in the takeover's trace line.
+    """
+
+    SCREEN = {"active_title": "New Purchase Invoice - Chromium", "page_url": "http://erp.example/app/purchase-invoice/new",
+              "elements": []}
+
+    def setUp(self):
+        from decurix_agent.computer import replay
+        self.replay = replay
+        self.reports = []
+        patches = [
+            mock.patch.object(replay, "_open_where_it_began", return_value=None),
+            mock.patch.object(replay, "_fit_screen"),
+            mock.patch.object(replay, "_find", return_value=({"path": 'textbox "Supplier Invoice No"', "role": "textbox",
+                                                              "name": "Supplier Invoice No"}, None, {}, None)),
+            mock.patch.object(replay.core, "observe", return_value=dict(self.SCREEN)),
+            mock.patch.object(replay.screen_call, "remote", return_value=False),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def program(self, expect=()):
+        step = field_step(1, "textbox", "Supplier Invoice No", kind="click")
+        step["expect"] = list(expect)
+        return {"session": "skill-enter-bill", "title": "Enter a bill", "steps": [step], "params": []}
+
+    def halt_with(self, error):
+        with mock.patch.object(self.replay.core, "act", side_effect=error):
+            return self.replay._run_program(self.program(), {}, 1, self.reports.append)
+
+    def assert_says_why(self, result):
+        self.assertTrue(str(result["reason"]).strip(), result)
+        self.assertIn("Supplier Invoice No", result["text"])
+        self.assertIn("the screen shows", result["text"])
+
+    def test_an_action_that_fails_with_no_message_says_its_kind_and_the_screen(self):
+        result = self.halt_with(self.replay.ComputerError(""))
+        self.assertEqual(result["outcome"], self.replay.HALTED_BEFORE_EFFECT)
+        self.assert_says_why(result)
+        self.assertIn("ComputerError", result["reason"])
+
+    def test_an_action_done_then_lost_with_no_message_says_so_too(self):
+        result = self.halt_with(self.replay.ActedError(""))
+        self.assertEqual(result["outcome"], self.replay.HALTED)
+        self.assert_says_why(result)
+
+    def test_a_halt_raised_with_a_blank_reason_is_given_one(self):
+        with mock.patch.object(self.replay, "_find", side_effect=self.replay._Halt("  ", "the screen shows nothing")):
+            result = self.replay._run_program(self.program(), {}, 1, self.reports.append)
+        self.assertTrue(result["reason"].strip())
+        self.assertIn("gave no reason", result["text"])
+
+    def test_a_result_that_never_appeared_names_it_and_the_screen(self):
+        with mock.patch.object(self.replay.core, "act", return_value={"status": "done", "observation": dict(self.SCREEN)}), \
+                mock.patch.object(self.replay, "_await_checks",
+                                  return_value=([{"type": "window", "value": "Saved"}], dict(self.SCREEN))):
+            result = self.replay._run_program(self.program(expect=[{"type": "window", "value": "Saved"}]), {}, 1,
+                                              self.reports.append)
+        self.assertEqual(result["outcome"], self.replay.HALTED)
+        self.assert_says_why(result)
+
+    def test_the_takeover_line_in_the_trace_carries_the_reason(self):
+        emitted = []
+        run = {"skill": bill_skill(), "values": filled_values(), "start": 7, "context": "Enter this bill"}
+        with mock.patch.object(skill_task.progress, "emit", emitted.append), \
+                mock.patch.object(skill_task, "_engine"), mock.patch.object(skill_task.phase_note, "write"), \
+                mock.patch.object(skill_task.guidance, "begin"):
+            skill_task._by_model(run, from_step=7, note="Stopped replaying \"Enter a bill\" at step 7 of 34 (click "
+                                                         "textbox \"Supplier Invoice No\"): it was not found. Now the "
+                                                         "screen shows \"New Purchase Invoice\".")
+            skill_task._by_model(run, from_step=7, note="")
+        self.assertIn("it was not found", emitted[0])
+        self.assertIn("the screen shows", emitted[0])
+        self.assertIn("gave no reason", emitted[1])

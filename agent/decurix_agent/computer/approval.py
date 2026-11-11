@@ -90,7 +90,7 @@ CONSEQUENTIAL_CONTROL = re.compile(
     r"|file( [\w-]+)? with \w+|file now|e-?file( now)?"
     r"|submit (the )?(return|declaration|application|claim|filing)s?"
     r"|(offset|set[- ]off) (the )?liabilit(y|ies)"
-    # ...and the one return named: "File GSTR-1", "File return", "File the declaration" (review 2026-11-03: ungated). A
+    # ...and the one return named: "File the return", "File return", "File the declaration" (review 2026-11-03: ungated). A
     # form's name is a code with a digit in it; "File returns" (plural) stays the menu of returns it was.
     r"|file (?:the |this |my |your )?(?:return|declaration|claim|[a-z]+-?\d[\w-]*)(?= |$)"
     # Approving binds the person (a payment, a claim, a document's workflow); signing, by hand or electronically, is
@@ -107,12 +107,17 @@ CONSEQUENTIAL_CONTROL = re.compile(
 _STEP_INTO_ACT = (r"(?:proceed|continue|go|move on|next|skip) (?:to|with) (?:the )?(?:checkout|payment|pay|paying|file|filing"
                   r"|submit|submission|send|transfer|purchase)")
 STEP_INTO_ACT = re.compile(r"^\s*" + _STEP_INTO_ACT + r"\b", re.IGNORECASE)
+# The steps a link may take into a page where the act is then asked (only_steps_into_an_act): into a checkout or a
+# filing's own page. A step whose destination is itself an act - pay, payment, purchase, transfer, send, submit - is
+# asked wherever it leads (review of freeze 2, A6: "Proceed to pay", "Continue with purchase" passed).
+STEP_INTO_PAGE = re.compile(r"^\s*(?:proceed|continue|go|move on|next|skip) (?:to|with) (?:the )?(?:checkout|file|filing)\b",
+                            re.IGNORECASE)
 
 MORE_CONSEQUENTIAL = re.compile(
     r"^\s*(?:"
     + _STEP_INTO_ACT +
     r"|authori[sz]e"
-    r"|(?:make|submit|confirm|complete|process|release|initiate|execute|approve|schedule|send|finali[sz]e|issue) "
+    r"|(?:make|create|submit|confirm|complete|process|release|initiate|execute|approve|schedule|send|finali[sz]e|issue) "
     r"(?:the |this |a |my |your )?(?:(?:" + "|".join(sorted(_MONEY_NOUNS)) + r") )?"
     r"(?:payments?|transfers?|transactions?|remittances?|wires?|purchases?|donations?|trades?|swaps?|refunds?"
     r"|disbursements?|payouts?)"
@@ -261,9 +266,9 @@ def consequential(name, goes_somewhere=False):
 def only_steps_into_an_act(name):
     """
     Whether a label commits only by naming where it goes: every place the gate's phrases (CONSEQUENTIAL_CONTROL,
-    MORE_CONSEQUENTIAL) find an act in it lies inside a step into that act (STEP_INTO_ACT: "Proceed to file",
-    "Continue to payment", "Go to checkout"). A label that also names an act on its own ("Pay now", "Send",
-    "Proceed to pay", "Delete invoice", "Approve payment") is not. For a link the page says only navigates
+    MORE_CONSEQUENTIAL) find an act in it lies inside a step into a page (STEP_INTO_PAGE: "Proceed to file",
+    "Go to checkout"). A label that also names an act on its own ("Pay now", "Send", "Delete invoice", "Approve
+    payment"), or steps into an act ("Proceed to pay", "Continue to payment", "Continue with purchase"), is not. For a link the page says only navigates
     (assess, context "navigates"): the act is on the page it leads to, and is gated there.
     """
 
@@ -271,7 +276,7 @@ def only_steps_into_an_act(name):
     found, inside = False, 0
     for i in range(len(words)):
         rest = " ".join(words[i:])
-        step = STEP_INTO_ACT.match(rest)
+        step = STEP_INTO_PAGE.match(rest)
         if step:
             found = True
             inside = max(inside, i + len(rest[:step.end()].split()))
@@ -720,12 +725,13 @@ def assess(kind, element, text=None, keys=None, context=None):
 
     if kind in ("click", "double_click") and element is not None:
         name = element.get("name") or ""
-        # Not asked for a press the page itself says commits nothing here: a button that opens a new, empty record and
-        # submits no form (opens_new_record), or a link that only goes to another page (context "navigates",
-        # core._only_navigates) whose label names an act only as where it goes (only_steps_into_an_act) - the act is
-        # gated on that page. A link that names an act on its own ("Pay now", "Delete invoice") is asked as before:
-        # an older app may act on the address alone.
-        if press_effect(element) == "asks" and not (opens_new_record(element) and context.get("submits") is False) \
+        # Not asked for a link the page says only goes to another page (context "navigates", core._only_navigates:
+        # an http(s) anchor, no form, no script that may act on the press) whose label names an act only as a step
+        # into a page (only_steps_into_an_act) - the act is gated on that page. A link that names an act on its own
+        # ("Pay now", "Proceed to pay") is asked: an older app may act on the address alone. A button is judged by its
+        # label alone: "Create Payment Order" in an app that submits by script sends no form the page can show (review
+        # of freeze 2, A5: a label-shaped "opens a new record" exemption let it through).
+        if press_effect(element) == "asks" \
                 and not (element.get("role") == "link" and context.get("navigates") is True
                          and only_steps_into_an_act(name)):
             label = " ".join(name.split())[:60]
@@ -796,38 +802,6 @@ def press_effect(element):
     if consequential(name, goes_somewhere(element)):
         return "asks" if role in ACTIVATING_ROLES else "commits"
     return "commits" if COMMIT_CONTROL.match(label_words(name)) else None
-
-
-# The first word of a button that opens a new, empty record of a kind ("Add Purchase Invoice", "New Sales Order",
-# "Create Payment Entry"): the record is kept only by its own form's Save or Submit, which is checked and gated there.
-_OPENS_NEW = set("new add create make".split())
-# Words that are only acts, never part of a record's name: "Add and pay", "Create and send", "New payment - pay now".
-_ACT_ONLY = set("pay send buy sign submit publish confirm approve authorize authorise place checkout file post "
-                "transfer and now".split())
-
-
-def opens_new_record(element):
-    """
-    Whether a press on this button opens a new, empty record of a named kind rather than committing one: its label is
-    a word that opens a new one (_OPENS_NEW) and then a record's name ending in a record noun ("Add Purchase Invoice",
-    "New Payment Entry"), with no word that is only an act (_ACT_ONLY). Found live (2026-11-08, ERPNext bills): "+ Add
-    Purchase Invoice" on the list page was put to the person as a purchase on every bill, though it only opens an
-    empty form - the form's own Save is what keeps it, and is checked there.
-
-    The label alone is never enough: assess lets such a press through only when the caller has read from the page
-    itself that it submits no form holding values (context "submits" is False, core: cdp.submit_form_fields). A
-    "Create Payment Order" that submits a filled form is still asked; a press whose form cannot be read is asked.
-    """
-
-    if (element or {}).get("role") != "button":
-        return False
-    words = [w.lower() for w in label_words(element.get("name") or "").split()]
-    while words and words[0] == "and":
-        words = words[1:]  # a "+" drawn before the label ("+ Add Purchase Invoice"), read as a joiner
-    if len(words) < 2 or words[0] not in _OPENS_NEW:
-        return False
-    rest = words[1:]
-    return rest[-1] in _RECORD_NOUNS and not any(w in _ACT_ONLY for w in rest)
 
 
 def commits(element):

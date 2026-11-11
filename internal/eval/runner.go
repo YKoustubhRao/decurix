@@ -50,6 +50,7 @@ const (
 	maxLedgerBytes = 1 << 20
 	// maxListedApprovals bounds the approvals a case lists that one case may use (they do not count toward
 	// MaxQuestions): enough for a month of documents saved one by one, low enough to stop a worker that saves in a loop.
+	// The same number bounds, apart, the approvals the expert declines in one case.
 	maxListedApprovals = 40
 )
 
@@ -969,7 +970,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	res := Grade(c, ev, mode)
 	row := Row{RunID: run.ID, Arm: arm.Name, Repeat: rep, CaseID: c.ID, TaskID: route.TaskID, Observed: res.Observed,
 		Checked: ev.Checked != nil && *ev.Checked, Passed: res.Passed, FalseDone: res.FalseDone, DoneUncheckedWrong: res.DoneUncheckedWrong,
-		QRequired: res.Questions.Required, QOther: res.Questions.Other, TokensIn: usage.Input, TokensCached: usage.Cached, TokensOut: usage.Output,
+		QRequired: res.Questions.Required, QOther: res.Questions.Other, QDeclined: res.Questions.Declined, TokensIn: usage.Input, TokensCached: usage.Cached, TokensOut: usage.Output,
 		Calls: usage.Calls, Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now(), Infra: res.Infra}
 	row.Problems = append(append([]string{}, res.Problems...), problems...)
 	row.Served = usage.Served
@@ -1138,7 +1139,7 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 		notDelivered(ev, err, "The request could not be sent to the worker.")
 		return problems
 	}
-	questions, approvals := 0, 0
+	questions, approvals, declines := 0, 0, 0
 	exhausted := s.Broker.CaseExhausted()
 	for {
 		select {
@@ -1149,7 +1150,7 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				confirm, confirmKind := confirmReply(c, o.Text)
 				if confirmKind == "approval" && arm.Expert {
 					// A worded ask to press a control the case approves is the approval a gate card is: counted with them
-					// and bounded by maxListedApprovals, never by MaxQuestions. Found live (freeze 2.3, og-5): the
+					// and bounded by maxListedApprovals, never by MaxQuestions. Found live (freeze 2.3, a return-filing case): the
 					// worker's worded asks before each listed press ran the case out of questions at Verify.
 					approvals++
 					if approvals > maxListedApprovals {
@@ -1204,7 +1205,10 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				asked := Asked{Kind: ObservedApproval, Text: text, Required: true}
 				// An action the case approves gets the expert's yes, through the route a person's yes takes: the reply
 				// bound to the gate's request and its own words, signed for the gate (practice.ApprovalGateNotice).
-				// Any other approval, or one the gate did not sign, is refused: nothing is granted and the case ends.
+				// A gate-signed approval the case does not list gets the expert's no by the same route, and the case
+				// goes on. One the gate did not sign, any approval on an arm without the expert, and
+				// any approval in a case that expects to stop at the gate are refused: nothing is granted and the case
+				// ends.
 				if _, ok := c.ApprovalFor(o.Gate); ok && signed && arm.Expert {
 					// An approval the case lists is the person's OK to a save the work needs, not a question the worker
 					// could have answered itself: it is counted (q_required) but never ends the case for "too many
@@ -1223,6 +1227,28 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 					if err := s.post(desktop.WithGateNotice(ctx, practice.ApprovalGateNotice(taskID, ApprovalYes, o.Gate, o.GateID)), d, "/request", map[string]string{"content": ApprovalYes, "task_id": taskID}); err != nil {
 						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
 						notDelivered(ev, err, "The expert's approval could not be sent to the worker.")
+						return problems
+					}
+					continue
+				}
+				if signed && arm.Expert && c.Expected.Outcome != OutcomeApproval {
+					// A person asked about an action they never meant to allow says no; the worker gets the gate's
+					// decline and must route around it. Found live (freeze 2.4, a return-filing case): a read-only shell
+					// command the command guard held ended the case, where a person's no would have let the worker go
+					// on. A no grants nothing. A case that expects the gate to stop it (stopped_at_approval) still ends
+					// there: that stop is what it measures.
+					declines++
+					if declines > maxListedApprovals {
+						ev.Questions = append(ev.Questions, asked)
+						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
+						ev.Unfinished = append(ev.Unfinished, "too many declined approvals")
+						return problems
+					}
+					asked.Reply, asked.Declined = ApprovalNo, true
+					ev.Questions = append(ev.Questions, asked)
+					if err := s.post(desktop.WithGateNotice(ctx, practice.ApprovalGateNotice(taskID, ApprovalNo, o.Gate, o.GateID)), d, "/request", map[string]string{"content": ApprovalNo, "task_id": taskID}); err != nil {
+						ev.Observation, ev.FinalText, ev.GateQuestion = ObservedApproval, text, o.Gate
+						notDelivered(ev, err, "The expert's decline could not be sent to the worker.")
 						return problems
 					}
 					continue

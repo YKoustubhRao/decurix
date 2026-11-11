@@ -666,9 +666,9 @@ def _needed(run):
 # ============================================================
 # Left to the application (owner's ruling 2026-11-11)
 #
-# Found live (ERPNext bills, 2026-11-11): a bill with no due date sent the WHOLE run to the model ("The documents do
+# Found live (a web ERP's bills, 2026-11-11): a bill with no due date sent the WHOLE run to the model ("The documents do
 # not give due_date - working from the documents themselves"); the model asked what due date to enter, the person
-# answered "leave the Due Date as ERPNext fills it in", the run counted as helped - and the application had filled the
+# answered "leave the Due Date as the application fills it in", the run counted as helped - and the application had filled the
 # field itself the moment the supplier was picked. A value the documents lack that the person leaves to the
 # application is a standing decision, not data:
 #   ask      where that one field is all that keeps the run from replaying, the person is asked about it alone: leave it
@@ -698,55 +698,38 @@ LEAVE_PLAIN = {
 
 
 def _leave_sentence(label):
-    """The sentence of the question that offers leaving the field `label` as the application fills it in: a kept
-    decision is used only where the question the person answered holds it (_kept_left)."""
+    """The sentence of the question that offers leaving the field `label` as the application fills it in: a decision
+    is used only where the question the person answered holds it (person_record.leave_sentence, shared with `gui do`)."""
 
-    return f'Reply 1 to leave the field "{" ".join(str(label or "").split())}" as the application fills it in'
+    from decurix_agent import person_record
+    return person_record.leave_sentence(label)
 
 
 def _field_label(run, param):
-    """The label of the field a value goes into: its step's field as the demonstration found it, else the value's own
-    label."""
+    """The label of the field a value goes into (skills.field_label)."""
 
-    steps = {s.get("n"): s for s in run["skill"].get("steps") or []}
-    target = (steps.get(param.get("step")) or {}).get("target") or {}
-    label = target.get("name") if target.get("role") in FIELD_ROLES else ""
-    return " ".join(str(label or param.get("label") or param["name"]).split())
+    return skills.field_label(run["skill"], param)
 
 
 def _may_leave(run, param):
-    """Whether a value the documents do not give may be left as the application fills it in: one field's value, typed
-    or chosen into it - not a list, a row of a repeated part, a secret, a file or an address."""
+    """Whether a value the documents do not give may be left as the application fills it in (skills.may_leave)."""
 
-    if param.get("list") or param.get("secret") or param.get("file") or learning._is_address(param.get("example")):
-        return False
-    group = skills.repeated_rows(run["skill"])
-    if param["name"] in {name for row in (group or {"rows": []})["rows"] for name in row}:
-        return False
-    return any(s.get("param") == param["name"] and s.get("kind") in ("type", "select")
-               for s in run["skill"].get("steps") or [])
+    return skills.may_leave(run["skill"], param)
 
 
 def _kept_left(run, param):
     """
     The judgement of the person's kept decision to leave this skill's field as the application fills it in, or "": a
-    field answer the control plane keeps (person_record.left_to_app) for this skill and this value, of this field, whose
-    question - the one the person answered, as the control plane recorded it - offered exactly that (_leave_sentence).
-    A control plane that cannot be read keeps nothing: the person is asked (fail closed).
+    field answer the control plane keeps for this skill and this value, of this field, whose question - the one the
+    person answered, as the control plane recorded it - offered exactly that (person_record.left_decision, which `gui
+    do` reads too). A control plane that cannot be read keeps nothing: the person is asked (fail closed).
     """
 
     from decurix_agent import person_record
-    label = _field_label(run, param)
     try:
-        rows = person_record.left_to_app()
+        return person_record.left_decision(run["skill"].get("name"), param["name"], _field_label(run, param))
     except Exception:  # noqa: BLE001 - what cannot be read is no decision
         return ""
-    for row in reversed(rows):
-        if (row["skill"] == run["skill"].get("name") and row["param"] == param["name"]
-                and " ".join(row["label"].split()) == label
-                and _leave_sentence(label) in " ".join(row["source_asked"].split())):
-            return row["judgement"]
-    return ""
 
 
 def _apply_kept_left(run, missing):
@@ -1076,8 +1059,10 @@ def _documents_note(run):
     return "\n".join(lines)
 
 
-# How many numbers a series of the documents' own identifiers may skip and still be one series with holes in it.
-MAX_SERIES_GAP = 3
+# How many of a series' missing numbers are named in a question or a fact; the rest are counted ("and 41 more"). Any
+# number of holes is asked about: more holes is more reason to ask (review of freeze 2, A10: a series skipping more
+# than three numbers was taken for no series and nothing was asked).
+MAX_SERIES_LISTED = 5
 
 
 def _series_holes(run):
@@ -1085,8 +1070,9 @@ def _series_holes(run):
     The numbered series the run's documents carry that skip numbers, as [{label, items, missing}]. Each list the fill
     read for a field whose label names a number (records.identifier_field), one item per document: when every item is
     the same prefix and a number of the same width - one series, never documents of two - and the numbers between the
-    lowest and the highest miss a few (MAX_SERIES_GAP), the missing ones, written as the series writes them. Only
-    inside the range: what comes before the first or after the last is not known to be missing.
+    lowest and the highest miss any, the first MAX_SERIES_LISTED of the missing ones, written as the series writes
+    them, and how many are missing in all ("count"). Only inside the range: what comes before the first or after the
+    last is not known to be missing.
     """
 
     out = []
@@ -1099,11 +1085,17 @@ def _series_holes(run):
         if not all(parts) or len({p.group(1) for p in parts}) != 1 or len({len(p.group(2)) for p in parts}) != 1:
             continue
         numbers = sorted({int(p.group(2)) for p in parts})
-        missing = sorted(set(range(numbers[0], numbers[-1] + 1)) - set(numbers))
-        if not missing or len(missing) > MAX_SERIES_GAP:
+        count = numbers[-1] - numbers[0] + 1 - len(numbers)
+        if count <= 0:
             continue
+        have, missing, n = set(numbers), [], numbers[0]
+        while len(missing) < MAX_SERIES_LISTED and n < numbers[-1]:
+            if n not in have:
+                missing.append(n)
+            n += 1
         prefix, width = parts[0].group(1), len(parts[0].group(2))
-        out.append({"label": label, "items": items, "missing": [prefix + str(n).zfill(width) for n in missing]})
+        out.append({"label": label, "items": items, "missing": [prefix + str(n).zfill(width) for n in missing],
+                    "count": count})
     return out
 
 
@@ -1115,8 +1107,16 @@ def _series_gaps(run):
     """
 
     return [f"CHECKED IN CODE, NOT CLAIMED - the documents' {h['label']} values ({', '.join(h['items'][:12])}) skip "
-            f"{', '.join(h['missing'])}: no document of this request carries "
-            f"{'it' if len(h['missing']) == 1 else 'them'}." for h in _series_holes(run)]
+            f"{_named_holes(h)}: no document of this request carries "
+            f"{'it' if h['count'] == 1 else 'them'}." for h in _series_holes(run)]
+
+
+def _named_holes(hole):
+    """A hole's missing numbers as said: the first few, then how many more ("1058, 1060 and 12 more")."""
+
+    named = ", ".join(hole["missing"])
+    more = hole["count"] - len(hole["missing"])
+    return f"{named} and {more} more" if more > 0 else named
 
 
 def _series_question(run):
@@ -1135,14 +1135,14 @@ def _series_question(run):
     if not holes:
         return ""
     said = "\n".join(x for x in (records._answers_text(), records._worker_words_text()) if x)
-    open_holes = [h for h in holes if not all(re.search(r"(?<![\w-])" + re.escape(m) + r"(?![\w-])", said)
-                                              for m in h["missing"])]
+    open_holes = [h for h in holes if h["count"] > len(h["missing"])
+                  or not all(re.search(r"(?<![\w-])" + re.escape(m) + r"(?![\w-])", said) for m in h["missing"])]
     if not open_holes:
         return ""
     run["series_asked"] = True
     lines = [f"This request's documents carry {h['label']} {', '.join(h['items'][:12])}; "
-             f"{', '.join(h['missing'])} {'is' if len(h['missing']) == 1 else 'are'} missing from that series - no "
-             "document of this request carries " + ("it" if len(h["missing"]) == 1 else "them") + "."
+             f"{_named_holes(h)} {'is' if h['count'] == 1 else 'are'} missing from that series - no "
+             "document of this request carries " + ("it" if h["count"] == 1 else "them") + "."
              for h in open_holes]
     return ("\n".join(lines) + "\nIs that expected? Say so and I will report the work as it is, or tell me what to do "
             "about the missing one (where to find it, or to wait for it).")
@@ -3221,6 +3221,21 @@ def _stated_values(run):
     return stated, inferred
 
 
+# The most of a halt's reason the trace line of a takeover carries (the model's note has it whole).
+HALT_WHY_CHARS = 900
+
+
+def _halt_why(note):
+    """A takeover's reason for its trace line: the replay's own words (the step, what stopped it, the screen), or - a
+    halt that came with none - that it gave none, said as such and never left blank."""
+
+    said = " ".join(str(note or "").split())
+    if not said:
+        return "the replay gave no reason (nothing was said about the step or the screen)."
+    said = said if len(said) <= HALT_WHY_CHARS else said[:HALT_WHY_CHARS - 3].rstrip() + "..."
+    return said if said.endswith((".", "!", "?", "...")) else said + "."
+
+
 def _by_model(run, from_step=None, note="", ran=False, phase=None):
     """Hand the task to the engine, guided by the skill (see the section above); `phase`: one part of it only."""
 
@@ -3242,7 +3257,10 @@ def _by_model(run, from_step=None, note="", ran=False, phase=None):
         progress.emit("The taught steps have run once per document; the model now enters by hand the documents that did "
                       "not fit them: " + ", ".join(Path(x["document"]).name for x in run.get("by_hand") or []))
     elif from_step:
-        progress.emit(f"The replay stopped at step {from_step}; the model is taking it from there.")
+        # Why, always, in the trace as in the model's note: found live (2026-11-11, a web ERP's bill), "Replay step 7/34"
+        # was followed two minutes later by "The replay stopped at step 7" and nothing else - the reason went to the model
+        # only, and no one reading the run could tell what had stopped it.
+        progress.emit(f"The replay stopped at step {from_step}: {_halt_why(note)} The model is taking it from there.")
     else:
         progress.emit(f"Doing \"{skill.get('title') or skill['name']}\" with the model, guided by what you taught "
                       "(it is still learning this task).")

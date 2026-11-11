@@ -318,6 +318,7 @@ def curve_cell(rows):
         "false_done": sum(1 for r in valid if r.get("false_done")),
         "q_required": sum(r.get("q_required") or 0 for r in valid) / n if n else 0,
         "q_other": sum(r.get("q_other") or 0 for r in valid) / n if n else 0,
+        "q_declined": sum(r.get("q_declined") or 0 for r in valid) / n if n else 0,
         "tokens_in": _median([r.get("tokens_in") or 0 for r in valid]),
         "tokens_out": _median([r.get("tokens_out") or 0 for r in valid]),
         "tokens": _median([(r.get("tokens_in") or 0) + (r.get("tokens_out") or 0) for r in valid]),
@@ -399,7 +400,7 @@ def curve_markdown(run_id, rows, order=None, kinds=None, run=None):
             "is of the input tokens.", ""]
     for arm, series in points.items():
         out += [f"## {arm}", "",
-                "| # | case | kind | pass | false done | questions req / other | tokens in | tokens out | calls | cached | left out |",
+                "| # | case | kind | pass | false done | questions req / other / declined | tokens in | tokens out | calls | cached | left out |",
                 "|---|---|---|---|---|---|---|---|---|---|---|"]
         for i, (case, c) in enumerate(series, 1):
             kind = (kinds or {}).get(case, "")
@@ -407,7 +408,7 @@ def curve_markdown(run_id, rows, order=None, kinds=None, run=None):
                 out.append(f"| {i} | {case} | {kind} | - | - | - | - | - | - | - | {c['left_out']} |")
                 continue
             out.append(f"| {i} | {case} | {kind} | {c['pass']}/{c['n']} | {c['false_done']}/{c['n']} | "
-                       f"{c['q_required']:.1f} / {c['q_other']:.1f} | {_tokens(c['tokens_in'])} | "
+                       f"{c['q_required']:.1f} / {c['q_other']:.1f} / {c['q_declined']:.1f} | {_tokens(c['tokens_in'])} | "
                        f"{_tokens(c['tokens_out'])} | {c['calls']:g} | {c['cached_share']:.0%} | {c['left_out']} |")
         out.append("")
         for kind, v in verdicts[arm].items():

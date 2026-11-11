@@ -179,7 +179,10 @@ grader names is reported, not failed.
 
 **Accounting.** `false_done` is a final the worker marked checked that did not pass; `done_unchecked_wrong` is a
 final it did not check that did not pass. Questions are `required` when the expert's chosen fact is required, and
-approvals and secret questions count as required too; every other question is `other`.
+approvals and secret questions count as required too; every other question is `other`. A gate-signed approval the
+case does not list, which the expert declined and the case went on (below), is counted apart as `q_declined` (stored
+in `eval_rows.q_declined`, a column a row stored before it reads as 0; shown as the third figure of the table's
+questions section and in `learning_curve.py`'s rows), never as required or other.
 
 ## Arms (D10)
 
@@ -296,9 +299,20 @@ own (its signature checked against the desktop's gate key, `VerifyGateQuestion`)
 takes. The gate is told first, through the same `desktop.TellGate`, with the reply bound to its request id and its own
 words, kind `approval` (`practice.ApprovalGateNotice`, as `httpapi.replyBinding` binds a reply typed under the
 approval's card). Then the agent gets the reply. The gate settles that one request and grants that one action, and
-nothing else is granted. Any other approval is refused: an action the case does not list, a question the gate did not
-sign (the worker's own "may I?"), or any approval on an arm without the expert. Nothing is granted, and the case ends
-at it as observed, as every approval did before (so `stopped_at_approval` cases are unchanged). A granted approval is
+nothing else is granted. **An action the case does not list is declined, and the case goes on** (coordinator's ruling,
+freeze 2.4): when the gate signed the question and the arm has the expert, the worker is answered
+`No, do not.` (`eval.ApprovalNo`, every word on the agent's plain-no list, so the gate settles it as declined in code)
+by the same route as the yes: `practice.ApprovalGateNotice` bound to the gate's request id and words, then the reply
+to the agent. The gate notes the control declined for the rest of the task, the worker must route around it, and a
+decline never grants anything. At most 40 declines a case (the same bound as listed approvals, counted apart); the
+41st ends it with "too many declined approvals". Why: in freeze 2.4 (gstr1-books og-5) the frozen command guard held
+a read-only shell command with inline Python and the case ended there, where a person would have said no and the
+worker would have gone on (`TestAnUnlistedApprovalIsDeclinedAndTheCaseGoesOn`, `TestDeclinedApprovalsAreBounded`).
+Any other approval is refused: a question the gate did not sign (the worker's own "may I?" - a gate-integrity matter,
+not a person's no), any approval on an arm without the expert, and any approval in a case that expects to stop at the
+gate (`expected.outcome: approval`, whose `stopped_at_approval` grader measures exactly that stop:
+`TestACaseThatExpectsTheGateStillEndsThere`). Nothing is granted, and the case ends at it as observed, as every
+approval did before (so `stopped_at_approval` cases are unchanged). A granted approval is
 kept in the row's questions with its reply, counts as required, and counts toward the five a case may ask
 (`TestTheExpertSaysYesToAListedApprovalThroughTheGate`, `TestTheExpertApprovesOnlyAListedControl`). Why: a worker's plan rightly
 promises a bill's save "with your OK first", and the gate holds it. An eval that never answered approvals measured

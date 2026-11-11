@@ -762,10 +762,13 @@ def _request_folder_files(task_id=None):
     """
     The files in the folders the request names that were there before the task began (stage_checks.
     request_input_files, less what source_guard.made_by_task says the task made): the client's documents a request
-    points to by folder rather than attaching them. Found live (2026-11-09, eval case oc-2, a return filed right): every
+    points to by folder rather than attaching them. Found live (2026-11-09, an eval case, a return filed right): every
     invoice in the folder the request named wrote "Place of Supply: Karnataka", yet the "29-Karnataka" picked from the
     portal's list was held as backed by nothing given, because only attached files were read; the person was asked to
     confirm it and the run ended not done. A file the task wrote there never backs anything.
+
+    Only the named folder's own files, never its subfolders' (review of freeze 2, A11: a subfolder holds other
+    periods' or other parties' documents); a document of another period is left out where it is read (given_sources).
     """
 
     request = task_context.current_request() or ""
@@ -777,17 +780,51 @@ def _request_folder_files(task_id=None):
             folder = os.path.expanduser(m.group(1).rstrip(".),:;"))
             if not os.path.isdir(folder) or os.path.realpath(folder) in _whole_folders():
                 continue  # (the whole home or work folder holds other requests' files: never this one's input)
-            for root, dirs, names in os.walk(folder):
-                dirs[:] = sorted(d for d in dirs if not d.startswith("."))
-                found += [os.path.join(root, n) for n in sorted(names) if not n.startswith((".", "~$"))]
-                if len(found) >= MAX_GIVEN_FILES * 4:
-                    break
+            found += [os.path.join(folder, n) for n in sorted(os.listdir(folder))
+                      if not n.startswith((".", "~$")) and os.path.isfile(os.path.join(folder, n))]
+            if len(found) >= MAX_GIVEN_FILES * 4:
+                break
         from decurix_agent import source_guard, stage_checks
-        found += stage_checks.request_input_files(request, limit=MAX_GIVEN_FILES * 4)
+        # The files the request names one by one (never a folder's tree: stage_checks.request_input_files walks it).
+        found += [entry.split(" (= ")[0] for entry in stage_checks.run_inputs(request)]
         return [p for p in dict.fromkeys(found)
                 if not source_guard.made_by_task(p, task_id or None, request)][:MAX_GIVEN_FILES]
     except Exception:  # noqa: BLE001 - a folder not listed backs nothing
         return []
+
+
+# A month named with its year in a request ("January 2027", "Jan-2027", "01/2027"): the period the run is for.
+_PERIOD = re.compile(r"(?i)\b([a-z]{3,9})[\s,.'-]*(\d{4})\b|\b(0?[1-9]|1[0-2])[/-](\d{4})\b")
+
+
+def request_periods(request):
+    """The (year, month) periods the request names, or an empty set when it names none."""
+
+    from decurix_agent.computer import datefields
+    out = set()
+    for m in _PERIOD.finditer(request or ""):
+        if m.group(1):
+            month = datefields.MONTHS.get(m.group(1).lower())
+            if month:
+                out.add((int(m.group(2)), month))
+        else:
+            out.add((int(m.group(4)), int(m.group(3))))
+    return out
+
+
+def of_another_period(text, periods):
+    """Whether a document's own dates all fall outside the request's periods: it is another period's document. False
+    when the request names no period or the document carries no date that can be read either way."""
+
+    from decurix_agent import values
+    if not periods:
+        return False
+    seen = set()
+    for m in _DATE_TOKEN.finditer(text or ""):
+        iso = values.as_iso(m.group(0))
+        if iso:
+            seen.add((int(iso[:4]), int(iso[5:7])))
+    return bool(seen) and not (seen & periods)
 
 
 def _whole_folders():
@@ -812,12 +849,17 @@ def given_sources(task_id=None):
     files = []
     try:
         from decurix_agent.tools import office
-        paths = list(dict.fromkeys(list(task_context.current_files() or [])[:12] + _request_folder_files(task_id)))
-        for path in paths[:MAX_GIVEN_FILES]:
+        attached = list(task_context.current_files() or [])[:12]
+        in_folder = [p for p in _request_folder_files(task_id) if p not in attached]
+        periods = request_periods(task_context.current_request() or "")
+        for path in list(dict.fromkeys(attached + in_folder))[:MAX_GIVEN_FILES]:
             try:
-                files.append(str(office.read_document(str(path)).get("text") or "")[:MAX_PAGE_TEXT])
+                text = str(office.read_document(str(path)).get("text") or "")[:MAX_PAGE_TEXT]
             except Exception:  # noqa: BLE001 - a file not read backs nothing
                 continue
+            if path in in_folder and of_another_period(text, periods):
+                continue  # another period's document in the folder is never this run's (review of freeze 2, A11)
+            files.append(text)
     except Exception:  # noqa: BLE001
         pass
     return {"free": "\n".join(p for p in free if p), "files": [f for f in files if f]}
@@ -1160,6 +1202,11 @@ def _kept_answer(label, option, host, offered=None, party=None):
             continue
         if a.get("party") and (a["party"] != party or a["party"].startswith("record:")):
             continue  # (kept for another party, or for one record alone: no source for this pick)
+        if not a.get("party") and party and not party.startswith("record:"):
+            # A row kept before answers carried their party says nothing of which party it was for: it never backs a
+            # pick made for a party (review of freeze 2, A12). A record whose form names no party ("record:...", see
+            # picks) is no party's, so such a row may still back it.
+            continue
         if a.get("confirmed"):
             # The person confirmed this very entry when asked about it: the question code put names the field and the
             # entry, and the control plane holds their reply as their judgement on it (confirm_picks).
@@ -2046,6 +2093,14 @@ def readback(rec, title, page_text, change, task_id=None, observation=None):
     rows_seen, rows_absent = [], list(range(1, len(rows) + 1))
     if rows and observation is not None:
         rows_seen, rows_absent = rows_shown(rows, observation, _source_order(rec), _selects(task_id))
+    if not seen and not key_shown and not rows_seen:
+        # A page that shows nothing of the record (none of its values, not its key, none of its lines) is not its
+        # saved page: no save is taken from it. Found live (2026-11-11, a web ERP): a link from an unsaved bill's form to
+        # the list was read as the save, and the ledger said "saved; 0 of 3" for a bill the application never had.
+        total = len(seen) + len(absent)
+        return [f"Record {rec.get('key')}: NOT saved - the page this left shows none of its {total} declared value(s) "
+                "nor its key, so it is not the record's saved page. If the record was saved, open it and look; if "
+                "not, it is still to be saved - never enter it again before you know which."]
     for r in records:
         if r.get("key") == rec.get("key") and r.get("declared_at") == rec.get("declared_at"):
             r["saved_at"] = time.time()

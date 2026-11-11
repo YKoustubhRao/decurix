@@ -1296,17 +1296,17 @@ DONE_CHOICES = {
     "stop": "it is not done and is not to be tried again: mark it a failure",
     "leave": "the person cannot check it now: leave it as it is, reported as not confirmed - neither done nor tried again",
 }
-# The reply of a person who cannot check the result now - the scripted expert's (internal/eval.NotConfirmed) among
-# them: settled in code, so it is never read as a correction that sends the work round again (owner's decision,
-# 2026-11-08: a correct result was retried for 50 minutes on "I don't know").
-NOT_CONFIRMED_REPLY = "I can't check that from here - report it as you see it, not confirmed."
+# A reply of a person who cannot check the result now is "leave" (owner's decision, 2026-11-08: a correct result was
+# retried for 50 minutes on "I don't know"). Only a reply that is, whole, one of these plain phrases is settled in
+# code; any other - an evaluation's scripted reply too - is read like every person's reply (review of freeze 2, B: the
+# harness held one evaluator's exact sentence).
 DONE_PLAIN = {
     "done": ("done", "it's done", "it is done", "its done", "all done", "yes done", "ok done", "correct", "confirmed",
              "it worked", "looks good", "looks right", "looks fine", "that is correct", "that's correct"),
     "redo": ("retry", "try again", "redo", "again", "do it again"),
     "stop": ("stop", "cancel", "abort", "no", "nope", "nah", "not done", "it's not done", "it is not done",
              "its not done"),
-    "leave": (NOT_CONFIRMED_REPLY, "leave it unconfirmed", "leave it as it is", "i can't check"),
+    "leave": ("leave it unconfirmed", "leave it as it is", "i can't check", "i cannot check", "not confirmed"),
 }
 # A reply that is only a yes may answer some other question: it is not taken for "done".
 VAGUE_YES = {"yes", "y", "yep", "yeah", "ok", "okay", "good", "right", "sure", "fine", "go ahead", "proceed"}

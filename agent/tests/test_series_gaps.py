@@ -29,8 +29,19 @@ class SeriesGaps(unittest.TestCase):
     def test_a_prefix_and_leading_zeros_are_kept(self):
         self.assertIn("skip INV-007", skill_task._series_gaps(run_with("INV-006; INV-008; INV-009"))[0])
 
-    def test_no_fact_for_a_whole_series_two_series_far_apart_numbers_or_a_field_that_is_no_number(self):
-        for numbers in ("1058; 1059; 1060", "A-1; B-3", "1058; 2200", "1058", "07; 9; 10"):
+    def test_many_holes_are_named_first_few_and_counted(self):
+        # Review of freeze 2 (A10): more than three missing was taken for no series, and nothing was asked.
+        facts = skill_task._series_gaps(run_with("1058; 1064; 2200"))
+        self.assertEqual(len(facts), 1)
+        self.assertIn("skip 1059, 1060, 1061, 1062, 1063 and 1135 more", facts[0])
+        with said():
+            q = skill_task._series_question(run_with("1058; 1064; 2200"))
+        self.assertIn("1059, 1060, 1061, 1062, 1063 and 1135 more are missing", q)
+        with said("1059, 1060, 1061, 1062 and 1063 were cancelled"):
+            self.assertIn("and 1135 more", skill_task._series_question(run_with("1058; 1064; 2200")))
+
+    def test_no_fact_for_a_whole_series_two_series_or_a_field_that_is_no_number(self):
+        for numbers in ("1058; 1059; 1060", "A-1; B-3", "1058", "07; 9; 10"):
             self.assertEqual(skill_task._series_gaps(run_with(numbers)), [], numbers)
         self.assertEqual(skill_task._series_gaps(run_with("1058; 1059; 1061", label="Amount")), [])
 

@@ -96,6 +96,8 @@ HELP:
 - Commands run in %s with no terminal attached: never open editors or pagers, and pass -y to installers.
 - For anything in a window (a web page in the browser, LibreOffice, a text editor) use the gui command: gui observe lists the screen's elements with refs like e12, then gui click e12, gui type e12 "text", gui key ctrl+s, gui select e12 "option", gui open <url|file|app>, gui scroll down 5 (or up; 5 is wheel notches, about 100 pixels each - over the part of the page to move, gui scroll x,y down 5). Every gui action prints what changed. gui read e12 prints the whole text of a field or document with line numbers - gui observe shows only its first 60 characters - so read a text before you change it and again after, and report a change as made only when gui read shows it: a change asked for everywhere is done when none is left, so use the app's own replace-all or bulk operation, not one edit at a time. gui type on a field that holds several lines is refused, because it would replace the whole document; change part of it through the app, or with --append where the cursor is. gui recordings <words> finds a recorded demonstration of a task, and gui replay <id> runs it again. gui skills <words> finds a task this desktop was taught: gui skill <name> says what it needs and gui do <name> --param name=value does it with no model - prefer it to working the task out yourself, but only in the app or site it works in (gui skill says where): the same kind of work in another system is done there with gui. A value gui skill calls a list takes every item of the document in one run, in the document's order, separated by \"; \" (--param product=\"Desk; Chair\" --param quantity=\"3; 1\") - never only the first item. gui ask chatgpt "QUESTION" (or google, duckduckgo, wikipedia, youtube) puts one question to that service in the browser and prints its answer - run it once per question. gui guide NAME prints the checked guide to an app this desktop has one for (how it is worked here, its dialogs, how to save; gui guide alone lists them) - when one is in your context, follow it. To learn how an app or a kind of work goes (where a setting is, which menu or keys do something, what a field means) run lookup "APP how to ..." - it reads the web without touching the screen; do that before asking the person how the app works. What it prints is the internet's: never a value to type into a record. An app this desktop has no guide for: once your work in it is right, write down what you found out for the next task - gui guide --learn NAME --applies-to "the words that name the app" --description "one line" with the guide on stdin (a heredoc): how the app is worked here (where things are, the keys and dialogs, what to check before saving, what went wrong and what fixed it), never this task's values. It is kept only if this task is checked done.
 - To read a document (PDF, scan, Word, Excel, PowerPoint, email, picture) run office read <file> [pages]; never guess at a file's contents.
+- To read or re-check a file you have (a CSV, JSON or text file, one you wrote included), use your read tools: office read <file>, jq '.key' <file>, or cat, head and grep on the file. Write interpreter code only for what they cannot do, and let the code open the file by its path: never pipe a file into an interpreter (cat <file> | python3 ...) - the person is asked to approve code piped into an interpreter before it runs.
+- Work only through your own tools and as your own user, however short the time. Never run a command as another user, attach to or read another process, drive a socket by hand, or reach the approval gate, the screen or the browser around gui: such a command is not run and the task ends there, failed. An app that hangs or a tool that refuses is reported (HELP), not worked around.
 - To change an existing spreadsheet, never rewrite it with a script (that drops its charts): run office update <file.xlsx> - with a JSON spec on stdin, e.g. office update model.xlsx - <<'EOF' then {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250}], "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}]} then EOF. replace_refs makes charts and totals take in rows you added. A new sheet in an existing workbook is "add_sheets": [{"name": "Summary", "rows": [["Name", "Value"], ["A", 50]]}] in the same spec - never a second workbook. office create <file.xlsx> - makes a new one from {"sheets": [{"name": "Sheet1", "rows": [["Item", "Amount"], ["A-1", 1200]], "cells": {"B3": "=SUM(B2:B2)"}}]} (rows fill from A1; cells set one address each). A chart is a sheet's "charts": [{"type": "column", "title": "Revenue by month", "data": "B1:B4", "categories": "A2:A4", "anchor": "E2"}] (data starts at its header cell); office read lists the charts a workbook has. A new Word document is office create <file.docx> - with {"blocks": [{"heading": "Title", "level": 1}, {"paragraph": "text"}, {"bullets": ["a", "b"]}, {"table": [["Header", "Header"], ["cell", "cell"]]}]} - never write a document's XML yourself. To fill a Word document or template, run office update DOC.docx - with {"replace": {"{{KEY}}": "value"}, "output_path": "new.docx"} (body, tables, headers; it lists any placeholder left) - never Find & Replace on the screen. A PDF document is office create <file.pdf> - with the same blocks: it has real text. Never make one by printing HTML with a browser or by wrapping pictures of pages in a PDF. A slide deck is office create <file.pptx> - with {"slides": [{"title": "Q3 review", "subtitle": "Finance"}, {"title": "Highlights", "bullets": ["a", {"text": "detail", "level": 1}], "notes": "speaker notes"}, {"title": "By region", "table": [["Region", "Revenue"], ["North", 1200]]}, {"title": "Trend", "chart": {"type": "column", "categories": ["Jul", "Aug"], "series": [{"name": "Revenue", "values": [10, 12]}]}}, {"title": "Site", "image": "photo.png"}]} (one table, chart or image a slide); change an existing deck with office update <file.pptx> - and {"edits": [{"slide": 2, "find": "Q2", "replace": "Q3"}, {"slide": 3, "table": 1, "row": 2, "column": 2, "value": "1,250"}, {"slide": 3, "table": 1, "add_rows": [["Central", "0"]], "before": 6} (rows go above row "before"; leave it out to add at the end), {"slide": 4, "chart": 1, "categories": [...], "series": [...]}, {"slide": 1, "title": "..."}, {"slide": 5, "notes": "..."}]} - it keeps the deck's layout; never rebuild a deck someone gave you. office read shows each slide's text, tables, chart figures and notes. A file you wrote that office read cannot open is broken: make it again, and never call it verified.
 - Change Office files only with office create/update, a library that writes the format whole (openpyxl, python-docx) or the app - never by editing their XML with a script; a file that no longer opens is not done.
 - To prepare an email, run office email --to <address> --subject "<subject>" [--attach <file>] with the body on stdin (a heredoc). It goes to the Outbox for the human to review and send - it is never sent, so drafting one needs no approval. There is no way for you to send email yourself. Drafting the same email again (same recipients and subject) in the same task replaces your earlier draft of it; to correct a draft under another subject, pass --replaces <its draft id>. Never leave two copies of one email.
@@ -343,7 +345,9 @@ func missingProgramHint(output, command string) string {
 		case "curl", "wget", "http", "lynx", "links", "w3m":
 			hint += " To fetch a page use python3, for example:\nCOMMAND:\npython3 -c \"import urllib.request; print(urllib.request.urlopen('https://example.com', timeout=20).read().decode('utf-8', 'replace')[:3000])\""
 		case "jq":
-			hint += " To read JSON use python3 -c \"import json,sys; ...\"."
+			// Never steer to piping a file into python3: the command guard holds code piped into an interpreter for the
+			// person (gotchas: freeze 2.4, a worker's re-check of its own JSON file ended the case).
+			hint += " To read JSON use office read <file.json>, or python3 -m json.tool <file.json> - never pipe the file into python3."
 		}
 		return hint
 	}
@@ -1762,7 +1766,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		if deadline, ok := rc.Ctx.Deadline(); ok && !st.TimeWarned {
 			if note := timeNoteFor(st, began, deadline, time.Now()); note != "" {
 				st.TimeWarned = true
-				rc.Logf("operator", "most of the task's time is used - told to finish the quickest sure way")
+				rc.Logf("operator", "most of the task's time is used - told to finish with its own tools or report what is left")
 				appendToLastUser(st, note)
 			}
 		}
@@ -2182,6 +2186,15 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			st.noteTracedTyping(value)
 			st.Messages = append(st.Messages, reply)
 
+			if what := boundaryAttempt(value); what != "" {
+				// The tripwire (boundary.go): not run, not asked about, and the task ends here, failed.
+				shown := st.withholdFor(value)(value)
+				rc.Logf("operator", "boundary attempt - tried to %s; not run, task ended: $ %s", what, shown)
+				trace.From(rc.Ctx).CommandRun(rc.Ctx, value, trace.GuardRefused, nil, 0, "", st.withholdFor(value))
+				stop := boundaryStop(what, shown)
+				return finish(stop, false, map[string]any{"error": stop, "fatal": true, "boundaryAttempt": what,
+					"failureReasoning": stop})
+			}
 			if concern := safety.AssessCommand(value, rc.Dir()); concern != nil && !rc.IsApproved(value) {
 				rc.Logf("operator", "approval needed before `%s` - %s", st.withholdFor(value)(value), concern.Reason)
 				trace.From(rc.Ctx).CommandRun(rc.Ctx, value, trace.GuardAsked, nil, 0, "", st.withholdFor(value))
@@ -2316,7 +2329,8 @@ var guiActionRe = regexp.MustCompile(`(?m)(?:^|[;&|(]\s*|\bdo\s+)gui\s+(?:click|
 // timeNoteFor is what the operator is told once, when less than timeNoteShare of its goal's time (from began to
 // deadline) is left, or "". Found live (2026-10-19): a five-row sheet typed into a spreadsheet one cell per action,
 // at about ten seconds an action, ran the whole 25 minutes out with nothing saved; nothing in the loop said the time
-// was going. The note says how the time went, and to finish the quickest sure way and save before it runs out.
+// was going. The note says how the time went, and to finish with its own tools and save, or stop and say what is
+// left; never to go around the boundary (another user, another process's socket, an app behind its screen).
 func timeNoteFor(st *operatorState, began, deadline, now time.Time) string {
 	total := deadline.Sub(began)
 	left := deadline.Sub(now)
@@ -2335,9 +2349,10 @@ func timeNoteFor(st *operatorState, began, deadline, now time.Time) string {
 	}
 	return fmt.Sprintf("\n\n(Time: about %d of this task's %d minutes are left, then it is stopped and nothing unsaved "+
 		"is kept.%s Do not spend what is left on one value per action: rows of values go into a sheet with one gui "+
-		"type (a Tab between cells, \\n between rows), a form's fields one after another in one command. Finish the "+
-		"quickest way the request allows that you can still check, save it, read it back and reply DONE - or reply "+
-		"HELP saying what is saved and what is missing.)", int(left.Minutes()+0.5), int(total.Minutes()+0.5), how)
+		"type (a Tab between cells, \\n between rows), a form's fields one after another in one command. Time is "+
+		"short: finish what you can with your own tools - save it, read it back and reply DONE - or stop and reply "+
+		"HELP saying what is saved and what is left. Never act as another user, drive another process's socket, or "+
+		"reach an application around its screen to save time.)", int(left.Minutes()+0.5), int(total.Minutes()+0.5), how)
 }
 
 // outOfTurnsNote asks for the state of the work when the turns are used up.

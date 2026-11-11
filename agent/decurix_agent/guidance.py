@@ -48,6 +48,11 @@ def begin(skill, task, text, values=None, mode="model", **extra):
         # A task done from a recording nobody has taught yet (skill_task's one-off).
         "recording": (run.get("mimic") or {}).get("id") if run.get("one_off") else None,
         "values": dict(values or {}),
+        # The fields the run leaves as the application fills them in, each with the judgement of the person's reply it
+        # rests on (skill_task "Left to the application"): `gui do` leaves them out only where that judgement, read
+        # from the control plane, offered it (person_record.left_decision) - this file names, it backs nothing.
+        "left": {str(name): str((left or {}).get("judgement") or "")
+                 for name, left in (run.get("left_to_app") or {}).items()},
     })
 
     return _current
@@ -388,6 +393,17 @@ def run_values(skill=None, recording=None):
         return dict(values) if isinstance(values, dict) else {}
 
     return {}
+
+
+def run_left(skill):
+    """{name: judgement id} of the fields the run handed over as `skill` leaves as the application fills them in ({}
+    when it was handed nothing, something else, or for another task). Read from any process; backs nothing by itself
+    (person_record.left_decision checks each judgement on the control plane)."""
+
+    kept = _kept()
+    if kept is None or not skill or kept.get("skill") != skill or not isinstance(kept.get("left"), dict):
+        return {}
+    return {str(k): str(v or "") for k, v in kept["left"].items()}
 
 
 def handed(skill):

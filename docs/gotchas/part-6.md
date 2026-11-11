@@ -891,6 +891,91 @@ at Verify. Now an approved control named right after a press verb, quoted or not
 (asksToPressUnquoted), and a worded ask the expert approves is counted with the gate's cards (maxListedApprovals),
 never toward MaxQuestions.
 
+### A worker piped its own JSON file into inline python3 to re-check it, and the guard ended the case
+
+Found live (2026-11-11, freeze 2.4, og-5). To re-check a JSON file it had exported, the worker ran `cat "<file>.json" |
+python3 -c "import json,sys; d=json.load(sys.stdin); ..."`. The command guard (frozen) holds code piped into an
+interpreter for the person ("it runs code piped into an interpreter", `safety.indirectRules`), so a read became an
+approval and the case ended. The worker had been taught the read tools only for documents, and the hint for a missing
+`jq` even suggested `python3 -c "import json,sys; ..."`, the piped form. Coordinator's ruling: the guard stays as it
+is; the guidance sends reading to the read tools. `operatorContract` now says, in the fixed part every call starts with,
+to read or re-check a CSV, JSON or text file with `office read`, `jq` or `cat`/`head`/`grep`, to write interpreter
+code only for what they cannot do, letting it open the file by its path, and never to pipe a file into an interpreter
+(the person is asked first). The missing-`jq` hint now offers `office read` and `python3 -m json.tool <file>`, never a
+pipe. What the guard holds is narrower than "any inline code": a pipe into an interpreter (`| python3 -c`, `| python3`,
+`| node -e`; `| python3 -m MODULE` is let through), and `-c`/`-e` code that deletes files or shells out; plain
+`python3 -c "... open(path) ..."` and a `python3 - <<'PY'` heredoc run. `jq` is in the shared tools volume
+(`docker/tools.Dockerfile`, `/opt/tools/bin`, on the desktop's PATH), not in the desktop image itself. Tests:
+`agent/thebot/internal/skills/operator_office_test.go` (`TestOperatorContractReadsAFileWithItsReadTools`).
+
+### An approval the case did not list ended the eval case, where a person would have said no
+
+Found live (2026-11-11, freeze 2.4, gstr1-books og-5): the frozen command guard held a read-only shell command with
+inline Python, the gate put it to the person, and the eval runner refused every approval its case did not list by
+ending the case. The row measured the guard, not the worker: a person would have said no and the worker would have
+routed around. Coordinator's ruling: on an arm with the scripted expert, a gate-signed approval the case does not list
+is declined (`eval.ApprovalNo`, "No, do not.", a plain no the gate settles in code) by the route the expert's yes takes
+(`practice.ApprovalGateNotice` bound to the gate's request id and words, then the reply), so the gate notes the control
+declined for the task and nothing is granted; the case goes on. Bounded like listed approvals (40, counted apart; the
+41st ends it "too many declined approvals"), and counted in the row as `q_declined` (a new appended Migrate step), never
+as required or other. Still refused, ending the case: a question the gate did not sign (gate integrity, not a person's
+no), any approval on an arm without the expert, and any approval in a case that expects to stop at the gate (its
+`stopped_at_approval` grader measures that stop). Tests: `internal/eval/loop_test.go`
+(`TestAnUnlistedApprovalIsDeclinedAndTheCaseGoesOn`, `TestDeclinedApprovalsAreBounded`,
+`TestACaseThatExpectsTheGateStillEndsThere`), `internal/eval/fromworker_test.go`
+(`TestTheDeclinedColumnMigratesAnExistingDatabase`).
+
+### A Docker blip read as "this address is not a desktop's", and a desktop's task failed on a 403
+
+Found live (2026-11-11, decurix-dev, freeze 2.4, ERPNext bill 10, load 34-38): Docker stopped answering the control
+plane for seconds at a time (`_ping deadline exceeded`; `use of closed network connection`), and a worker's model call
+through `/api/llm/...` was answered 403 "this address is not a desktop's". The worker rightly took a 403 as final
+("a step failed in a way retrying cannot fix") and the task failed. Cause: `fetchCallers` turned a failed
+`ContainerList` into an empty map, stored as a fresh answer, so `DesktopAt` could not tell "Docker said no desktop has
+this address" from "Docker could not be asked". Now `Manager.CallerAt` returns `desktop.ErrCallersUnread` for the
+second, and `GuardPrimary` answers it 503 "the desktop list could not be read; try again" with `Retry-After: 5`; only
+Docker's own answer that no desktop has the address is 403. Rule chosen: a failed question keeps the last map Docker
+gave with its own read time and generation, and that map still names a desktop it held only while it is younger than
+`callerTTL` (15 s) and of the current desktop list - exactly the trust a known address already had with Docker up, so
+nothing is let in that was not before; an address the last map did not hold, a map past `callerTTL`, or a desktop made
+or removed here since, is 503 (never served). A longer stale window (60 s) was rejected: it would trust an address that
+Docker may have handed to another container. No worker change was needed: soul's providers already treat 503 as
+transient (`llm.Transient`; the OpenAI provider asks again three times honouring Retry-After, then the operator's turn
+loop up to 8 tries over minutes), Python's `llm_client` retries 503 within 240 s, and 403 is never retried. Tests:
+`internal/desktop/netview_test.go` (`TestCallerAtTellsUnreadFromStranger`), `internal/httpapi/guard_test.go`
+(`TestGuardAnswersAnUnreadDesktopListWithTryAgain`), `agent/thebot/internal/llm/retry_test.go`
+(`TestTheControlPlanesTryAgainIsAskedAgainItsRefusalIsNot`, pins behaviour that already held).
+
+### A link from an unsaved form to the list was read back as the bill's save
+
+Found live (2026-11-11, ERPNext, bill 10 retry, freeze 2.4). On an unsaved bill's form the worker clicked the
+breadcrumb link "Purchase Invoice"; the page went to the list (".../purchase-invoice?bill_no=..."), and the step said
+"Record SC/TAX/26-27/104: saved; the page now shows 0 of 3 declared value(s)" for a bill ERPNext never had. The
+trigger was `core._saved`: the list's button "Saved Filters" appeared, and a control's label was read as the page's
+answer. `_became_a_record` was as loose: it took the last "/"-part of the whole address, so a list whose query string
+holds "/" and digits ("?bill_no=SC/TAX/26-27/104") passed for a record's page. Now: a saved answer is looked for only in
+what the page said, never in a named control's label (`_NAMED_CONTROL`), and never after a click on a link that names
+no save (`_link_press`); a move to a record's page counts only after a press that may save (`_commit_press`: Save/
+Submit, Ctrl+S, Enter, a non-link control named for keeping a record) and only when the path's last part changed from
+the new-record marker to an id with the same origin and parent (`_new_to_record`; a query or a list is never a record
+page); and `records.readback` refuses a page that shows none of the record's values, its key or its lines ("NOT
+saved", saved_at untouched). The pending-save look obeys the same rules. Tests: `agent/tests/test_async_save_seen.py`
+(`ANavigationIsNoSave`).
+
+### "Finish the quickest sure way" invited a worker to go around the boundary when time ran short
+
+Freeze 2.4: the time note told a worker with little time left to "finish the quickest way the request allows". Under
+that pressure a worker may reach for what is quicker than the screen: another user, a process's socket, an app's own
+API around its window. The OS refuses these (docs/gate-boundary.md), but trying them is already the wrong behaviour,
+and a refused probe gave the person no sign. Now the note says to finish with the worker's own tools, or to stop and
+report what is left, and names what never to do. The operator's contract says the same as a standing rule. And a
+tripwire in soul (`skills/boundary.go`, outside the frozen guard) catches the clearest attempts: another user,
+attaching to a process or reading `/proc/<pid>/environ|mem|fd`, a unix socket driven by hand, the gate's or broker's
+folder or the agent token, a desktop service's loopback port, the browser's debugging flags. Such a command is not run,
+and the task ends failed as a "boundary attempt", with the command shown to the person. Each rule names a mechanism of
+the desktop itself; the text a `gui type` types is left out first. Tests: `boundary_test.go`,
+`operator_time_test.go` (`TheOperatorIsToldOnce`).
+
 ### A narrowing of a frozen rule let piped code run through a named module
 
 O-1.a.6 stopped holding a pipe into Python when its module option named a module, on the premise that the pipe is
@@ -898,3 +983,76 @@ then only that module's data. It is not: some standard-library modules (the inte
 the debugger) read and run Python source from standard input, so arbitrary piped code ran unheld. The owner reverted
 the narrowing on 2026-11-11: any leading option on a piped interpreter is held again (`TestPipedInterpreterHoldsAnyNamedModule`).
 A narrowing of a frozen rule must be checked against every way the named program can still read code from the pipe.
+
+### Freeze 2's fixes for practice loosened what is withheld and what is asked (review of freeze 2, 2026-11-11)
+
+A read-only audit of the freeze-2 commits found exemptions that each fixed one live case by loosening a rule for
+everyone. Each is reversed, or narrowed to what structure proves, with a test that fails on the old code:
+
+- **Secrets (A1-A3).** A plain word running on after "password:" was taken for an instruction, so "password: letmein
+  then press login" was kept. A hyphenated passphrase lost its value's shape. A reply of more than five words to a
+  question naming a secret was not swept, so "the OTP is 552901, go ahead" was kept. All three now over-withhold again
+  (`privacy.py`, `withhold.go`, `marked.go`, soul `memory/secrets.go`). A lesson stays readable through structure
+  instead: the desktop is told a reply is secret only by the person's mark or a question asked for a secret, and a
+  reply to the learner's own read-back is never marked for the words the records withhold
+  (`tasks.Store.MarksSecret`).
+- **The gate (A5-A7).** A button whose label read like "opens a new record" passed ("Create Payment Order" in an app
+  that submits by script). A link counted as a step into a page when that page was itself the act ("Proceed to pay",
+  "Continue with purchase"). A link with a click handler or `data-method` counted as navigation. A form holding an OTP
+  the person gave counted as a sign-in. Now:
+  - a button is judged by its label, and "create ... payment" commits;
+  - only a step into a checkout or a filing's page is exempt (`STEP_INTO_PAGE`);
+  - a link counts as navigation only with no inline handler, no request-sending attribute and no press listener
+    anywhere from the control up to the window (`cdp.link_target`);
+  - a form that may hold one of the person's secrets for this task is an authorisation, not a sign-in.
+- **Questions (A8, A10).** An engine question asking to press a held control was answered locally even when it also
+  carried a figure or a doubt; now only a bare "may I press X" is. A series that skipped more than three numbers was
+  treated as no series, and nothing was asked. Now any hole is asked about, naming the first five and counting the
+  rest.
+- **Backing (A11, A12).**
+  - Only the entry a pick took backs its value, not every entry the list offered.
+  - A wrapped table cell is held to one region of the text, and to lines next to each other, never to a span of
+    characters.
+  - An "(empty)" place is proved only by a row whose cells the text marks.
+  - A folder the request names gives only its own top-level files, and a document of another period is never this
+    run's.
+  - A kept answer with no party never backs a pick made for a party.
+- **No coupling (B).** The harness held the eval expert's exact "can't check" sentence. That reply is now read like
+  any other. Product and case names in harness comments now describe the shape of the case, not the instance.
+
+Tests:
+- `test_lesson_reply_not_secret.py`, `withhold_test.go`, `withhold_reply_test.go` (`OnlyStructureMarksALessonReplySecret`)
+  and `secrets_test.go`;
+- `test_gate_false_asks.py`;
+- `test_keyed_press_and_holds.py` and `test_series_gaps.py`;
+- `test_filler_list_pick.py`, `test_wrapped_cells.py`, `test_empty_list_item.py`,
+  `test_pick_backed_by_request_folder.py` and `test_pick_confirmation.py`;
+- `test_not_confirmed_reply.py`.
+
+## A party check that read "record only" as a party (2026-11-11)
+
+Freeze 2.5's A12 fix stopped an answer kept before answers carried their party from backing any pick "made for a
+party". But a record whose form names no party is given the stand-in party `record:...` (records.picks), so the check
+also refused such a row for every record with no party at all, and a person's kept field answer ("cost centre:
+General") was asked again on every bill. Fix: the A12 skip applies only to a real party, never to a `record:` stand-in
+(records._kept_answer). Caught by two older tests (round 11/12) in the full Python suite, not by A12's own test.
+Lesson: a sentinel value standing for "none" must be tested on every truthiness check that a new rule adds.
+
+## The installer left WSL and virtualization to the person (2026-11-11)
+
+On a customer's PC the person had to install WSL and turn virtualization on by hand: the installer only copied files,
+and turning WSL on was left to the app's first start, behind prompts and restarts the person had to work through. Fix: the installer runs
+`wsl/prepare-windows.ps1` (features, WSL from GitHub, the boot setting), offers the reboot on its finish page, and
+explains the one thing Windows cannot do - virtualization off in the firmware. Traps found writing it:
+- The NSIS installer is 32-bit, so `$SYSDIR\...\powershell.exe` is the 32-bit one, whose `dism.exe` refuses a 64-bit
+  Windows and which has no `wsl.exe`: start `Sysnative`'s, and the script relaunches itself 64-bit as well.
+- `Write-Output` inside a PowerShell function is part of the function's return value: a logged line would have
+  turned an exit code into an array (caught in review). Log with `[Console]::Out.WriteLine`.
+- Windows PowerShell 5.1's `ConvertFrom-Json` hands a JSON array on as one item; `@(... | ConvertFrom-Json)` makes
+  that one item a one-element array. Assign it, then `foreach`.
+- A bit-coded exit code needs a base: PowerShell exits 1 for a script it will not run (an execution policy set by
+  Group Policy overrides `-ExecutionPolicy Bypass`), and 1 was "restart needed". The answer is now 100 plus bits.
+- Changing a boot setting (`bcdedit`) on a BitLocker drive can make the next start ask for the recovery key: pause it
+  for one restart first (`Suspend-BitLocker -RebootCount 1`, or `manage-bde -protectors -disable`).
+- `Win32_Processor.VirtualizationFirmwareEnabled` and `VMMonitorModeExtensions` read false while a hypervisor runs
+  (it hides them): they mean "off in the firmware" only when `Win32_ComputerSystem.HypervisorPresent` is false.

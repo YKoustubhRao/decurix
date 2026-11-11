@@ -201,6 +201,10 @@ def _run(skill, params=None, start=1, source_files=None):
     if count:
         absent = {name for row in (skills.repeated_rows(skill) or {"rows": []})["rows"][count:] for name in row}
 
+    left = _left_to_app(skill, values, start, absent)
+    if left:
+        log(f"skill_engine: {skill['name']} leaves {', '.join(left)} as the application fills it in (the person's decision)")
+
     missing = [p for p in skills.needed_from(skill, start) if not values.get(p["name"]) and p["name"] not in absent]
     if missing:
         # Given, and empty: this run has nothing to put there (a document that leaves a field out). That is not a
@@ -276,6 +280,36 @@ def _run(skill, params=None, start=1, source_files=None):
         _note_stopped(key, int(at), result["outcome"])
 
     return result
+
+
+def _left_to_app(skill, values, start, absent=()):
+    """
+    Each value this run lacks (not given, or given empty) that the person decided to leave as the application fills it
+    in - in this task's run of the skill (the run skill_task handed over, guidance.run_left, its judgement read on the
+    control plane) or for this skill on an earlier run (kept there) - set to EMPTY_ITEM in `values`, so skills.expand
+    leaves out the steps that would enter it (skill_task "Left to the application", owner's ruling 2026-11-11). Found
+    live (2026-11-11, a web ERP's bill): the plan said the due date was left to the application, and `gui do` refused
+    the run without it ("it needs due_date") and with it empty ("a replay cannot leave a field out"). The labels left.
+    """
+
+    from decurix_agent import guidance, person_record
+    handed = guidance.run_left(skill.get("name"))
+    task_id = task_context.current()
+    left = []
+    for param in skills.needed_from(skill, start):
+        name = param["name"]
+        if values.get(name) or name in absent or not skills.may_leave(skill, param):
+            continue
+        label = skills.field_label(skill, param)
+        try:
+            decided = person_record.left_decision(skill.get("name"), name, label, task_id=task_id,
+                                                  judgement=handed.get(name, ""))
+        except Exception:  # noqa: BLE001 - what cannot be read decides nothing: the run asks for the value, as before
+            decided = ""
+        if decided:
+            values[name] = skills.EMPTY_ITEM
+            left.append(label)
+    return left
 
 
 # Outside any task, what was replayed counts for this long (a run from the shell, a test, an engine with no task):

@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"strings"
@@ -167,6 +168,68 @@ func TestDesktopAtFollowsTheDesktopList(t *testing.T) {
 	m.invalidateList()
 	if id, _ := m.DesktopAt(context.Background(), netip.MustParseAddr("172.18.0.5")); id != "box-b" {
 		t.Fatalf("after a desktop change the old owner was kept: %q", id)
+	}
+}
+
+// Found live (2026-11-11): Docker did not answer for a few seconds under load, the map read as empty, and a desktop's
+// model call was refused as no desktop's - final to its worker, so the task failed. A failed question is "unread"
+// (ErrCallersUnread, try again), never "no desktop"; the last map Docker gave still names a desktop it held while it
+// is younger than callerTTL and of this desktop list, and never an address it did not hold.
+func TestCallerAtTellsUnreadFromStranger(t *testing.T) {
+	desk, other := netip.MustParseAddr("172.18.0.5"), netip.MustParseAddr("172.18.0.9")
+	var dockerDown atomic.Bool
+	m := &Manager{}
+	m.callers.list = func(context.Context) (map[netip.Addr]string, error) {
+		if dockerDown.Load() {
+			return nil, errors.New("read unix /var/run/docker.sock: use of closed network connection")
+		}
+		return map[netip.Addr]string{desk: "box-a"}, nil
+	}
+	ctx := context.Background()
+	age := func(fetched, mapRead time.Duration) {
+		m.callers.byAddr.mu.Lock()
+		m.callers.byAddr.at = time.Now().Add(-fetched)
+		m.callers.byAddr.val.at = time.Now().Add(-mapRead)
+		m.callers.byAddr.mu.Unlock()
+	}
+	check := func(what string, addr netip.Addr, wantID string, wantErr error) {
+		t.Helper()
+		id, found, err := m.CallerAt(ctx, addr)
+		if id != wantID || found != (wantID != "") || !errors.Is(err, wantErr) || (wantErr == nil) != (err == nil) {
+			t.Errorf("%s: got %q %v %v, want %q %v", what, id, found, err, wantID, wantErr)
+		}
+	}
+
+	check("Docker answering, the desktop", desk, "box-a", nil)
+	check("Docker answering, a stranger", other, "", nil)
+
+	dockerDown.Store(true)
+	age(callerRefreshEvery+time.Second, callerRefreshEvery+time.Second)
+	check("Docker down, a stranger", other, "", ErrCallersUnread)
+	check("Docker down, the desktop in a map younger than callerTTL", desk, "box-a", nil)
+
+	age(callerTTL+time.Second, callerTTL+time.Second)
+	check("Docker down, the desktop in a map past callerTTL", desk, "", ErrCallersUnread)
+	check("Docker down, a stranger, map past callerTTL", other, "", ErrCallersUnread)
+
+	dockerDown.Store(false)
+	age(callerTTL+time.Second, callerTTL+time.Second)
+	check("Docker back, the desktop", desk, "box-a", nil)
+	check("Docker back, a stranger", other, "", nil)
+
+	// A desktop made or removed here while Docker is down: the last map is of another desktop list and names no one.
+	dockerDown.Store(true)
+	m.invalidateList()
+	check("Docker down after a desktop change", desk, "", ErrCallersUnread)
+
+	// Docker down from the very first question.
+	fresh := &Manager{}
+	fresh.callers.list = func(context.Context) (map[netip.Addr]string, error) { return nil, errors.New("deadline exceeded") }
+	if _, found, err := fresh.CallerAt(ctx, desk); found || !errors.Is(err, ErrCallersUnread) {
+		t.Errorf("Docker never answered: found %v, err %v, want ErrCallersUnread", found, err)
+	}
+	if _, ok := fresh.DesktopAt(ctx, desk); ok {
+		t.Error("DesktopAt let in a caller Docker never placed")
 	}
 }
 

@@ -200,10 +200,12 @@ def fill_lists(skill, params, context, files, rules=""):
 def left_blank(label, text):
     """
     Whether a document shows a field's place with nothing in it: the label's most telling word (the one on the fewest of
-    the document's lines - "CGST" of "CGST amount", not "amount") stands on at least one line, and no line holding it
-    holds a figure besides a rate written as a percentage ("CGST @ 9% |" with an empty amount cell). Decided by
+    the document's lines - "CGST" of "CGST amount", not "amount") stands on at least one line, every line holding it is
+    a table row whose cells the text marks ("|" or a tab between them), and no cell of such a row after the word's own
+    holds a figure besides a rate written as a percentage ("| CGST @ 9% | |": an empty amount cell). Decided by
     structure, never by which words a field may have. Found live (2026-11-09): an inter-state bill's empty CGST and SGST
-    rows sent a whole month of vouchers to the model by hand.
+    rows sent a whole month of vouchers to the model by hand. A line whose cells the text does not mark is no proof of
+    an empty place, and the value is left to be read (review of freeze 2, A11).
     """
 
     lines = (text or "").splitlines()
@@ -219,12 +221,26 @@ def left_blank(label, text):
     # The rarest word, and every word as rare (a tie is not settled by which comes first: "CGST" and "amount" on one
     # line each, the "amount" line a sentence of words, must not stand for the CGST row's figure).
     fewest = min(len(ls) for _w, _p, ls in found)
-    for _word, pattern, held in found:
-        if len(held) != fewest:
-            continue
+
+    def row_cells(line):
+        cells = re.split(r"[ \t]*[|\t][ \t]*", line.strip(" "))
+        return cells if len(cells) >= 2 else None
+
+    # The rarest words whose every line is a row with marked cells: the field's place in a table. A rarest word that
+    # stands in a sentence (a total's "amount in words") is no place of the field.
+    placed = [(pattern, held) for _w, pattern, held in found
+              if len(held) == fewest and all(row_cells(line) for line in held)]
+    if not placed:
+        return False  # no structured read of the field's place: not proved empty
+    for pattern, held in placed:
         for line in held:
-            rest = re.sub(r"\d+(?:\.\d+)?\s*%", " ", pattern.sub(" ", line))
-            if re.search(r"\d", rest):
+            cells = row_cells(line)
+            at = next(i for i, cell in enumerate(cells) if pattern.search(cell))
+            if at == len(cells) - 1:
+                return False  # the word's cell is the row's last: no place after it to be empty
+            after = " ".join(cells[at + 1:])
+            own = pattern.sub(" ", cells[at])
+            if re.search(r"\d", re.sub(r"\d+(?:\.\d+)?\s*%", " ", after + " " + own)):
                 return False
     return True
 
@@ -617,7 +633,7 @@ def held_by(value, texts):
         return True
     if date_in(value, texts):
         return True
-    return wrapped_in(plain, joined)
+    return wrapped_in(plain, texts)
 
 
 DATE_ORDERS = ("day", "month")
@@ -652,34 +668,58 @@ def date_in(value, texts):
     return next(iter(found.values())) if len(found) == 1 else ""
 
 
-# How far apart a wrapped value's words may stand: its own length this many times, plus the slack below. A table cell
-# wrapped over four lines, with the row's other columns read in between, spans about three times its own length.
-WRAP_SPAN, WRAP_SLACK = 4, 120
+# How many lines of a wrapped cell's row may stand between two lines of the cell: the row's other columns, read in
+# between as a PDF lays the row out.
+WRAP_LINES_BETWEEN = 1
 
 
-def wrapped_in(plain, joined):
+def wrapped_in(plain, texts):
     """
-    Whether a value of several words stands in a text as a table cell wrapped over lines does: each of its words, whole
-    and in order, within WRAP_SPAN times its length (+ WRAP_SLACK) of the first. Found live (2026-11-08): a bill's item
+    Whether a value of several words stands in a text as one table cell wrapped over lines does: each of its words,
+    whole and in order, within one region of the text (lines with no blank line between: a row as the reader lays it
+    out), each line of the cell at most WRAP_LINES_BETWEEN lines after the last. Found live (2026-11-08): a bill's item
     "Executive A4 Printing Paper 75 GSM (Box of 10 Reams)" is read from its PDF as "Executive A4 / Printing Paper 75 /
-    1 4802 20 Reams 350.00 7,000.00 / GSM (Box of 10 / Reams)" - the row's other columns between the lines of the cell.
-    Held whole by nothing, every bill's item was dropped from the fill, and the model entered every bill by hand.
+    1 4802 20 Reams 350.00 7,000.00 / GSM (Box of 10 / Reams)" - the row's other columns between the lines of the
+    cell. Bound to the region and its lines, never to a count of characters (review of freeze 2, A11: a span of
+    characters tuned to one PDF let words of two rows stand for one value).
     """
 
-    words = re.findall(r"\w+", plain)
+    words = re.findall(r"\w+", str(plain or "").casefold())
     if len(words) < 2:
         return False
-    limit = WRAP_SPAN * len(plain) + WRAP_SLACK
-    first = re.compile(r"(?<!\w)" + re.escape(words[0]) + r"(?!\w)")
-    for start in first.finditer(joined):
-        at, end = start.end(), start.start() + limit
-        for word in words[1:]:
-            found = re.compile(r"(?<!\w)" + re.escape(word) + r"(?!\w)").search(joined, at, end)
-            if found is None:
-                break
-            at = found.end()
-        else:
-            return True
+    patterns = [re.compile(r"(?<!\w)" + re.escape(w) + r"(?!\w)") for w in words]
+    for text in texts:
+        for region in re.split(r"\n[ \t]*\n", str(text or "").casefold()):
+            lines = region.split("\n")
+            if _cell_in(lines, patterns):
+                return True
+    return False
+
+
+def _cell_in(lines, patterns):
+    """Whether the words (patterns) stand in order in these lines of one region as a cell's lines do: each next word
+    straight after its word on the same line (nothing but spaces and marks between), or on a later line at most
+    WRAP_LINES_BETWEEN lines after it, where the cell goes on."""
+
+    for row, line in enumerate(lines):
+        for first in patterns[0].finditer(line):
+            at_row, at = row, first.end()
+            for pattern in patterns[1:]:
+                found = None
+                m = pattern.search(lines[at_row], at)
+                if m and not re.search(r"\w", lines[at_row][at:m.start()]):
+                    found = (at_row, m.end())
+                else:
+                    for r in range(at_row + 1, min(len(lines), at_row + WRAP_LINES_BETWEEN + 2)):
+                        m = pattern.search(lines[r])
+                        if m:
+                            found = (r, m.end())
+                            break
+                if found is None:
+                    break
+                at_row, at = found
+            else:
+                return True
     return False
 
 

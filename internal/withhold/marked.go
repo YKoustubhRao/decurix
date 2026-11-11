@@ -14,7 +14,7 @@ import (
 //   - the message whole (HeldValues of it withheld as Secret: as typed and with its spaces folded, and the secrets its
 //     structure spells out), and the message without the block of files it brings, its spaces folded;
 //   - each of its words that has a value's shape: 4 or more code points, with a digit or a punctuation or symbol
-//     character in it, the characters .,;:!?"'()[]{} at its ends aside, and not words of letters joined by hyphens;
+//     character in it, the characters .,;:!?"'()[]{} at its ends aside (a hyphen is a mark: "correct-horse-battery");
 //   - but not a word that is data by its structure: an amount or a number, a date, a time, an e-mail address, a URL,
 //     a host name, a contraction, one figure over another (a ratio).
 //
@@ -64,10 +64,10 @@ func withoutFiles(text string) string {
 }
 
 // valueShaped reports whether a word has a value's shape: 4 or more code points, with a digit, a punctuation or a
-// symbol character in it - but not words of letters joined by hyphens ("tax-inclusive", "made-up"): a hyphen alone
-// gives no word a value's shape (found live 2026-11-10; agent privacy._value_shaped).
+// symbol character in it. A hyphen is a mark: a passphrase of hyphenated words is a value (review of freeze 2, A2;
+// agent privacy._value_shaped).
 func valueShaped(word string) bool {
-	if utf8.RuneCountInString(word) < 4 || letterWords.MatchString(word) {
+	if utf8.RuneCountInString(word) < 4 {
 		return false
 	}
 	for _, r := range word {
@@ -86,8 +86,6 @@ var (
 	contraction = regexp.MustCompile(`^\pL+['\x{2019}]\pL+$`)
 	// ratioWord is one figure over another: a rate or a share ("100/118").
 	ratioWord = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?/[0-9]+(?:\.[0-9]+)?$`)
-	// letterWords is words of letters joined by hyphens.
-	letterWords = regexp.MustCompile(`^\pL+(?:-\pL+)+$`)
 )
 
 // isData reports whether a value-shaped word is data by its structure, as the agent reads it (privacy._is_data).

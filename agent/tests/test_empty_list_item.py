@@ -31,6 +31,13 @@ class ADocumentThatLeavesAFieldEmpty(unittest.TestCase):
     def test_a_field_the_document_has_no_place_for_is_not_empty(self):
         self.assertFalse(binding.left_blank("Cess amount", INTRA))
 
+    def test_only_a_row_with_marked_cells_proves_an_empty_place(self):
+        # Review of freeze 2 (A11): a line whose cells the text does not mark is no proof - the value is read.
+        laid_out = INTER.replace(" | ", "   ").replace(" |", "")
+        self.assertFalse(binding.left_blank("CGST amount", laid_out))
+        self.assertFalse(binding.left_blank("CGST", "| Tax | CGST @ 9%"))  # no cell after the word's own
+        self.assertTrue(binding.left_blank("CGST", "| CGST @ 9% | |"))
+
 
 def voucher_skill():
     steps = [{"n": 1, "id": "s1", "kind": "type", "param": "number", "target": {"role": "textbox", "name": "Voucher No."}},
