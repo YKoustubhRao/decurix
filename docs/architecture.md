@@ -103,6 +103,13 @@ internal/sqlitedb  — opens the one embedded SQLite database (modernc.org/sqlit
 internal/querynotes — queries submitted by agents (SQLite). A note is resolved, never deleted: List is the open
                       ones (the rail, the badge, the Queries tab), ListResolved the history
 internal/memory    — worker-memory entries (SQLite); deleted with the desktop they were learned on (DeleteForDesktop)
+internal/delivery  — what crosses between the control plane and a desktop, kept across a restart (after
+                      agent-orchestrator's detached hosts). Sending: a request is written down (as the records would
+                      keep it, withheld) before it is sent and removed once tasks hold it; one left by a crash is
+                      settled at the next start by asking its desktop (agent GET /requests/<task>?since=, receipts.py):
+                      recorded, dropped with "send it again", or kept unconfirmed so its late outcome is accepted
+                      (httpapi/deliveries.go, ReconcileDeliveries). Applied events: a desktop's message carries an
+                      event_id and is resent until acknowledged; one id is applied once (Store.Apply)
 internal/conversation — per-desktop chat transcript: the requests and replies a human and a
                       desktop's agent exchanged (each tagged with its task ID and the
                       human's verdict), plus the live steps of the turn running right

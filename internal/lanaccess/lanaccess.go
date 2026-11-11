@@ -94,6 +94,10 @@ type Store struct {
 
 	mu       sync.Mutex
 	password string
+	// retired are the codes Rotate replaced lately, newest last: one typed again (an old link, a phone that kept it)
+	// grants nothing but is not counted against the lockout, so a stale phone retrying behind the tunnel - where every
+	// visitor shares one source - cannot lock the person out (after agent-orchestrator's retired-password rule).
+	retired  []string
 	sessions map[string]time.Time
 	devices  DeviceRegistry
 	// open are paths served without the gate: each one checks a token of
@@ -207,10 +211,31 @@ func (s *Store) Rotate() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.retired = append(s.retired, s.password)
+	if len(s.retired) > maxRetired {
+		s.retired = s.retired[len(s.retired)-maxRetired:]
+	}
 	s.password = generatePassword()
 	s.sessions = make(map[string]time.Time)
 
 	return s.password
+}
+
+// maxRetired is how many replaced codes are remembered (retired).
+const maxRetired = 3
+
+// isRetired reports whether code is one Rotate replaced lately.
+func (s *Store) isRetired(code string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	retired := false
+	for _, old := range s.retired {
+		// Every one is compared, in constant time, so the answer's timing says nothing about which.
+		if subtle.ConstantTimeCompare([]byte(code), []byte(old)) == 1 {
+			retired = true
+		}
+	}
+	return retired
 }
 
 // RunAutoRotate calls Rotate every interval until ctx is done - the timed
@@ -473,6 +498,10 @@ func (s *Store) verify(code, key string) (ok bool, status int, errMsg string) {
 	}
 
 	if code == "" || subtle.ConstantTimeCompare([]byte(code), []byte(s.Password())) != 1 {
+		// A code that was right until it was replaced is not a guess: it grants nothing and costs no attempt.
+		if code != "" && s.isRetired(code) {
+			return false, http.StatusOK, "That code was replaced with a new one. Ask for the new code."
+		}
 		s.recordFailure(key)
 
 		// Report the lockout immediately on the failure that triggers it,

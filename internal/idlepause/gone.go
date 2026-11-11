@@ -38,6 +38,15 @@ type GoneTasks interface {
 // (FALSE-DONE item D).
 var ownWorkerProfiles = map[string]bool{"practice": true, "offline-artifacts": true}
 
+// massGoneMin is the fewest desktops read as gone in one pass that can trip the breaker (massGone).
+const massGoneMin = 3
+
+// massGone reports whether gone of asked desktops reading as gone at once is too many to believe: at least
+// massGoneMin, and more than half.
+func massGone(gone, asked int) bool {
+	return gone >= massGoneMin && gone*2 > asked
+}
+
 // CloseGoneAtStart ends the live tasks of every worker whose desktop container is gone, practice and readiness
 // workers included: at start-up nothing of theirs is still running (main cleans up their containers first). store is
 // the tasks store; a store without LiveWorkers leaves this undone, and says so.
@@ -59,14 +68,38 @@ func closeGone(ctx context.Context, desktops DesktopGone, store any, all bool) {
 		log.Printf("idlepause: listing workers with live tasks: %v", err)
 		return
 	}
+	var own, desktopsGone []string
+	asked := 0
 	for _, id := range live {
-		if w, known := t.Worker(id); known && !all && ownWorkerProfiles[w.Profile] {
+		w, known := t.Worker(id)
+		mine := known && ownWorkerProfiles[w.Profile]
+		if mine && !all {
 			continue
 		}
 		gone, err := desktops.Gone(ctx, id)
-		if err != nil || !gone {
+		if err != nil {
 			continue
 		}
+		if mine {
+			if gone {
+				own = append(own, id)
+			}
+			continue
+		}
+		asked++
+		if gone {
+			desktopsGone = append(desktopsGone, id)
+		}
+	}
+	// Many desktops read as gone in one pass is far likelier to be Docker answering for the wrong daemon (another
+	// engine took the socket) or a half-up daemon than that many deletions behind the control plane's back: their tasks
+	// stay open, and the next pass asks again (a mass-death breaker, after agent-orchestrator's reaper).
+	if massGone(len(desktopsGone), asked) {
+		log.Printf("idlepause: %d of %d desktops with live tasks read as gone at once; that looks like Docker answering "+
+			"for another engine or an outage, not that many deletions, so their tasks stay open", len(desktopsGone), asked)
+		desktopsGone = nil
+	}
+	for _, id := range append(own, desktopsGone...) {
 		if err := t.CloseOpen(id, goneWhy); err != nil {
 			log.Printf("idlepause: closing the tasks of gone desktop %s: %v", id, err)
 			continue

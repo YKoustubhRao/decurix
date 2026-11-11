@@ -76,3 +76,23 @@ func TestAnIdleSweepLeavesTheControlPlanesOwnWorkers(t *testing.T) {
 func TestAStoreThatCannotListLiveWorkersClosesNothing(t *testing.T) {
 	CloseGoneAtStart(context.Background(), fakeGone{gone: map[string]bool{"x": true}}, &fakeTasks{})
 }
+
+// TestManyGoneAtOnceClosesNothing: most of the fleet reading as gone in one pass is Docker answering for another engine
+// (or half up), not that many deletions: the desktops' tasks stay open. The control plane's own workers are still closed
+// at start-up, and a few gone among many present still are.
+func TestManyGoneAtOnceClosesNothing(t *testing.T) {
+	workers := map[string]tasks.Worker{"practice-1": {ID: "practice-1", Profile: "practice"}}
+	all := fakeGone{gone: map[string]bool{"a": true, "b": true, "c": true, "practice-1": true}}
+	store := &fakeLive{live: []string{"a", "b", "c", "d", "practice-1"}, workers: workers}
+	CloseGoneAtStart(context.Background(), all, store)
+	if len(store.closed) != 1 || store.closed[0] != "practice-1" {
+		t.Fatalf("closed %v, want only the practice worker", store.closed)
+	}
+
+	few := fakeGone{gone: map[string]bool{"a": true, "b": true, "c": true}}
+	big := &fakeLive{live: []string{"a", "b", "c", "d", "e", "f", "g"}}
+	CloseGoneAtStart(context.Background(), few, big)
+	if len(big.closed) != 3 {
+		t.Fatalf("closed %v, want the three gone of seven", big.closed)
+	}
+}

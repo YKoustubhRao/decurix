@@ -17,11 +17,13 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/access"
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/dag"
+	"github.com/YKoustubhRao/decurix/internal/delivery"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
 	"github.com/YKoustubhRao/decurix/internal/grounder"
@@ -54,6 +56,8 @@ import (
 type Server struct {
 	// finished is the last few tasks that ended done, for the pages' notification (finished.go).
 	finished finishedFeed
+	// events tells the dashboard's open event streams which desktops changed (events.go).
+	events eventHub
 
 	Desktops   *desktop.Manager
 	QueryNotes *querynotes.Store
@@ -72,6 +76,13 @@ type Server struct {
 	Chat            *conversation.Store
 	StepImages      *stepimages.Store
 	Tasks           *tasks.Store
+	// Deliveries keeps a request written down while it is sent and a desktop's messages applied once
+	// (internal/delivery, deliveries.go). Assigned by cmd/decurix/main.go; nil keeps neither.
+	Deliveries *delivery.Store
+	// askReceivedFn stands in for asking a desktop whether it has a request (askReceived), in tests; nil asks.
+	askReceivedFn func(ctx context.Context, desktopID, taskID string, since time.Time) (received, known bool)
+	// bootingFn stands in for whether a desktop is still booting (booting), in tests; nil asks Docker.
+	bootingFn func(desktopID string) bool
 	// Qualification owns evidence and grants; desktop agents cannot write them.
 	Qualification     *qualification.Store
 	qualificationAuth qualificationAuth
@@ -341,6 +352,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)
 	mux.HandleFunc("/api/desktops/activity", s.activityHandler)
 	mux.HandleFunc("/api/desktops/overview", s.overviewHandler)
+	// Which desktops changed, as they change (events.go): the overview is fetched then, not only on its poll.
+	mux.HandleFunc("/api/events", s.eventsHandler)
 	mux.HandleFunc("/api/desktops/tasks", s.desktopTasksHandler)
 	mux.HandleFunc("/api/desktops/chat/clear", s.clearChatHandler)
 	mux.HandleFunc(stepImagePath, s.stepImageHandler)
@@ -430,6 +443,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 // pointless the moment someone else on that listener asked for it, so
 // cmd/decurix/main.go calls this only for the primary mux.
 func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
+	mux.HandleFunc(healthzPath, s.healthzHandler) // which binary answers, and whether it drains (healthz.go)
 	// Owner-session protected, primary only; never delegated to desktop agents.
 	mux.HandleFunc("/readiness/", s.readinessPageHandler)
 	mux.HandleFunc("/api/readiness/session", s.qualificationSessionHandler)

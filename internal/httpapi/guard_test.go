@@ -341,3 +341,20 @@ func TestNoNetworksKnownFailsClosedOnlyWhereThereIsNoLogin(t *testing.T) {
 		t.Errorf("the host on the gated listener: %d", got)
 	}
 }
+
+// TestADesktopReadsItsOwnWaitingTasks: an agent coming back from a restart asks which of its tasks wait on a person
+// (GET /api/agent/waiting); found live 2026-11-11 refused 403 to every desktop. It reads only its own, and cannot post.
+func TestADesktopReadsItsOwnWaitingTasks(t *testing.T) {
+	_, h := guardedServer(t)
+	const fromDesktop = "172.30.0.5:40000"
+	host := map[string]string{"Host": "127.0.0.1:8080"}
+	if got := guardDo(h, http.MethodGet, "/api/agent/waiting?desktop_id=box-a", fromDesktop, host); got.Code != http.StatusOK || got.Body.String() != "box-a" {
+		t.Fatalf("own waiting tasks: %d %q", got.Code, got.Body)
+	}
+	if got := guardDo(h, http.MethodGet, "/api/agent/waiting?desktop_id=box-b", fromDesktop, host); got.Code != http.StatusForbidden {
+		t.Fatalf("another desktop's: %d, want 403", got.Code)
+	}
+	if containerMayCall(http.MethodPost, "/api/agent/waiting") {
+		t.Fatal("a desktop may post to the waiting route")
+	}
+}

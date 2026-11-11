@@ -1056,3 +1056,17 @@ explains the one thing Windows cannot do - virtualization off in the firmware. T
   for one restart first (`Suspend-BitLocker -RebootCount 1`, or `manage-bde -protectors -disable`).
 - `Win32_Processor.VirtualizationFirmwareEnabled` and `VMMonitorModeExtensions` read false while a hypervisor runs
   (it hides them): they mean "off in the firmware" only when `Win32_ComputerSystem.HypervisorPresent` is false.
+
+## A restarted agent could not read which of its tasks wait on a person (found live 2026-11-11)
+
+- `GET /api/agent/waiting` (the agent's "which of my tasks wait on a person?", read after a restart) was never in the
+  callback allowlist (`httpapi/guard.go` `containerRoutes`), so every desktop got 403. The lost-question close of
+  2026-11-09 never ran on a real desktop, and soul's paused job kept on disk was never waited on again: the agent closed
+  the task as interrupted. Now read-only on the allowlist (`actingAs` keeps a desktop to its own tasks), and a task whose
+  paused job soul kept (`GET /api/paused`) is waited on again (`thebot_harness.resume_waiting`). Checked live: restart
+  with an approval pending, the agent waits again, a yes bound to its note is granted by the gate and the job resumes.
+  Lesson: a new desktop callback needs its allowlist entry and a test from a desktop's address, not only a handler test.
+- A bare `POST /api/desktops/send` "yes" never approves anything: a reply binds to the gate's request only with the
+  approval's `note_id` (its Approve button) or the chat's `seen_at` (`httpapi/gatereply.go` `replyBinding`). The gate
+  then logs "not an answer to a question of the gate's" and the run says "not approved. Your reply: yes". That is the
+  boundary working, not a bug: a scripted live check must send `note_id`.

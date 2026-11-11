@@ -402,3 +402,31 @@ func TestSanitizeNextStaysOnThisSite(t *testing.T) {
 		}
 	}
 }
+
+// TestRetiredCodeCostsNoAttempt: a phone retrying the code Rotate replaced is told so and grants nothing, but does not
+// lock the source out - behind the tunnel every visitor shares one, so it would lock the person out too.
+func TestRetiredCodeCostsNoAttempt(t *testing.T) {
+	store := NewStore()
+	old := store.Password()
+	store.Rotate()
+	srv := httptest.NewServer(store.Middleware(protectedHandler()))
+	defer srv.Close()
+
+	for i := 0; i < maxAttempts+2; i++ {
+		resp := login(t, srv, old, "/")
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d with the retired code locked the source out", i+1)
+		}
+		for _, c := range resp.Cookies() {
+			if c.Name == "decurix_lan_session" && c.Value != "" {
+				t.Fatal("the retired code granted a session")
+			}
+		}
+	}
+	resp := login(t, srv, store.Password(), "/")
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		t.Fatal("the current code was refused after retired-code retries")
+	}
+}

@@ -14,6 +14,8 @@ const { ensureLanForward } = require('./windows-lan');
 const windowsRuntime = require('./windows-runtime');
 const { createLocalModels } = require('./local-models');
 const { watchBuild, stalledMessage } = require('./build-watchdog');
+const { readHealth, nextRestart } = require('./stack-health');
+const versionFloor = require('./version-floor');
 
 // The app is a window on the control plane's dashboard, and what starts it.
 //
@@ -52,16 +54,21 @@ let mobileAccessPromise = null;
 // that one dies. Found by killing it under an open window: the window went on
 // showing a dashboard that no longer answered, with no word and no way back.
 // So it is asked every few seconds, and when it has not answered several
-// times in a row it is started again; one that keeps dying is left stopped,
-// with its last log line and a Retry.
+// times in a row it is started again, after a wait that doubles each time;
+// one that keeps dying is left stopped, with its last log line and a Retry
+// (stack-health.js: up to 6 restarts in 5 minutes, waiting 1 s up to 30 s).
+// It is asked with GET /healthz, which says which binary answered and whether
+// it is draining - an update replacing it, which is never counted as a death:
+// one seen draining has SWAP_GRACE_MS to come back before misses count.
 const WATCH_EVERY_MS = 5000;
 const LOST_AFTER_MISSES = 3;
-const MAX_RESTARTS = 3;
-const RESTART_WINDOW_MS = 10 * 60 * 1000;
+const SWAP_GRACE_MS = 2 * 60 * 1000;
 let showingDashboard = false;
 let watching = false;
 let misses = 0;
 let restarts = [];
+let drainSeenAt = 0;
+let lastHealth = '';
 
 function resource(name) {
   if (app.isPackaged) return path.join(process.resourcesPath, name);
@@ -309,16 +316,52 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// checkDashboard says what answers on 8080: 'ready' (a Decurix control plane),
+// 'draining' (one being replaced: an update), 'occupied' (another program) or
+// 'absent'. /healthz says it; a stack from before /healthz is known by the
+// favicon's marker.
 async function checkDashboard() {
-  const res = await getText(`${dashboard}/favicon.svg`, 2000, 20000);
+  const res = await getText(`${dashboard}/healthz`, 2000, 4096);
   if (!res) return 'absent';
-  return res.status === 200 && res.body.includes(marker) ? 'ready' : 'occupied';
+  const health = readHealth(res.status, res.body);
+  if (health) {
+    noteHealth(health);
+    return health.draining ? 'draining' : 'ready';
+  }
+  const icon = await getText(`${dashboard}/favicon.svg`, 2000, 20000);
+  if (!icon) return 'absent';
+  return icon.status === 200 && icon.body.includes(marker) ? 'ready' : 'occupied';
+}
+
+// noteHealth logs which control plane answers whenever that changes (another
+// version, a restart, a drain starting), so desktop.log says what ran when.
+function noteHealth(health) {
+  const said = `${health.version} pid ${health.pid}${health.draining ? ' draining' : ''}`;
+  if (said === lastHealth) return;
+  lastHealth = said;
+  logLine(health.draining
+    ? `Decurix ${health.version || '(unknown version)'} (pid ${health.pid}) is draining: it is being replaced`
+    : `Decurix ${health.version || '(unknown version)'} answers (pid ${health.pid}, started ${health.startedAt || 'unknown'})`);
+}
+
+// waitOutSwap waits while the control plane on 8080 drains and its successor
+// starts (up to SWAP_GRACE_MS), and returns what answers then.
+async function waitOutSwap() {
+  update('Decurix is being updated. Waiting for it to come back…');
+  let state = 'draining';
+  for (let waited = 0; waited < SWAP_GRACE_MS && !closing; waited += 1000) {
+    state = await checkDashboard();
+    if (state === 'ready' || state === 'occupied') return state;
+    await sleep(1000);
+  }
+  return state === 'draining' ? 'draining' : 'absent';
 }
 
 async function waitForDashboard(stopped) {
   for (let attempt = 0; attempt < 120 && !stopped(); attempt += 1) {
     const state = await checkDashboard();
     if (state === 'ready') return;
+    // 'draining': the control plane being replaced has not exited yet; its successor comes next, so wait on.
     if (state === 'occupied') throw new Error('Port 8080 is in use. Close the other server, then retry.');
     await sleep(1000);
   }
@@ -337,13 +380,18 @@ async function backendLost() {
   await window.loadFile(path.join(__dirname, 'loading.html'));
 
   const now = Date.now();
-  restarts = restarts.filter((at) => now - at < RESTART_WINDOW_MS);
-  if (restarts.length >= MAX_RESTARTS) {
+  const plan = nextRestart(restarts, now);
+  restarts = plan.kept;
+  if (!plan.allowed) {
     update(`Decurix keeps stopping. Check ${logFile()}`, true, detail);
     return;
   }
   restarts.push(now);
-  update('Decurix stopped. Starting it again…', false, detail);
+  const seconds = Math.round(plan.delayMs / 1000);
+  logLine(`Decurix stopped answering; starting it again in ${seconds} s (restart ${restarts.length} in the last 5 minutes)`);
+  update(`Decurix stopped. Starting it again${seconds > 1 ? ` in ${seconds} seconds` : ''}…`, false, detail);
+  await sleep(plan.delayMs);
+  if (closing || !window || window.isDestroyed()) return;
   start();
 }
 
@@ -356,7 +404,12 @@ function watchBackend() {
   setInterval(() => { if (!closing && showingDashboard) reportLanAddress(); }, LAN_REPORT_EVERY_MS);
   setInterval(async () => {
     if (closing || starting || !showingDashboard || !window || window.isDestroyed()) return;
-    if (await checkDashboard() === 'ready') { misses = 0; return; }
+    const state = await checkDashboard();
+    if (state === 'ready') { misses = 0; drainSeenAt = 0; return; }
+    // A drain is an update replacing the control plane, never a death: it, and
+    // the gap before its successor answers, are not counted.
+    if (state === 'draining') { misses = 0; drainSeenAt = Date.now(); return; }
+    if (drainSeenAt && Date.now() - drainSeenAt < SWAP_GRACE_MS) return;
     misses += 1;
     if (misses < LOST_AFTER_MISSES) return;
     misses = 0;
@@ -1178,7 +1231,11 @@ async function start() {
   starting = true;
   let refreshModels = false;
   try {
-    const state = await checkDashboard();
+    let state = await checkDashboard();
+    // Another start (a script, a second copy of the app) is replacing the control plane: wait for it rather than
+    // start one beside it.
+    if (state === 'draining') state = await waitOutSwap();
+    if (state === 'draining') throw new Error(`Decurix is still being updated. Retry in a moment. Check ${logFile()}`);
     if (state === 'occupied') throw new Error('Port 8080 is in use. Close the other server, then retry.');
     await selectWindowsRuntime();
     // A stack left running by an older build of the app answers too, and is
@@ -1323,8 +1380,68 @@ function openWindow() {
     logLine('The window stopped answering');
     reloadStartScreen();
   });
-  window.loadFile(path.join(__dirname, 'loading.html')).then(start);
+  // The version floor is read while the start screen loads; a retired build starts nothing.
+  const floor = checkVersionFloor();
+  window.loadFile(path.join(__dirname, 'loading.html')).then(() => floor).then((mayStart) => { if (mayStart) start(); });
   window.on('closed', () => { window = null; });
+}
+
+// The app's own version, '' when it cannot be told (then the floor lets it start).
+function appVersion() {
+  try { return typeof app.getVersion === 'function' ? String(app.getVersion() || '') : ''; } catch { return ''; }
+}
+
+// checkVersionFloor reads the version floor (version-floor.js) and resolves whether the app may start: false only for
+// a build below the floor's min, after the person chose Download (the page opens) or Quit - the app then quits. A
+// build below latest is told so once per latest version, and starts. Every failure starts the app (fail open).
+async function checkVersionFloor() {
+  const current = appVersion();
+  let floor;
+  try {
+    floor = await versionFloor.fetchFloor(versionFloor.FLOOR_URL, versionFloor.FLOOR_TIMEOUT_MS);
+  } catch (error) {
+    logLine(`Version floor not read (${error && error.message ? error.message : error}); starting`);
+    return true;
+  }
+  const decision = versionFloor.decide(current, floor);
+  if (decision.action === 'block') {
+    logLine(`This build (${current}) is below the version floor (${decision.min}); offering the download`);
+    try {
+      const options = { type: 'error', title: 'Decurix needs an update',
+        message: `This version of Decurix (${current}) can no longer be used.`,
+        detail: `Download the latest version${decision.latest ? ` (${decision.latest})` : ''} and install it over this one. Your workers and records are kept.`,
+        buttons: ['Download', 'Quit'], defaultId: 0, cancelId: 1, noLink: true };
+      const answer = window && !window.isDestroyed() ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+      if (answer && answer.response === 0) await shell.openExternal(decision.downloadUrl);
+    } catch (error) {
+      logLine(`The update dialog could not be shown: ${error.message}`);
+    }
+    closing = true;
+    app.quit();
+    return false;
+  }
+  if (decision.action === 'notice') noticeNewerVersion(current, decision);
+  return true;
+}
+
+// noticeNewerVersion tells the person a newer build exists, once per latest version (version-notice.json in the data
+// folder remembers which was dismissed). It never holds the start.
+function noticeNewerVersion(current, decision) {
+  const file = path.join(dataDir(), 'version-notice.json');
+  try { if (JSON.parse(fs.readFileSync(file, 'utf8')).dismissed === decision.latest) return; } catch { /* not told yet */ }
+  logLine(`A newer Decurix (${decision.latest}) is available; this is ${current}`);
+  const options = { type: 'info', title: 'Decurix', message: `A newer version of Decurix (${decision.latest}) is available.`,
+    detail: `You have ${current}. Download it and install it over this one; your workers and records are kept.`,
+    buttons: ['Download', 'Later'], defaultId: 1, cancelId: 1, noLink: true };
+  Promise.resolve()
+    .then(() => (window && !window.isDestroyed() ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options)))
+    .then((answer) => {
+      try { fs.mkdirSync(dataDir(), { recursive: true }); fs.writeFileSync(file, JSON.stringify({ dismissed: decision.latest }) + '\n', 'utf8'); }
+      catch { /* told again next time */ }
+      if (answer && answer.response === 0) return shell.openExternal(decision.downloadUrl);
+      return undefined;
+    })
+    .catch((error) => logLine(`The update notice could not be shown: ${error.message}`));
 }
 
 // Electron's own profile defaults to %APPDATA%\Decurix, which on Windows is

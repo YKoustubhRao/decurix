@@ -294,6 +294,13 @@ class Handler(BaseHTTPRequestHandler):
                 from decurix_agent.workflow_api import listing
                 return self._json(200, listing())
 
+            # Did a request for this task arrive since the control plane began sending it (receipts.py)? Asked after
+            # a restart cut a send short; null when this desktop cannot say.
+            if len(parts) == 2 and parts[0] == "requests":
+                from decurix_agent import receipts
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                return self._json(200, {"received": receipts.received(parts[1], (query.get("since") or [""])[0])})
+
             if parts == ["recordings"]:
                 return self._json(200, {"recordings": recording.sessions(), "demonstration": demonstration.status()})
 

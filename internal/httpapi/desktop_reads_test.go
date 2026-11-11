@@ -15,6 +15,7 @@ var desktopReads = map[string]string{
 	"/api/grounder/locate":     "binds the caller: answers about the screenshot the caller sent",
 	"/api/agent/events":        "binds the caller: actingAs",
 	"/api/querytext":           "binds the caller: actingAs",
+	"/api/agent/waiting":       "binds the caller: actingAs, only its own tasks waiting on a person",
 	"/api/desktops/memory":     "binds the caller: a desktop reads its own memory (requestDesktop)",
 	"/api/desktops/learned":    "binds the caller: only its own tasks, citing a person's judgement there (desktopLearnedHandler)",
 	"/api/desktops/judgements": "binds the caller: only its own tasks' judgements, a secret one's text never (desktopJudgementsHandler)",

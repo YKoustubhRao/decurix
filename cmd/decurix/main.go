@@ -30,6 +30,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/concierge"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/dag"
+	"github.com/YKoustubhRao/decurix/internal/delivery"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
 	"github.com/YKoustubhRao/decurix/internal/eval"
@@ -463,6 +464,7 @@ func main() {
 	server.RequirePurpose = os.Getenv("DECURIX_LLM_REQUIRE_PURPOSE") != "0"
 	server.SkillHub = must(skillhub.NewStore(db))
 	server.Knowledge = must(knowledge.NewStore(db))
+	server.Deliveries = must(delivery.NewStore(db))
 	server.Handoffs = server.NewHandoffService(must(handoff.NewStore(db)))
 	go server.Handoffs.Run(context.Background())
 	server.Queue = must(workqueue.NewStore(db))
@@ -634,10 +636,16 @@ func main() {
 
 	lanAddr := lanListenAddr()
 
+	// What /healthz says of this process (internal/httpapi/healthz.go), and the drain every listener goes through at
+	// shutdown (below): Life.Wrap is each listener's outermost handler, Life.BaseContext each request's base context.
+	httpapi.Life.Version = version
+	httpapi.Life.Instance = sqlitedb.InstanceID()
+
 	newServer := func(addr string, handler http.Handler) *http.Server {
 		return &http.Server{
 			Addr:              addr,
-			Handler:           handler,
+			Handler:           httpapi.Life.Wrap(handler),
+			BaseContext:       httpapi.Life.BaseContext,
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 			// No request needs more than this of headers; the 1 MiB default is memory a caller chooses (A-03).
@@ -838,11 +846,33 @@ func main() {
 		return nil
 	})
 
+	// The graceful stop (an app update recreates this container; compose gives it stop_grace_period to go). First the
+	// drain (httpapi.Lifecycle.Drain): the listeners stay open, new requests are answered 503 with Retry-After and
+	// /healthz says draining, the streams (event streams, WebSockets) are ended at once, and every other request in
+	// flight - a model call through /api/llm/ above all - may finish within DECURIX_SHUTDOWN_DRAIN. Then the listeners
+	// close. main returns only after that, so the database is closed, and the data directory's lock released (the
+	// defers above, in that order), only once no request can still be using them. A second Ctrl+C quits at once.
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		stop()
 
+		budget, note := httpapi.DrainBudget(os.Getenv("DECURIX_SHUTDOWN_DRAIN"))
+		if note != "" {
+			log.Printf("warning: %s", note)
+		}
+		log.Printf("Stopping: letting requests in flight finish (up to %s); new ones are asked to come back", budget)
+		drainCtx, cancelDrain := context.WithTimeout(context.Background(), budget)
+		left := httpapi.Life.Drain(drainCtx)
+		cancelDrain()
+		if left > 0 {
+			log.Printf("Stopping: %d request(s) still running after %s; ending them", left, budget)
+			httpapi.Life.Abort()
+		}
+
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelClose()
 		serversMu.Lock()
 		servers := append([]*http.Server(nil), activeServers...)
 		serversMu.Unlock()
@@ -851,7 +881,9 @@ func main() {
 			wg.Add(1)
 			go func(srv *http.Server) {
 				defer wg.Done()
-				_ = srv.Shutdown(shutdownCtx)
+				if err := srv.Shutdown(closeCtx); err != nil {
+					_ = srv.Close()
+				}
 			}(s)
 		}
 		wg.Wait()
@@ -860,6 +892,9 @@ func main() {
 	if err := primarySrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+	// ListenAndServe returns the moment the listeners start closing; the requests they still serve need the database.
+	<-shutdownDone
+	log.Println("Decurix stopped.")
 }
 
 // dateOrderFromEnv is the organisation's date order from DECURIX_DATE_ORDER, "day" or "month" (W0.2, C6); anything

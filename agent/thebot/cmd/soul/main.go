@@ -261,6 +261,8 @@ type server struct {
 	// the host says it is not a reply, discards it.
 	pausedMu sync.Mutex
 	paused   map[string]*scheduler.Checkpoint
+	// pausedDisk keeps paused across a restart (paused.go); nil keeps nothing on disk.
+	pausedDisk *pausedStore
 	// storesOff are the stores this run started without (storeOff), shown by /api/health.
 	storesOff []string
 	// embeddings is who embeds for this run: "ollama", the chat provider's name when it embeds itself, or "off" (no
@@ -279,8 +281,14 @@ type server struct {
 // request in the session is treated as a new request.
 const pausedJobTTL = 24 * time.Hour
 
+// newServer is soul's server, with the paused jobs kept on disk read back (paused.go).
 func newServer(cfg config.Config, provider llm.Provider, ws *workspace.Workspace, sched *scheduler.Scheduler) *server {
-	return &server{cfg: cfg, provider: provider, ws: ws, sched: sched, sessions: session.NewStore(), jobs: map[string]*jobRecord{}, paused: map[string]*scheduler.Checkpoint{}}
+	s := &server{cfg: cfg, provider: provider, ws: ws, sched: sched, sessions: session.NewStore(), jobs: map[string]*jobRecord{}}
+	if ws != nil {
+		s.pausedDisk = newPausedStore(ws.Root(), cfg.AgentToken)
+	}
+	s.paused = s.pausedDisk.load(pausedJobTTL)
+	return s
 }
 
 // takePaused removes and returns a session's paused job, if it has a live one.
@@ -292,12 +300,41 @@ func (s *server) takePaused(sessionID string) *scheduler.Checkpoint {
 	defer s.pausedMu.Unlock()
 	cp := s.paused[sessionID]
 	delete(s.paused, sessionID)
+	s.pausedDisk.remove(sessionID) // taken, or expired: either way it is no longer waiting
 	if cp == nil || time.Since(cp.CreatedAt) > pausedJobTTL {
 		return nil
 	}
 	return cp
 }
 
+// peekPaused reports, without taking it, whether a session has a live paused job and what it waits on: an approval
+// or an answer, and the question it asked.
+func (s *server) peekPaused(sessionID string) (kind, question string, ok bool) {
+	if sessionID == "" {
+		return "", "", false
+	}
+	s.pausedMu.Lock()
+	defer s.pausedMu.Unlock()
+	cp := s.paused[sessionID]
+	if cp == nil || time.Since(cp.CreatedAt) > pausedJobTTL {
+		return "", "", false
+	}
+	return cp.Kind, cp.Question, true
+}
+
+// handlePaused serves GET /api/paused?session=<id>: whether that session has a paused job kept (in memory, or read
+// back from disk at start), {"paused":bool,"kind","question"}. The agent asks it after a restart, so a task waiting on
+// a person whose job soul still holds is waited on again instead of being closed as lost.
+func (s *server) handlePaused(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET only"})
+		return
+	}
+	kind, question, ok := s.peekPaused(r.URL.Query().Get("session"))
+	writeJSON(w, http.StatusOK, map[string]any{"paused": ok, "kind": kind, "question": question})
+}
+
+// storePaused keeps cp as the session's paused job, in memory and on disk (paused.go), replacing the one it had.
 func (s *server) storePaused(sessionID string, cp *scheduler.Checkpoint) {
 	if sessionID == "" || cp == nil {
 		return
@@ -308,9 +345,11 @@ func (s *server) storePaused(sessionID string, cp *scheduler.Checkpoint) {
 	for id, old := range s.paused {
 		if time.Since(old.CreatedAt) > pausedJobTTL {
 			delete(s.paused, id)
+			s.pausedDisk.remove(id)
 		}
 	}
 	s.paused[sessionID] = cp
+	s.pausedDisk.save(sessionID, cp, s.secrets.all())
 	s.pausedMu.Unlock()
 }
 
@@ -787,6 +826,11 @@ func (s *server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, job.snapshot())
 }
 
+// sseHeartbeat is how often an open job stream gets a comment line (": ping"), so a follower whose connection died
+// notices within its read timeout instead of waiting out a long job. A var so a test can shorten it.
+var sseHeartbeat = 15 * time.Second
+
+// streamJob is a job's log and final answer as server-sent events, with a heartbeat comment every sseHeartbeat.
 func (s *server) streamJob(w http.ResponseWriter, r *http.Request, job *jobRecord) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -817,10 +861,18 @@ func (s *server) streamJob(w http.ResponseWriter, r *http.Request, job *jobRecor
 		return
 	}
 
+	heartbeat := time.NewTicker(sseHeartbeat)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-heartbeat.C:
+			// A comment line: no event to an SSE client, but bytes on the wire that keep its read timeout from firing.
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
 		case <-job.done:
 			fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"type": "final", "job": job.snapshot()}))
 			flusher.Flush()
@@ -843,6 +895,7 @@ func (s *server) mux() http.Handler {
 	mux.HandleFunc("/api/skills/", s.handleSkillAction)
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/jobs/", s.handleJobs)
+	mux.HandleFunc("/api/paused", s.handlePaused)
 	mux.HandleFunc(llmCallPath, s.handleLLMCall)
 	mux.HandleFunc(llmJudgePath, s.handleLLMJudge)
 	mux.HandleFunc(llmEscalationPath, s.handleLLMEscalation)

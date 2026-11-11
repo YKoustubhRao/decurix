@@ -774,6 +774,37 @@ func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool
 	return route, stored, err
 }
 
+// CommitStored is CommitReply for a request whose typed text is gone: one a crash cut short between delivery and
+// CommitReply, recorded later from what was kept before it was sent (internal/delivery). stored is the request in
+// its request form (RequestForm), never the typed text; withheld says whether anything of the typed text was
+// withheld, which a reply's judgement is marked secret by, as CommitReply marks it from the typed text. A reply is
+// kept against its question by the same rule as CommitReply's (replyForm).
+func (s *Store) CommitStored(route Route, worker Worker, stored string, withheld bool, by ReplyBy, origin Origin) (Route, string, error) {
+	route.Origin = origin
+	route, err := s.commit(route, worker, &stored, by, withheld, stored)
+	return route, stored, err
+}
+
+// Committed reports whether a route is already in the records: the execution a new request or a retry opens, or the
+// judgement a reply made. A reply with no judgement chosen cannot be told apart and reads false.
+func (s *Store) Committed(route Route) (bool, error) {
+	var n int
+	var err error
+	switch route.Kind {
+	case RouteReply:
+		if route.JudgementID == "" {
+			return false, nil
+		}
+		err = s.db.QueryRow(`SELECT COUNT(*) FROM judgements WHERE id = ?`, route.JudgementID).Scan(&n)
+	default:
+		err = s.db.QueryRow(`SELECT COUNT(*) FROM executions WHERE id = ?`, route.ExecutionID).Scan(&n)
+	}
+	if err != nil {
+		return false, fmt.Errorf("tasks: reading route %s: %w", route.ExecutionID, err)
+	}
+	return n > 0, nil
+}
+
 // requestForm is how the records keep a request as sent: whole as withhold.Secret when the person marked it secret,
 // otherwise with what withhold.Text finds withheld.
 func requestForm(text string, marked bool) string {

@@ -304,12 +304,16 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx = s.markWithheld(ctx, worker, route, content)
+	// Written down while it is sent, as every request is (submitStored, deliveries.go).
+	sending := s.beginSending(ctx, worker, content, route)
 	if err := s.deliverRequest(ctx, id, content, route); err != nil {
+		s.settleSending(sending)
 		sendRequestError(w, err)
 		return
 	}
 
 	route, _ = s.recordDelivered(ctx, worker, content, route)
+	s.settleSending(sending)
 
 	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
 }

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/memory"
@@ -113,6 +114,9 @@ func (s *Server) overviewHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if parts[overviewActivity] {
+		waiting, reported := s.cardAttention()
+		live := s.liveWorkers()
+		now := time.Now()
 		for _, id := range ids {
 			card := out.Desktops[id]
 			var a Activity
@@ -124,6 +128,8 @@ func (s *Server) overviewHandler(w http.ResponseWriter, r *http.Request) {
 				a.CreatedAt, a.CPUs, a.MemoryMB = d.CreatedAt, d.CPUs, d.MemoryMB
 				a.MissingApps = d.MissingApps
 				card.RestReason, card.RestNote = d.RestReason, d.RestNote
+				state := cardStateFor(id, a, a.SignalAt, waiting, reported, live, now)
+				a.Card = &state
 			}
 			card.Activity = &a
 			out.Desktops[id] = card

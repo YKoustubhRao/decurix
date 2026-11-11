@@ -61,6 +61,11 @@ services:
 
     restart: unless-stopped
 
+    # An update recreates this container: the control plane is sent SIGTERM and drains (requests in flight - a
+    # desktop's model call - finish, new ones are asked to come back; DECURIX_SHUTDOWN_DRAIN, 90 s by default) before
+    # it exits. Docker waits this long before it kills it, so the drain always ends first (docs/running.md).
+    stop_grace_period: 100s
+
 networks:
   # External on purpose: the scripts (lib/ollama-setup.*) and the control
   # plane itself (desktop.Manager.EnsureNetwork) create this network before
