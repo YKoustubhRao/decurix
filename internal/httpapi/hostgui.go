@@ -125,7 +125,7 @@ func hostGUIStarter(ctx context.Context, desktopName string) (*exec.Cmd, error) 
 	}
 	// desktopName is already reduced to [A-Za-z0-9_] by winhost, and the instance tag is hex, so both are safe in a
 	// shell word. The tag comes first: the sweep's pattern expects it right after the script (ownHelperMatch).
-	shell := fmt.Sprintf(wslPowershellPath+
+	shell := fmt.Sprintf(wslPowershellPath+bridgeOptIns(os.Getenv)+
 		`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w %s)" %s %s -DesktopName %s`,
 		script, instanceFlag, hostInstanceTag(), desktopName)
 	// Run on the host with stdin left open for the caller: directly when the control plane is on the host itself, through
@@ -135,6 +135,20 @@ func hostGUIStarter(ctx context.Context, desktopName string) (*exec.Cmd, error) 
 		return cmd, nil
 	}
 	return exec.CommandContext(ctx, "bash", "-c", shell), nil
+}
+
+// bridgeOptIns are the person's opt-ins the Windows helper reads from its environment, set in the control plane's own
+// (its .env), as a WSL shell's assignments that carry them across to the Windows program (WSLENV); "" when none is on.
+// A Windows program started from WSL gets the Windows environment WSL captured when it started, so a variable set on
+// the computer afterwards never reached the helper, and in the app's own distro the control plane's .env is the
+// person's one file of settings (found 2026-11-12, asked for: bring a Chrome profile's sign-ins over). Only the exact
+// value "1" is passed; the names are constants, so nothing here comes from outside into the shell.
+func bridgeOptIns(getenv func(string) string) string {
+	const importProfile = "DECURIX_IMPORT_HOST_BROWSER_PROFILE"
+	if getenv(importProfile) != "1" {
+		return ""
+	}
+	return importProfile + `=1 WSLENV="` + importProfile + `${WSLENV:+:$WSLENV}" `
 }
 
 // nativeHostGUICmd runs the helper directly, for a control plane that is itself a Windows program: no shell and no

@@ -79,6 +79,10 @@ func assertAsWorker(t *testing.T, fake *fakeAPI) {
 		if !strings.HasSuffix(e, "user=1001:1001") || !strings.Contains(e, "[/usr/bin/env -i ") {
 			t.Errorf("a home copy ran as someone other than the worker, or with an environment: %s", e)
 		}
+		// A docker exec's umask is 0000: an extraction without its own made world-writable folders (2026-11-12).
+		if strings.Contains(e, "tar -x") && !strings.Contains(e, "umask 022") {
+			t.Errorf("an extraction into a home runs without umask 022: %s", e)
+		}
 	}
 }
 

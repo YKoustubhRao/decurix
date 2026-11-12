@@ -1092,3 +1092,46 @@ explains the one thing Windows cannot do - virtualization off in the firmware. T
 - Measured 2026-11-12 on the laptop: n-gram speculative decoding made Qwen3.5 2B slower on math answers (35.4 s against
   25.0 s a case, 14% of drafts kept) and no better (48/50 against 49/50). Drafting from the context only pays when the
   answer copies it; a speed feature still goes through checked cases before it is on.
+
+## A new desktop's chosen apps never arrived, and its panel floated after a resize (found live 2026-11-12)
+
+- A Chrome profile shortcut chosen at creation never reached the desktop. Creation copied the host apps in before the
+  first start, through the throwaway helper, as the worker; a new home volume is the image's until the entrypoint hands
+  it over on that first start (`/home/headless`, `.local`, `Desktop` root-owned), so tar's every write was refused. And
+  the failure was only logged: the card listed nothing missing. The copy now runs once the screen is up (the entrypoint
+  is past the handover by then), and a failed copy lists every requested app as missing with the reason. Lesson: a step
+  that writes as the worker goes after whatever gives the worker the place it writes to; a failure of the whole step
+  must still say, per item, what was lost.
+- `docker exec` gets umask 0000 here, so every folder tar made for an archive's paths was 0777: a world-writable
+  `~/.local/bin`, first on the worker's PATH. Extraction into a home now runs under `umask 022`.
+- In broker mode the worker's xfce4-panel is an untrusted X client and sees no RandR, so when a viewer's noVNC resized
+  the screen (1280x720 to 1536x793) the panel stayed laid out for the old size, its bars floating above the bottom edge,
+  and the screen user's window list, finding no bar on that edge, drew an empty bar the full width under them. A new
+  X connection is told the current size even when untrusted: `computer/panelwatch.py` looks every 2 s and restarts the
+  panel once a new size holds for two looks. Lesson: in broker mode, anything of the worker's that lays itself out from
+  the screen's size has to be told of a resize by something else.
+- In broker mode every copied Windows app opened a blank browser window: its launcher opens the viewer with
+  `chromium-browser --app=<page>`, and the worker's wrapper drops every flag (the screen side takes none). The wrapper
+  now opens an `--app=` http(s) page as a page. What I first took for "the app opens" was the VM's own browser on
+  about:blank - look at the window's title and URL before calling a launch good.
+- `DECURIX_IMPORT_HOST_BROWSER_PROFILE=1` set on Windows never reached the bridge: a Windows program started from WSL
+  gets the environment WSL captured when it started. The control plane now forwards it from its own `.env` through
+  `WSLENV`. A changed `.env` needs the container recreated (`compose up`), not restarted, and a recreate starts from
+  the image, so a hot-swapped binary has to go into the stack image too.
+- The import copied everything but the cookies (20 KB of 1.9 MB): the person's running Chrome holds the cookie file
+  locked and robocopy skips it (exit 8 still writes the marker). Sign-ins to websites come over only with their Chrome
+  closed during the import. Google then asks "Verify that it's you" once in the copy.
+- The full Python suite hung in test_lessons: its fixture says a model is available (only so its own stand-in is
+  asked), so `lessons.worth_keeping` read an approval reply with the real `approval.reading`, which called the control
+  plane; where none answers, each try waits about 21 s and retries. The fixture now makes the raw model call fail.
+  Lesson: a test that fakes "a model is available" must also fake every model call, not just the one it means.
+  Then it hung again in test_series_gaps (a final reply sent for real). The cause under both: `config_stub` names the
+  refusing `http://127.0.0.1:9` only where the real config cannot be imported, so on a Windows host tests sent to
+  `host.docker.internal`, which this machine's hosts file maps to a stale LAN address that drops packets (~21 s a try,
+  retried for 180 s). A test process now sends nowhere unless the run names a control plane, and keeps an unsent note
+  at once (`SEND_RETRY_SECONDS` 0; retry tests set their own).
+- In broker mode the host-app launcher's `xdotool` raise cannot work (an untrusted client has no XTEST and sees no
+  other window; `xdotool getdisplaygeometry` segfaults), so every click opened another viewer, and over the page the
+  browser was showing. The wrapper now opens an `--app=` page with `gui open --reuse`: a tab already showing exactly
+  that address is brought forward, otherwise the page gets a new tab (replay carries `reuse` too). Lesson: in broker
+  mode the window logic belongs on the screen side, which can see the windows; ask it, do not guess from the worker.

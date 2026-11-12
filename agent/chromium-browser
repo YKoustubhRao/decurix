@@ -16,11 +16,18 @@
 # launcher (exo-open), xdg-open, a link in an app, a host app's script: the desktop has one browser, the screen
 # user's, which the worker cannot start or reach. Each page named goes to it through the screen broker, as `gui open`
 # (a local file is handed over and opened as a copy the browser may read); with none, the browser is brought up.
-# Flags are not passed on: the screen side takes none from the worker but a new window.
+# Flags are not passed on: the screen side takes none from the worker but a new window. `--app=<http(s) page>` - how
+# a host app's launcher opens its viewer (desktop/hostapps.go) - is that page, opened like any other: dropped with the
+# rest of the flags, every Windows app copied into a broker-mode desktop opened a blank browser window instead of
+# itself (found live 2026-11-12). Any other --app (javascript:, file:, data:) is dropped as a flag still is. An app
+# window is its own window, so the page goes to a tab of its own, never over the page being shown, and a click on an
+# app that is already open brings its tab forward instead of a second viewer (`gui open --reuse`).
 if [ "${DECURIX_SCREEN_USER:-}" = "1" ] && [ "$(/usr/bin/id -u)" = "${DECURIX_SCREEN_WORKER_UID:-1001}" ]; then
     status=0 opened=0
     for arg in "$@"; do
         case "$arg" in
+            --app=http://*|--app=https://*)
+                opened=1; /usr/local/bin/gui open --reuse "${arg#--app=}" >/dev/null || status=$? ;;
             -*|"") ;;
             *) opened=1; /usr/local/bin/gui open "$arg" >/dev/null || status=$? ;;
         esac

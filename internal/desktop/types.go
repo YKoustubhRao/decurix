@@ -100,7 +100,7 @@ type ProvisioningDesktop struct {
 	CPUs           int64  `json:"cpus"`
 	MemoryMB       int64  `json:"memory_mb"`
 	Status         string `json:"status"` // "provisioning", "running", "failed"
-	Stage          string `json:"stage"`  // "initializing", "volume", "container", "apps", "starting", "readiness", "ready"
+	Stage          string `json:"stage"`  // "initializing", "volume", "container", "starting", "readiness", "apps", "ready"
 	Message        string `json:"message"`
 	Progress       int    `json:"progress"` // percentage 0-100
 	URL            string `json:"url"`

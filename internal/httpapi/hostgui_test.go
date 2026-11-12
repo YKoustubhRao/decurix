@@ -635,3 +635,32 @@ func TestAKeptAppsSlugAndName(t *testing.T) {
 		t.Errorf("slug = %q", got)
 	}
 }
+
+// TestBridgeOptInsCarryOnlyTheExactOptIn: the import opt-in set in the control plane's .env reaches the Windows helper
+// through WSLENV, only as the exact value "1", and nothing at all is added when it is not on.
+func TestBridgeOptInsCarryOnlyTheExactOptIn(t *testing.T) {
+	env := func(v string) func(string) string {
+		return func(k string) string {
+			if k == "DECURIX_IMPORT_HOST_BROWSER_PROFILE" {
+				return v
+			}
+			return ""
+		}
+	}
+	for _, off := range []string{"", "0", "true", "1; rm -rf /"} {
+		if got := bridgeOptIns(env(off)); got != "" {
+			t.Errorf("value %q must add nothing, got %q", off, got)
+		}
+	}
+	got := bridgeOptIns(env("1"))
+	want := `DECURIX_IMPORT_HOST_BROWSER_PROFILE=1 WSLENV="DECURIX_IMPORT_HOST_BROWSER_PROFILE${WSLENV:+:$WSLENV}" `
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if runtime.GOOS != "windows" {
+		out, err := exec.Command("bash", "-c", got+`printf '%s|%s' "$DECURIX_IMPORT_HOST_BROWSER_PROFILE" "$WSLENV"`).Output()
+		if err != nil || string(out) != "1|DECURIX_IMPORT_HOST_BROWSER_PROFILE" {
+			t.Errorf("in a shell the prefix gives %q (%v)", out, err)
+		}
+	}
+}

@@ -4685,10 +4685,12 @@ def _human_check(found, page_group):
 
 
 @screen_call.routed("core.open_target")
-def open_target(target, new_tab=False):
+def open_target(target, new_tab=False, reuse=False):
     """
     Open a web page, a document or an app, and wait for it to be on screen.
     Returns a one-line summary. Recorded in the audit trail like any action.
+    reuse (a web page only): a tab already showing exactly this address is brought to the front instead, and
+    otherwise the page opens in a new tab, never over the page the browser is showing.
     """
 
     _clear_pending_save()  # a page opened by its address is no answer to a save pressed before it
@@ -4699,10 +4701,11 @@ def open_target(target, new_tab=False):
         "kind": "open",
         "target": privacy.reduce_url(wanted) if URL_RE.match(wanted) else privacy.kept_text(wanted),
         "new_tab": new_tab,
+        "reuse": bool(reuse),
     }
 
     try:
-        summary = _open(target, new_tab)
+        summary = _open(target, new_tab, reuse)
     except ComputerError as exc:
         entry.update({"outcome": "failed", "reason": str(exc), "summary": f"open {entry['target']} - failed: {exc}"})
         audit.record(entry, before=before)
@@ -4731,7 +4734,7 @@ def open_target(target, new_tab=False):
 BROWSER_START_SECONDS = int(os.environ.get("DECURIX_BROWSER_START_SECONDS", "90"))
 
 
-def _open(target, new_tab):
+def _open(target, new_tab, reuse=False):
     target = (target or "").strip()
     if not target:
         raise ComputerError("say what to open: a URL, a file, or an app name")
@@ -4755,6 +4758,11 @@ def _open(target, new_tab):
         url = target if "://" in target else "http://" + target
 
         if cdp.available():
+            if reuse:
+                shown = _reuse_tab(url)
+                if shown:
+                    return shown
+                new_tab = True
             title = cdp.navigate(url, new_tab=new_tab)
             _raise_browser()
             return f"Opened {broker.shown_url(url)} in Chromium (tab title {el._quote(title, 60)})."
@@ -4915,6 +4923,23 @@ def bring_to_front(title):
     time.sleep(0.4)
     _adopt_front()
     return f"Brought {el._quote(found[0]['title'], 80)} to the front."
+
+
+def _reuse_tab(url):
+    """Bring the tab showing exactly url to the front and say so; None when no tab shows it. What `gui open --reuse`
+    does first: a host app's launcher opens its viewer that way, and a second click on its icon opened a second viewer
+    of the same app (found live 2026-11-12, broker mode, where the launcher cannot see the screen's windows)."""
+
+    from decurix_agent.computer import broker
+    for page in cdp.page_list():
+        if page.get("url") == url and page.get("id"):
+            try:
+                cdp.activate_page(page["id"])
+            except OSError:
+                return None
+            _raise_browser()
+            return f"Brought the tab with {broker.shown_url(url)} to the front (it was already open)."
+    return None
 
 
 def _raise_browser():

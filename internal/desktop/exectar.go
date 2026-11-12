@@ -27,9 +27,12 @@ const execTarMissingCode = 44
 
 // execTarIn extracts a tar archive into dir inside a running container, as the
 // unprivileged user, in archive order (so a file written last can signal readiness).
-// flags go to tar before the archive.
+// flags go to tar before the archive. With umask 022: a docker exec gets umask 0000, and the folders tar makes for an
+// archive's paths (no entry of their own) came out 0777 - a world-writable ~/.local/bin, first on the worker's PATH
+// (found 2026-11-12).
 func (m *Manager) execTarIn(ctx context.Context, id, dir string, archive io.Reader, flags ...string) error {
-	cmd := append([]string{"/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "tar", "-x", "-C", dir}, flags...)
+	cmd := append([]string{"/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "/bin/sh", "-c", `umask 022 && exec "$@"`, "sh",
+		"tar", "-x", "-C", dir}, flags...)
 	cmd = append(cmd, "-f", "-")
 	exec, err := m.client.ContainerExecCreate(ctx, id, container.ExecOptions{User: "1001:1001", Cmd: cmd, AttachStdin: true, AttachStdout: true, AttachStderr: true})
 	if err != nil {

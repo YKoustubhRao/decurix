@@ -121,3 +121,16 @@ for part in xfsettingsd xfce4-panel "Thunar --daemon"; do
     /usr/bin/env PATH="$WORKER_PATH" /usr/bin/setsid $part < /dev/null >> "$LOG" 2>&1 &
     echo "[$(date)] started $part (pid $!)"
 done
+
+# The panel is never told the screen changed size (an untrusted client sees no RandR), so when a viewer fits the screen
+# to its window the panel's bars stayed where the first size put them. This lays it out again after a resize
+# (computer/panelwatch.py). In /, the agent's code from /opt; run again if it ends, not when it cannot run here (3).
+(
+    cd / || exit 0
+    while :; do
+        /usr/bin/env PATH="$WORKER_PATH" PYTHONPATH=/opt /usr/bin/python3 -m decurix_agent.computer.panelwatch
+        [ $? -eq 3 ] && break
+        sleep 5
+    done
+) < /dev/null >> "$LOG" 2>&1 &
+echo "[$(date)] panel watch started (loop pid $!)"
