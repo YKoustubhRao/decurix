@@ -113,6 +113,7 @@ func (m *Manager) forgetMissingApps(id string) {
 	m.missingMu.Lock()
 	delete(m.missing, id)
 	m.missingMu.Unlock()
+	m.forgetSignInApps(id)
 }
 
 // giveUpPending turns this desktop's still-pending apps into plain "not added" ones and reports whether there were any.

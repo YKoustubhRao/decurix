@@ -1843,6 +1843,12 @@ $SingleInstanceByName = @('chrome', 'msedge', 'brave', 'vivaldi', 'opera', 'chro
 $Browsers = @('chrome', 'msedge', 'brave', 'vivaldi', 'opera', 'chromium')
 $ProfileRoot = Join-Path $env:LOCALAPPDATA 'Decurix\hidden-profiles'
 
+# Whether the app about to be launched brings the person's own browser sign-ins (the `signins` command, sent before every
+# launch from the choice the person made for this app at their own screen), or this computer's owner set the old
+# machine-wide switch in the control plane's environment (DECURIX_IMPORT_HOST_BROWSER_PROFILE=1).
+$script:SignIns = $false
+function Test-ImportOptIn { return ($script:SignIns -or $env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -eq '1') }
+
 function Test-SingleInstanceApp([string]$exe) {
     $base = [IO.Path]::GetFileNameWithoutExtension($exe).ToLower()
     if ($SingleInstanceByName -contains $base) { return $true }
@@ -2090,16 +2096,21 @@ $ProfileSkipDirs = @(
     'GraphiteDawnCache', 'GPUPersistentCache', 'Media Cache', 'CacheStorage', 'ScriptCache', 'Crashpad', 'BrowserMetrics',
     'DeferredBrowserMetrics', 'component_crx_cache', 'extensions_crx_cache', 'screen_ai', 'optimization_guide_model_store',
     'OnDeviceHeadSuggestModel', 'WasmTtsEngine', 'Safe Browsing', 'Shared Dictionary', 'Download Service',
-    'segmentation_platform', 'Snapshots', 'SODA', 'SODALanguagePacks', 'hyphen-data'
+    'segmentation_platform', 'Snapshots', 'SODA', 'SODALanguagePacks', 'hyphen-data',
+    # The person's open tabs (Chrome's "continue where you left off"): brought over, they reopened in the worker's browser
+    # on its own - WhatsApp Web among them, with the person's own linked-device login, which WhatsApp then rejected and
+    # wiped (found 2026-11-12). The sign-ins come over; the pages the person had open do not.
+    'Sessions'
 )
-$ProfileSkipFiles = @('Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock', '*.pma')
+$ProfileSkipFiles = @('Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock', '*.pma',
+    'Current Session', 'Current Tabs', 'Last Session', 'Last Tabs')
 
 # A private profile an older build imported from the person's own browser (it carries an import marker) still holds
 # their cookies, saved passwords and the key they are encrypted with, and launches kept using it after the import was
 # made opt-in (B-19). Without the opt-in such a profile is deleted once, before the browser starts, so it starts empty
 # like any other; the worker signs in on its own screen. With the opt-in it is left as it is.
 function Remove-ImportedHostProfile([string]$dir) {
-    if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -eq '1') { return }
+    if (Test-ImportOptIn) { return }
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
     $marks = @(Get-ChildItem -LiteralPath $dir -Force -Filter '.decurix-host-profile-imported-*' -ErrorAction SilentlyContinue)
     if ($marks.Count -eq 0) { return }
@@ -2110,13 +2121,35 @@ function Remove-ImportedHostProfile([string]$dir) {
     }
 }
 
+# Copy-ProfileCookies brings the profile's cookie database over, and says whether it is there afterwards (true too when the
+# person's profile has none). The person's running browser holds that file open for itself, so robocopy skips it, and with
+# only the rest copied every website asks to sign in again; this tries again, and fails quietly while the browser is open.
+function Copy-ProfileCookies([string]$source, [string]$dir, [string]$profile) {
+    $from = Join-Path (Join-Path $source $profile) 'Network\Cookies'
+    if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { return $true }
+    $to = Join-Path (Join-Path $dir $profile) 'Network\Cookies'
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
+        $in = [System.IO.File]::Open($from, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $out = [System.IO.File]::Create($to)
+            try { $in.CopyTo($out) } finally { $out.Close() }
+        } finally { $in.Close() }
+        return $true
+    } catch {
+        Remove-Item -LiteralPath $to -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+}
+
 function Initialize-PrivateBrowserProfile([string]$base, [string]$dir, [string]$requestedProfile) {
     # Not imported any more (review 2026-11-02): the copy carried the person's cookies, saved passwords and Local State
     # (the key they are encrypted with) into a browser a worker drives, and anything that steers the worker - a web
     # page, an email - could then act as the person on every site they are signed in to. The private profile starts
     # empty; the worker signs in on its own screen, asking the person when it needs to. The import below is kept only
-    # for an explicit opt-in, DECURIX_IMPORT_HOST_BROWSER_PROFILE=1 in this computer's environment.
-    if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -ne '1') { return }
+    # for an explicit opt-in: the person's choice for this app (the `signins` command), or the old machine-wide
+    # DECURIX_IMPORT_HOST_BROWSER_PROFILE=1.
+    if (-not (Test-ImportOptIn)) { return }
     if (-not ($Browsers -contains $base)) { return }
     $source = Get-BrowserProfileSource $base
     if (-not $source -or -not (Test-Path -LiteralPath $source -PathType Container)) { return }
@@ -2133,7 +2166,15 @@ function Initialize-PrivateBrowserProfile([string]$base, [string]$dir, [string]$
     # profile is launched. Once imported, later launches never overwrite work or sign-ins added inside the private profile.
     $safe = if ($active) { $active -replace '[^A-Za-z0-9._-]', '_' } else { 'all' }
     $marker = Join-Path $dir ".decurix-host-profile-imported-$safe"
-    if (Test-Path -LiteralPath $marker) { return }
+    # Left when the cookie database could not be copied at the import (the person's browser was open): the next launch
+    # tries again, without importing over what the private profile has done since.
+    $pending = Join-Path $dir ".decurix-host-profile-cookies-pending-$safe"
+    if (Test-Path -LiteralPath $marker) {
+        if ($active -and (Test-Path -LiteralPath $pending) -and (Copy-ProfileCookies $source $dir $active)) {
+            Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
+        }
+        return
+    }
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $common = @('/XJ', '/R:0', '/W:0', '/MT:16', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/XD') + $ProfileSkipDirs + @('/XF') + $ProfileSkipFiles
     # Only the profile the person uses and the top-level files that go with it (Local State holds the key its cookies and
@@ -2161,7 +2202,13 @@ function Initialize-PrivateBrowserProfile([string]$base, [string]$dir, [string]$
     # robocopy's exit code is bits: 8 means some files could not be copied - the ones the person's running browser holds
     # locked (its cookie file, while it is open) - and only 16 is a failure of the copy itself. Treating 8 as failure left
     # the marker unwritten, so every start imported again, over what the private profile had changed since.
-    if ($code -lt 16 -and (Test-Path -LiteralPath $dir)) { Set-Content -LiteralPath $marker -Value '1' -Encoding ASCII }
+    if ($code -lt 16 -and (Test-Path -LiteralPath $dir)) {
+        Set-Content -LiteralPath $marker -Value '1' -Encoding ASCII
+        # Always tried, not only when none is there: a profile an empty browser already ran in has a cookie file of its own.
+        if ($active -and -not (Copy-ProfileCookies $source $dir $active)) {
+            Set-Content -LiteralPath $pending -Value '1' -Encoding ASCII
+        }
+    }
 }
 
 # The command line a resolved program is started with: its own profile for a browser or Electron app (per desktop), and the
@@ -2292,6 +2339,12 @@ $Commands = [Action[string, string]] {
     switch ($verb) {
         "desktop" {
             if ($rest -match '^[A-Za-z0-9_]{1,48}$') { $script:DesktopName = $rest; Reply "OK" } else { Reply "ERR invalid desktop name" }
+        }
+        "signins" {
+            # Said before every launch, so a helper reused for another app never keeps the last one's answer.
+            if ($rest -eq '1') { $script:SignIns = $true; Reply "OK" }
+            elseif ($rest -eq '0') { $script:SignIns = $false; Reply "OK" }
+            else { Reply "ERR signins takes 0 or 1" }
         }
         "launch" {
             $f = $rest.Split("`t")

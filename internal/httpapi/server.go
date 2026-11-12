@@ -201,6 +201,8 @@ type Server struct {
 	HostGUIDataDir string
 	keptHostAppsMu sync.Mutex
 	keptHostApps   map[string]keptHostApp
+	// hostSignIns are the host app sessions whose app brings the person's own browser sign-ins (guarded by keptHostAppsMu).
+	hostSignIns map[string]bool
 	// keptHostAppsLive are the desktops whose kept apps run on the host now: only a running (or paused) desktop's do
 	// (syncHostApps). keptHostApps itself is kept across a stop, so the desktop's next start keeps them again.
 	keptHostAppsLive map[string]bool
@@ -251,6 +253,7 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 	desktop.SetHostAppChecker(srv.checkHostApps)
 	desktop.SetHostAppWarmer(srv.warmHostGUI)
 	desktop.SetHostAppStarter(srv.startHostGUIAppAhead)
+	desktop.SetHostAppSignIns(srv.noteHostAppSignIns)
 	desktop.SetHostAppPageFinder(func(target, args string) string { return srv.hostGUI().LocalPage(target, args) })
 	desktop.WarmHostApps() // compile and load now, long before the first desktop exists
 	desktop.InitHostAppsScan()

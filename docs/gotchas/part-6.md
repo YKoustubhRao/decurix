@@ -1130,6 +1130,23 @@ explains the one thing Windows cannot do - virtualization off in the firmware. T
   `host.docker.internal`, which this machine's hosts file maps to a stale LAN address that drops packets (~21 s a try,
   retried for 180 s). A test process now sends nowhere unless the run names a control plane, and keeps an unsent note
   at once (`SEND_RETRY_SECONDS` 0; retry tests set their own).
+- A Chrome profile copied with its sign-ins still showed WhatsApp Web as "Scan to log in" in the VM (found live
+  2026-11-12). The import had run (the Windows user variable reached the bridge once WSL restarted, though a fresh rebuild
+  deletes `%APPDATA%\decurix\.env`, which is why a machine-wide setting is fragile). What undid it: the copy carried
+  the person's open tabs, so Chrome reopened WhatsApp Web in the worker with the person's own linked-device login while
+  their own browser held it too; WhatsApp rejects a duplicate of one device and wipes its local data (that site's
+  IndexedDB went from 128 MB to 19 MB; every other site's was untouched). A login bound to one device cannot be cloned:
+  WhatsApp has to be linked from the phone (QR) once in the worker's own browser, which then keeps it. The import now
+  leaves the open tabs behind (`Sessions`, `Current/Last Session/Tabs`), and "bring my sign-ins" is a per-app choice
+  (`signin_apps`, the create form's **Bring my sign-ins**), kept by the control plane with the host session (saved in
+  `hostgui-apps.json`) and told to the bridge as `signins 1|0` before every launch, so a helper reused for another app
+  never keeps the last answer. Never accepted on the gated listener. Lesson: look at what the copy actually holds, and at
+  what the app did with it, before blaming the setting.
+- The cookie database is held open by the person's running browser, so the import copied everything else and left it
+  (robocopy exit 8), and the "imported" marker then stopped every later launch from trying again. Now an import that
+  could not copy it leaves `.decurix-host-profile-cookies-pending-*`, and the next launch copies it when it is free
+  (`Copy-ProfileCookies`). Site logins kept in IndexedDB / Local Storage (WhatsApp Web) are readable while the browser
+  runs and come over at once. Two browsers holding one WhatsApp Web login fight over it ("Use here"): use it in one place.
 - In broker mode the host-app launcher's `xdotool` raise cannot work (an untrusted client has no XTEST and sees no
   other window; `xdotool getdisplaygeometry` segfaults), so every click opened another viewer, and over the page the
   browser was showing. The wrapper now opens an `--app=` page with `gui open --reuse`: a tab already showing exactly

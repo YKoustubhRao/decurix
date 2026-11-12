@@ -172,6 +172,34 @@ func TestStartWaitsForFirstPictureAndForwardsInputVerbatim(t *testing.T) {
 	}
 }
 
+// TestEveryLaunchSaysWhetherItBringsTheSignIns: the person's per-app choice reaches the helper before each launch - on
+// as chosen, and off for any other app, so a helper reused for another app never carries the last one's answer.
+func TestEveryLaunchSaysWhetherItBringsTheSignIns(t *testing.T) {
+	m, _ := fakeManager(t, fakeOpts{launch: "OK pid=42"})
+	m.SetSignIns("vm1-chrome", true)
+
+	if _, err := m.Start(context.Background(), "vm1-chrome", `C:\Program Files\Chrome\chrome.exe`, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(received(t), "|")
+	if !strings.Contains(got, "signins 1|launch	") {
+		t.Errorf("a chosen app must be told signins 1 right before its launch; got %q", got)
+	}
+
+	m2, _ := fakeManager(t, fakeOpts{launch: "OK pid=43"})
+	if _, err := m2.Start(context.Background(), "vm1-other", `C:\Program Files\Apppp.exe`, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(received(t), "|"); !strings.Contains(got, "signins 0|launch	") {
+		t.Errorf("any other app must be told signins 0; got %q", got)
+	}
+
+	m.SetSignIns("vm1-chrome", false)
+	if m.signInsOf("vm1-chrome") {
+		t.Error("an unticked app still brings its sign-ins")
+	}
+}
+
 func TestAViewerGetsTheWholePictureFirstAndThenOnlyWhatChanged(t *testing.T) {
 	_, s := startFake(t, "patches")
 	v := s.Watch()
@@ -604,10 +632,44 @@ func TestScriptIsEmbedded(t *testing.T) {
 	src := string(Script)
 	i := strings.Index(src, "function Initialize-PrivateBrowserProfile(")
 	head := src[i:min(len(src), i+1500)]
-	optIn := strings.Index(head, "if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -ne '1') { return }")
+	optIn := strings.Index(head, "if (-not (Test-ImportOptIn)) { return }")
 	copyAt := strings.Index(head, "robocopy")
 	if optIn < 0 || (copyAt >= 0 && copyAt < optIn) {
 		t.Fatal("bridge.ps1 must not import the host's browser profile without the explicit opt-in")
+	}
+}
+
+// TestTheBridgeTakesTheSignInChoiceFromTheControlPlaneAndFinishesCookiesLater pins what the per-app "bring my sign-ins"
+// rests on: a `signins` command that both gates read (so one helper reused for another app never keeps the last answer),
+// and a cookie database the person's running browser held locked is brought over on a later launch, not given up.
+func TestTheBridgeTakesTheSignInChoiceFromTheControlPlaneAndFinishesCookiesLater(t *testing.T) {
+	src := strings.ReplaceAll(string(Script), "\r\n", "\n")
+	for _, want := range []string{
+		`"signins" {`, "$script:SignIns = $true", "$script:SignIns = $false",
+		"function Test-ImportOptIn", "$script:SignIns -or $env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -eq '1'",
+		"if (Test-ImportOptIn) { return }",        // Remove-ImportedHostProfile keeps an opted-in copy
+		"if (-not (Test-ImportOptIn)) { return }", // Initialize-PrivateBrowserProfile copies only when opted in
+		"function Copy-ProfileCookies", ".decurix-host-profile-cookies-pending-",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("bridge.ps1 lost %q", want)
+		}
+	}
+	// The person's open tabs are left behind: brought over they reopened in the worker's browser on their own, WhatsApp Web
+	// among them with the person's own linked-device login, which WhatsApp rejected and wiped (found 2026-11-12).
+	for _, want := range []string{"'Sessions'", "'Current Session'", "'Current Tabs'", "'Last Session'", "'Last Tabs'"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the profile import no longer leaves out %s", want)
+		}
+	}
+	reads := 0
+	for _, line := range strings.Split(src, "\n") {
+		if code := strings.TrimSpace(line); !strings.HasPrefix(code, "#") && strings.Contains(code, "$env:DECURIX_IMPORT_HOST_BROWSER_PROFILE") {
+			reads++
+		}
+	}
+	if reads != 1 { // only Test-ImportOptIn reads the old machine-wide switch
+		t.Errorf("the old machine-wide switch is read on %d code lines, want only Test-ImportOptIn's", reads)
 	}
 }
 

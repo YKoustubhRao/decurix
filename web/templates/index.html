@@ -814,6 +814,18 @@
   margin-top:2px;
   line-height:1.35;
 }
+.host-app-signin{
+  display:flex;
+  align-items:flex-start;
+  gap:7px;
+  margin-top:6px;
+  font-size:11.5px;
+  color:var(--text-2, var(--text-3));
+  line-height:1.35;
+}
+.host-app-signin.is-off{opacity:.55}
+.host-app-signin-text{cursor:pointer}
+.host-app-signin-hint{display:block;color:var(--text-3)}
 
 /* ---------- query rail ---------- */
 
@@ -1916,8 +1928,22 @@
     }
   }
 
+  // The apps whose private profile can bring the person's own sign-ins (the same words as the control plane's isBrowserApp).
+  function isBrowserHostApp(name){
+    return /chrome|chromium|edge|brave|vivaldi|opera/i.test(name || "");
+  }
+
   function updateHostAppsSelectionSummary(){
     if(!hostAppsList){ return; }
+    // A sign-in choice is only open for an app that is ticked (Select All / Select None tick without a change event).
+    hostAppsList.querySelectorAll(".host-app-row").forEach(function(row){
+      var main = row.querySelector("input[name=host_app_choice]");
+      var signIn = row.querySelector("input[name=host_app_signin]");
+      if(!main || !signIn){ return; }
+      signIn.disabled = !main.checked;
+      if(!main.checked){ signIn.checked = false; }
+      signIn.closest(".host-app-signin").classList.toggle("is-off", !main.checked);
+    });
     var selected = hostAppsList.querySelectorAll("input[name=host_app_choice]:checked").length;
     var total = hostAppsList.querySelectorAll(".host-app-row").length;
     var rawQ = (hostAppsSearch && hostAppsSearch.value || "").trim();
@@ -2058,6 +2084,14 @@
               '<span class="host-app-badge ' + (unavailable ? 'missing' : 'detected') + '">' + escapeHTML(HOST_APP_MODES[item.mode] || "Found") + '</span>' +
             '</div>' +
             '<div class="host-app-desc">' + escapeHTML(item.unavailable_reason || item.description) + '</div>' +
+            (!unavailable && isBrowserHostApp(item.name) ?
+              '<div class="host-app-signin is-off">' +
+                '<input type="checkbox" name="host_app_signin" value="' + escapeHTML(item.id) + '" disabled>' +
+                '<span class="host-app-signin-text"><b>Bring my sign-ins</b>' +
+                  '<span class="host-app-signin-hint">Your cookies, saved logins and site data (WhatsApp, Gmail and the like) are copied into this ' +
+                  'browser, so it is signed in as you. Anything that can steer the worker can use them. Close your own browser first so every login can be copied.</span>' +
+                '</span>' +
+              '</div>' : '') +
           '</div>';
         hostAppsList.appendChild(row);
       });
@@ -2074,8 +2108,22 @@
   if(hostAppsList){
     hostAppsList.addEventListener("change", function(e){
       if(e.target && e.target.name === "host_app_choice"){
+        var signIn = e.target.closest(".host-app-row").querySelector("input[name=host_app_signin]");
+        if(signIn){
+          signIn.disabled = !e.target.checked;
+          if(!e.target.checked){ signIn.checked = false; }
+          signIn.closest(".host-app-signin").classList.toggle("is-off", !e.target.checked);
+        }
         updateHostAppsSelectionSummary();
       }
+    });
+    // The words beside the sign-in box toggle it, not the app's own box (they sit inside the app's row).
+    hostAppsList.addEventListener("click", function(e){
+      var words = e.target && e.target.closest ? e.target.closest(".host-app-signin-text") : null;
+      if(!words){ return; }
+      e.preventDefault();
+      var box = words.parentNode.querySelector("input[name=host_app_signin]");
+      if(box && !box.disabled){ box.checked = !box.checked; }
     });
   }
 
@@ -2261,9 +2309,14 @@
 
     var copyHostApps = dCopyHostApps && dCopyHostApps.checked;
     var selectedApps = [];
+    var signInApps = [];
     if(copyHostApps && hostAppsList){
       hostAppsList.querySelectorAll("input[name=host_app_choice]:checked:not(:disabled)").forEach(function(cb){
         selectedApps.push(cb.value);
+      });
+      // Only for an app that is itself being given to the desktop.
+      hostAppsList.querySelectorAll("input[name=host_app_signin]:checked:not(:disabled)").forEach(function(cb){
+        if(selectedApps.indexOf(cb.value) >= 0){ signInApps.push(cb.value); }
       });
     }
 
@@ -2302,7 +2355,8 @@
         parent_id: parentId,
         shared_folder: sharedFolder,
         copy_host_apps: copyHostApps ? "1" : "0",
-        host_apps: selectedApps.join(",")
+        host_apps: selectedApps.join(","),
+        signin_apps: signInApps.join(",")
       });
 
       busy(false);

@@ -561,6 +561,7 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 		}
 	}
 	names := map[string]string{} // id -> name of every requested app, for the record when the copy itself fails
+	signIns := m.signInAppsOf(sanitizedID)
 
 	for id := range selectedMap {
 		if def, ok := defMap[id]; ok {
@@ -575,7 +576,7 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 				miss(id, def.name, "Decurix found nothing of it on this computer to copy.", false)
 				continue
 			}
-			if err := def.packFn(tw, paths, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret}); err != nil {
+			if err := def.packFn(tw, paths, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret, SignIns: signIns}); err != nil {
 				log.Printf("hostapps: packing %s for %s: %v", def.id, desktopID, err)
 				miss(id, def.name, "Copying it into the desktop failed.", false)
 				continue
@@ -588,7 +589,7 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 				miss(id, app.Name, app.UnavailableReason, app.Unverified)
 				continue
 			}
-			if err := packDynamicApp(tw, app, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret}); err != nil {
+			if err := packDynamicApp(tw, app, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret, SignIns: signIns}); err != nil {
 				log.Printf("hostapps: packing dynamic app %s for %s: %v", app.ID, desktopID, err)
 				miss(id, app.Name, "Copying it into the desktop failed.", false)
 				continue
@@ -1585,6 +1586,8 @@ type packContext struct {
 	DesktopID string
 	// Secret signs the launch token (winhost.Token); empty leaves the launcher unsigned, which the control plane refuses.
 	Secret []byte
+	// SignIns are the app IDs (lower case) whose sign-ins the person chose to bring along (signins.go).
+	SignIns map[string]bool
 }
 
 // hostSessionSlug is how much of an app's slug its host session id keeps.
@@ -1923,6 +1926,8 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			// instead of waiting for that click, under the same session id the launcher itself will ask for, so
 			// Start finds it already running and joins it at once (see winhost.Manager.Start).
 			if target, args, ok := windowsTarget(app.HostCmd); ok {
+				// Before the start ahead, which then already has the person's choice (on, or off when not ticked).
+				noteHostAppSignIns(pc.sessionID(slug), bringsSignIns(pc, app))
 				startHostAppAhead(pc.DesktopID, pc.sessionID(slug), target, args)
 				startup = hostGUIStartupEntries()
 			}

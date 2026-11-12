@@ -119,6 +119,8 @@ type Manager struct {
 	stopping map[string]*Session
 	// kept are the apps kept running and ready (Keep), by session id.
 	kept map[string]*keptApp
+	// signIns are the sessions whose app brings the person's own browser sign-ins (SetSignIns), by session id.
+	signIns map[string]bool
 	// OnGiveUp, when set, is told about a kept app that is no longer tried (keepGiveUpAfter): its VM, its session id,
 	// and why, in plain words. Set it before the first Keep.
 	OnGiveUp func(desktop, id, reason string)
@@ -390,7 +392,7 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 	s.id = id
 	s.target = Target{target, args}
 	name := desktopName(id)
-	for _, line := range []string{"desktop " + name, "viewers 1"} {
+	for _, line := range []string{"desktop " + name, "viewers 1", signInsLine(m.signInsOf(id))} {
 		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
 			s.Stop()
 			if err == nil {

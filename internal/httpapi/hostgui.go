@@ -205,6 +205,8 @@ type keptHostApp struct {
 	ID      string `json:"id"`
 	Target  string `json:"target"`
 	Args    string `json:"args"`
+	// SignIns: the person chose to bring the sign-ins of their own browser with this app (desktop.SetSignInApps).
+	SignIns bool `json:"signins,omitempty"`
 }
 
 // keptHostAppsFile is where the apps kept ready are saved, in HostGUIDataDir.
@@ -233,9 +235,36 @@ func (s *Server) startHostGUIAppAhead(desktopID, id, target, args string) {
 	if s.keptHostAppsLive == nil {
 		s.keptHostAppsLive = make(map[string]bool)
 	}
-	s.keptHostApps[id] = keptHostApp{Desktop: desktopID, ID: id, Target: target, Args: args}
+	s.keptHostApps[id] = keptHostApp{Desktop: desktopID, ID: id, Target: target, Args: args, SignIns: s.hostSignIns[id]}
 	s.keptHostAppsLive[desktopID] = true
 	s.saveKeptHostAppsLocked()
+}
+
+// noteHostAppSignIns is desktop's SetHostAppSignIns hook: whether the person chose to bring the sign-ins of their own
+// browser with app session id. Kept with the app (saved in hostgui-apps.json) and told to the Windows helper before
+// each launch; set before the app is started ahead, so even that first start has it.
+func (s *Server) noteHostAppSignIns(id string, on bool) {
+	if !hostGUIID.MatchString(id) {
+		return
+	}
+	s.keptHostAppsMu.Lock()
+	if s.hostSignIns == nil {
+		s.hostSignIns = make(map[string]bool)
+	}
+	if on {
+		s.hostSignIns[id] = true
+	} else {
+		delete(s.hostSignIns, id)
+	}
+	if app, ok := s.keptHostApps[id]; ok && app.SignIns != on {
+		app.SignIns = on
+		s.keptHostApps[id] = app
+		s.saveKeptHostAppsLocked()
+	}
+	s.keptHostAppsMu.Unlock()
+	if hostGUISupported() || s.hostAppDesktops != nil {
+		s.hostGUI().SetSignIns(id, on)
+	}
 }
 
 // hostAppSyncInterval is how often the apps kept ready are matched to the desktops that are running: a desktop stopped
@@ -415,6 +444,7 @@ func (s *Server) RestoreHostApps(ctx context.Context) {
 		}
 	}
 
+	var bringing []string
 	s.keptHostAppsMu.Lock()
 	if s.keptHostApps == nil {
 		s.keptHostApps = make(map[string]keptHostApp)
@@ -424,9 +454,19 @@ func (s *Server) RestoreHostApps(ctx context.Context) {
 			continue
 		}
 		s.keptHostApps[app.ID] = app
+		if app.SignIns {
+			if s.hostSignIns == nil {
+				s.hostSignIns = make(map[string]bool)
+			}
+			s.hostSignIns[app.ID] = true
+			bringing = append(bringing, app.ID)
+		}
 	}
 	s.saveKeptHostAppsLocked() // drops the apps of VMs deleted while the control plane was down
 	s.keptHostAppsMu.Unlock()
+	for _, id := range bringing { // the person's choice, before any of them starts again
+		s.hostGUI().SetSignIns(id, true)
+	}
 
 	// Kept ready only for the desktops that are running, now and from here on.
 	s.syncHostApps(ctx)
