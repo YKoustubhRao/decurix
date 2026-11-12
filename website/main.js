@@ -6,7 +6,7 @@
 // "https://github.com/YKoustubhRao/decurix-site/releases/latest/download/Decurix-Setup-x64.exe"
 // ---------------------------------------------------------------------------
 const DOWNLOADS = {
-  version: "v0.1.0",
+  version: "v0.1.1",
   windows: {
     url: "https://github.com/YKoustubhRao/decurix-site/releases/latest/download/Decurix-Setup-x64.exe",
     file: "Decurix-Setup-x64.exe",
