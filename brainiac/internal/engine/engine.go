@@ -761,7 +761,7 @@ func (e *Engine) callBrain(ctx context.Context, bc brainChoice, req backend.Chat
 		if atom.Tokens.Cached == 0 {
 			atom.Tokens.Cached = t.CacheN
 		}
-		e.speed.record(bc.local.model, *t, e.log)
+		e.speed.record(bc.name, *t, e.log) // the served name: a speculative twin is measured apart
 	}
 	return res, atom, nil
 }

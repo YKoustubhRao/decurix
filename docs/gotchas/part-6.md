@@ -1089,3 +1089,6 @@ explains the one thing Windows cannot do - virtualization off in the firmware. T
   `LLAMA_ARG_CORS_ORIGINS=localhost`.
 - The live llama-server tests had a 2-minute load limit; a cold load of Qwen3.5 2B on the laptop takes 4 to 6 minutes
   while other work runs. They now allow 10. Lesson: a timeout in a live test is a claim about the slowest machine it runs on.
+- Measured 2026-11-12 on the laptop: n-gram speculative decoding made Qwen3.5 2B slower on math answers (35.4 s against
+  25.0 s a case, 14% of drafts kept) and no better (48/50 against 49/50). Drafting from the context only pays when the
+  answer copies it; a speed feature still goes through checked cases before it is on.
