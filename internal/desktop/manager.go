@@ -471,18 +471,13 @@ func (m *Manager) runProvisioning(
 		return
 	}
 
-	// 4. Migrate Desktop Icons & Host Apps
+	// Whatever the host has to build to show the chosen apps can happen while the desktop starts; they are copied in
+	// once it is up (below).
 	if len(selectedApps) > 0 {
-		updateStage("apps", "Copying desktop icons and host apps...", 65)
-		if err := m.MigrateHostApps(ctx, sanitizedID, selectedApps); err != nil {
-			log.Printf("hostapps: migration for %s: %v", containerName, err)
-		}
-		m.provisioningMu.Lock()
-		prov.MissingApps = m.MissingApps(sanitizedID)
-		m.provisioningMu.Unlock()
+		WarmHostApps()
 	}
 
-	// 6. Start Container
+	// 5. Start Container
 	updateStage("starting", "Starting desktop environment...", 80)
 	if err := m.startDesktopContainer(ctx, resp.ID); err != nil {
 		fail(fmt.Errorf("start container: %w", err))
@@ -512,7 +507,22 @@ func (m *Manager) runProvisioning(
 		log.Printf("warning: desktop %s GUI readiness probe timed out (will continue running)", sanitizedID)
 	}
 
-	// 7. Ready!
+	// 7. Host apps, copied in only now. A new home volume is the image's, root-owned, until the desktop's first start
+	// hands it to the worker (decurix-entrypoint.sh, before the screen starts); a copy before that start runs as the
+	// worker and every write is refused (found 2026-11-12: a chosen Chrome profile never arrived). The screen being up
+	// means the entrypoint is past the handover; a desktop that did not get ready is still tried, and what fails is
+	// recorded as missing.
+	if len(selectedApps) > 0 {
+		updateStage("apps", "Copying desktop icons and host apps...", 95)
+		if err := m.MigrateHostApps(ctx, sanitizedID, selectedApps); err != nil {
+			log.Printf("hostapps: migration for %s: %v", containerName, err)
+		}
+		m.provisioningMu.Lock()
+		prov.MissingApps = m.MissingApps(sanitizedID)
+		m.provisioningMu.Unlock()
+	}
+
+	// 8. Ready!
 	m.provisioningMu.Lock()
 	prov.Stage = "ready"
 	prov.Message = "Desktop is ready!"
@@ -1658,7 +1668,8 @@ func (m *Manager) PersistMemoryFile(
 	// A container keeps the image it was created from, so a desktop created before the agent's directories moved
 	// under ~/.decurix still runs an agent that reads ~/memory. Write there while it is the only memory directory the
 	// desktop has; a newer agent moves it in when it starts. The script is constant; only the archive varies.
-	const script = `dir=/home/headless/.decurix/memory
+	const script = `umask 022
+dir=/home/headless/.decurix/memory
 if [ -d /home/headless/memory ] && [ ! -d "$dir" ]; then dir=/home/headless/memory; fi
 mkdir -p "$dir" && exec tar -x --no-overwrite-dir -C "$dir" -f -`
 	code, err := m.execWorker(ctx, target, &buf, "/bin/sh", "-c", script)

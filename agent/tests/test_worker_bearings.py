@@ -209,6 +209,44 @@ class AFileSavedOverTheAttachmentIsNotInTheWorkFolder(unittest.TestCase):
                 self.assertIn("already_paid.csv", produced.misplaced(request, root=root))
 
 
+class OpeningAnAppsPageAgain(unittest.TestCase):
+    """`gui open --reuse`, how a host app's launcher opens its viewer in broker mode: found live (2026-11-12), a second
+    click on the app's icon opened a second viewer, and the first opened over the page the browser was showing."""
+
+    VIEW = "http://decurix:8080/host-gui/view?id=chrome-1&token=t"
+
+    def _open(self, pages, reuse=True):
+        with mock.patch.object(core.screen, "windows", lambda: []), \
+                mock.patch.object(core.cdp, "available", lambda: True), \
+                mock.patch.object(core.cdp, "page_list", lambda: pages), \
+                mock.patch.object(core.cdp, "activate_page", return_value=True) as activate, \
+                mock.patch.object(core.cdp, "navigate", return_value="Viewer") as navigate, \
+                mock.patch.object(core, "_raise_browser") as raise_browser, \
+                mock.patch.object(core, "_task_windows", lambda before: None):
+            said = core._open(self.VIEW, False, reuse)
+        return said, activate, navigate, raise_browser
+
+    def test_an_open_tab_of_exactly_that_page_is_brought_forward(self):
+        pages = [{"id": "A", "url": "https://mail.example/", "title": "Mail"}, {"id": "B", "url": self.VIEW, "title": "Viewer"}]
+        said, activate, navigate, raise_browser = self._open(pages)
+        activate.assert_called_once_with("B")
+        navigate.assert_not_called()
+        raise_browser.assert_called_once()
+        self.assertIn("already open", said)
+
+    def test_otherwise_it_opens_in_a_tab_of_its_own(self):
+        pages = [{"id": "A", "url": "https://mail.example/", "title": "Mail"},
+                 {"id": "B", "url": self.VIEW + "&other=1", "title": "Another app's viewer"}]
+        said, activate, navigate, _ = self._open(pages)
+        activate.assert_not_called()
+        navigate.assert_called_once_with(self.VIEW, new_tab=True)
+
+    def test_without_reuse_opening_a_page_is_unchanged(self):
+        said, activate, navigate, _ = self._open([{"id": "B", "url": self.VIEW, "title": "Viewer"}], reuse=False)
+        activate.assert_not_called()
+        navigate.assert_called_once_with(self.VIEW, new_tab=False)
+
+
 @needs("openpyxl")
 class AChartIsMadeByTheTool(unittest.TestCase):
     def test_a_workbook_with_a_chart_reads_back_with_it(self):

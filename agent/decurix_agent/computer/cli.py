@@ -623,6 +623,7 @@ def build_parser():
     opener = sub.add_parser("open", add_help=False)
     opener.add_argument("target", nargs="+")
     opener.add_argument("--new-tab", action="store_true")
+    opener.add_argument("--reuse", action="store_true")
 
     front = sub.add_parser("front", add_help=False)
     front.add_argument("title", nargs="+")
@@ -894,7 +895,7 @@ def run(argv):
 
     if command == "open":
         target = " ".join(args.target)
-        print(core.open_target(target, new_tab=args.new_tab))
+        print(core.open_target(target, new_tab=args.new_tab, reuse=args.reuse))
         hint = _guide_hint(target)
         if hint:
             print(hint)

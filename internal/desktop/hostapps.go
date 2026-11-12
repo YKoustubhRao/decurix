@@ -560,9 +560,11 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 			missing = append(missing, MissingApp{ID: id, Name: name, Reason: reason, Pending: pending})
 		}
 	}
+	names := map[string]string{} // id -> name of every requested app, for the record when the copy itself fails
 
 	for id := range selectedMap {
 		if def, ok := defMap[id]; ok {
+			names[id] = def.name
 			var paths []string
 			if appItem, found := appMap[id]; found && len(appItem.DetectedPaths) > 0 {
 				paths = appItem.DetectedPaths
@@ -580,6 +582,7 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 			}
 			migratedCount++
 		} else if app, ok := appMap[id]; ok {
+			names[id] = app.Name
 			if app.Mode == ModeUnavailable {
 				log.Printf("hostapps: not adding %s to %s (pending=%v): %s", app.ID, desktopID, app.Unverified, app.UnavailableReason)
 				miss(id, app.Name, app.UnavailableReason, app.Unverified)
@@ -604,6 +607,13 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	_ = pw.Close()
 
 	if err := <-copyErrCh; err != nil {
+		// Nothing of the archive is there to use, so every requested app is missing, and says so: a failed copy that
+		// was only logged left a desktop without the asked-for app and a card that said nothing (found 2026-11-12).
+		if m.noteMissingApps(sanitizedID, requested, missingAfterFailedCopy(requested, missing, names)) {
+			if werr := writeMissingFileFn(m, ctx, inspect.ID, m.MissingApps(sanitizedID)); werr != nil {
+				log.Printf("hostapps: telling %s which apps are missing: %v", containerName, werr)
+			}
+		}
 		return fmt.Errorf("copy host apps to %s: %w", containerName, err)
 	}
 
@@ -615,6 +625,34 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 	}
 	m.retryPendingApps(sanitizedID)
 	return nil
+}
+
+// copyFailedReason is why a requested app is missing when the copy into the desktop's home failed as a whole.
+const copyFailedReason = "Copying it into the desktop failed. Add it to the desktop again."
+
+// missingAfterFailedCopy is the missing list once the copy into the home failed: the apps already missing for their own
+// reason keep it, and every other requested app is missing because nothing of the copy arrived. Sorted by id.
+func missingAfterFailedCopy(requested map[string]bool, missing []MissingApp, names map[string]string) []MissingApp {
+	out := append([]MissingApp(nil), missing...)
+	have := map[string]bool{}
+	for _, a := range missing {
+		have[a.ID] = true
+	}
+	ids := make([]string, 0, len(requested))
+	for id := range requested {
+		if !have[id] {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		name := names[id]
+		if name == "" {
+			name = id
+		}
+		out = append(out, MissingApp{ID: id, Name: name, Reason: copyFailedReason})
+	}
+	return out
 }
 
 // -----------------------------------------------------------------------------

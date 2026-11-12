@@ -5,10 +5,18 @@ import unittest
 import urllib.error
 from unittest import mock
 
+import config_stub  # noqa: F401  (first: this process's own agent folder; run alone, a kept note went to the real one)
 from decurix_agent import messaging
 
 
 class AnOutcomeSurvivesARestart(unittest.TestCase):
+    def setUp(self):
+        # The window the agent retries in (sleep is mocked below): a test process otherwise keeps an unsent note at
+        # once (config_stub), and a note kept by one test was then sent first by the next.
+        patcher = mock.patch.object(messaging, "SEND_RETRY_SECONDS", 180)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_a_refused_connection_is_tried_again_until_it_answers(self):
         # Found live (2026-10-15): a final reply met a control-plane restart and was never sent.
         calls = []

@@ -290,3 +290,27 @@ func TestAnAppTheHostCannotKeepRunningIsRecordedAndClearedWhenKeptAgain(t *testi
 	waitFor(t, "the agent's file to be cleared", func() bool { return len(*written) > 1 })
 	m.ClearAppUnavailable("vm1", "paint") // nothing recorded: nothing to do
 }
+
+// A copy into the home that failed as a whole (a new home still root-owned, found 2026-11-12) leaves every requested
+// app missing and says so; an app already missing for its own reason keeps that reason, and the bridge that was never
+// asked for is not listed.
+func TestAFailedCopyListsEveryRequestedAppAsMissing(t *testing.T) {
+	requested := map[string]bool{"koustubh-chrome": true, "paint": true}
+	already := []MissingApp{{ID: "paint", Name: "Paint", Reason: "The host said no."}}
+	got := missingAfterFailedCopy(requested, already, map[string]string{"koustubh-chrome": "Koustubh - Chrome", "host_bridge": "Host bridge"})
+	if len(got) != 2 {
+		t.Fatalf("want 2 missing apps, got %+v", got)
+	}
+	if got[0].ID != "paint" || got[0].Reason != "The host said no." {
+		t.Errorf("an app already missing keeps its own reason: %+v", got[0])
+	}
+	if got[1].ID != "koustubh-chrome" || got[1].Name != "Koustubh - Chrome" || got[1].Reason != copyFailedReason || got[1].Pending {
+		t.Errorf("the app the failed copy lost: %+v", got[1])
+	}
+
+	m := bareManager()
+	m.noteMissingApps("vm1", requested, got)
+	if n := len(m.MissingApps("vm1")); n != 2 {
+		t.Errorf("the desktop's card must show both, got %d", n)
+	}
+}

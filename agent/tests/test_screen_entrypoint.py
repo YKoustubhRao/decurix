@@ -172,5 +172,25 @@ class TheWindowList(unittest.TestCase):
         self.assertEqual(broker.count('<property name="length-adjust" type="bool" value="true"/>'), 2)
 
 
+class TheBrowserWrapperInBrokerMode(unittest.TestCase):
+    """agent/chromium-browser started as the worker in broker mode: a host app's launcher opens its viewer with
+    --app=<page>, which must open that page (it opened a blank window, 2026-11-12); no other flag gets through."""
+
+    def setUp(self):
+        text = (AGENT / "chromium-browser").read_text(encoding="utf-8")
+        start = text.index('if [ "${DECURIX_SCREEN_USER:-}" = "1" ]')
+        self.block = text[start:text.index("\nfi\n", start)]
+
+    def test_an_app_page_is_opened_as_a_page(self):
+        app = self.block.index("--app=http://*|--app=https://*)")
+        self.assertLess(app, self.block.index('-*|"") ;;'), "the --app case must come before flags are dropped")
+        self.assertIn('/usr/local/bin/gui open --reuse "${arg#--app=}"', self.block)
+
+    def test_only_web_pages_and_nothing_else_of_a_flag(self):
+        self.assertNotIn("--app=*)", self.block)
+        self.assertEqual(self.block.count("/usr/local/bin/gui open"), 3, "a page, an --app page, or the browser")
+        self.assertNotIn('"$@"', self.block.replace('for arg in "$@"', ""))
+
+
 if __name__ == "__main__":
     unittest.main()

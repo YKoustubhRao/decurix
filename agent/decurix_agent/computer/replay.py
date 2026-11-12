@@ -220,6 +220,8 @@ def compile_program(meta, events, frames=None):
         if kind == "open":
             step["open"] = event.get("target") or ""
             step["new_tab"] = bool(event.get("new_tab"))
+            if event.get("reuse"):  # an app's page brought forward when already open (gui open --reuse)
+                step["reuse"] = True
 
         if kind == "manual":
             step["reason"] = event.get("reason") or "a private step"
@@ -1241,7 +1243,7 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
 
     try:
         if kind == "open":
-            core.open_target(step["open"], new_tab=step.get("new_tab", False))
+            core.open_target(step["open"], new_tab=step.get("new_tab", False), reuse=bool(step.get("reuse")))
             return {"status": "done", "observation": None}
 
         if _desktop_nudge(step):

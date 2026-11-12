@@ -26,10 +26,17 @@ class _Memory(TempDirCase):
                 raise self.says
             return self.says
 
+        def no_network(*args, **kwargs):
+            # "available" above is only this test's say-so: a real model call (the approval reading of a reply,
+            # approval.reading) went to the control plane and, where none answers, held the suite for minutes
+            # (found 2026-11-12). With none, the reading falls back to its word lists, as on a desktop without a model.
+            raise OSError("no model in a unit test")
+
         for p in (patch.object(lessons.config, "MEMORY_DIR", self.dir),
                   patch.object(lessons, "remember", remember),
                   patch.object(lessons.study, "_call", call),
-                  patch.object(lessons.llm_client, "available", lambda: self.says is not None)):
+                  patch.object(lessons.llm_client, "available", lambda: self.says is not None),
+                  patch.object(lessons.llm_client, "chat", no_network)):
             p.start()
             self.addCleanup(p.stop)
 
