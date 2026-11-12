@@ -164,6 +164,9 @@ func runDetectHostApps() []HostAppItem {
 		}
 	}
 
+	// A browser the person already has open can be mirrored instead of copied (mirror.go).
+	items = append(items, mirrorApps(items)...)
+
 	// Sort items alphabetically by Name
 	sort.SliceStable(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
@@ -295,6 +298,9 @@ func SetHostAppStarter(f func(desktopID, id, target, args string)) {
 // startHostAppAhead fires the installed starter, if any, and never blocks: packaging a launcher must not wait on the
 // app it names actually opening on the host.
 func startHostAppAhead(desktopID, id, target, args string) {
+	if winhost.IsMirror(target) {
+		return // the person's own program, already open: there is nothing to start ahead
+	}
 	hostAppStarterMu.RLock()
 	f := hostAppStarter
 	hostAppStarterMu.RUnlock()

@@ -436,6 +436,13 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 // launchLine starts the program in helper s. If a check has already resolved it the helper is told exactly what to run;
 // if that program has since moved, or was never checked, the helper looks it up itself.
 func (m *Manager) launchLine(s *Session, target, args string) (string, error) {
+	if IsMirror(target) {
+		line, err := mirrorLine(target, args)
+		if err != nil {
+			return "", err
+		}
+		return s.DoTimeout(line, launchRequestTimeout)
+	}
 	t := Target{target, args}
 	m.mu.Lock()
 	r, known := m.resolved[t]
@@ -470,6 +477,15 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 	for _, t := range targets {
 		if !carriable(t) {
 			verdicts[t] = "invalid application"
+			continue
+		}
+		if IsMirror(t.Target) {
+			// Nothing is started, so nothing is asked of the host: a mirror runs wherever its program is open.
+			if _, err := mirrorLine(t.Target, t.Args); err != nil {
+				verdicts[t] = "invalid application"
+			} else {
+				verdicts[t] = ""
+			}
 			continue
 		}
 		ask = append(ask, t)
@@ -600,6 +616,9 @@ func (m *Manager) Stop(id string) {
 // at once instead of starting it on the host while somebody watches. A kept app nobody has looked at yet is never ended
 // for being unwatched. desktop is the VM it was copied to (ForgetDesktop).
 func (m *Manager) Keep(desktop, id, target, args string) {
+	if IsMirror(target) {
+		return // the person's own program: nothing to start ahead, and it is never started again for them
+	}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()

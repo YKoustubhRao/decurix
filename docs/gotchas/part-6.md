@@ -1142,6 +1142,18 @@ explains the one thing Windows cannot do - virtualization off in the firmware. T
   `hostgui-apps.json`) and told to the bridge as `signins 1|0` before every launch, so a helper reused for another app
   never keeps the last answer. Never accepted on the gated listener. Lesson: look at what the copy actually holds, and at
   what the app did with it, before blaming the setting.
+- Mirror mode (a browser the person already has open, shown in the VM instead of copied): the helper was written on
+  the assumption that the desktop it watches is its own - it enumerates every window of it, closes them at shutdown and
+  terminates every process that owns one, and joins the app's input queue to carry Ctrl/Shift. Pointed at the person's
+  own desktop each would act on their programs, so mirror mode is guarded at exactly those places (see architecture.md,
+  "Mirror") and pinned by `TestMirrorModeInTheBridgeNeverTouchesThePersonsOwnPrograms`. Tried first, on purpose, on a
+  Character Map the test starts itself, never on a program with the person's files: Notepad restored the person's own
+  tabs and opened minimised, which a mirror (correctly) does not attach to. Lesson: before a tool that owns "the app's
+  desktop" is given the person's, list every call that assumes it owns it.
+- A test that stands bash in for the Windows helper is skipped on Windows, so a green run here says nothing about it:
+  `TestEveryLaunchSaysWhetherItBringsTheSignIns` expected two helper lines to be adjacent (the helper is told `viewers`
+  and `pid` between them) and failed on Linux while this host reported the package green. Run the winhost package in the
+  Go container (`docker run ... golang:1.27 go test ./internal/winhost/`) whenever it changes, and read "SKIP" as "not run".
 - The cookie database is held open by the person's running browser, so the import copied everything else and left it
   (robocopy exit 8), and the "imported" marker then stopped every later launch from trying again. Now an import that
   could not copy it leaves `.decurix-host-profile-cookies-pending-*`, and the next launch copies it when it is free

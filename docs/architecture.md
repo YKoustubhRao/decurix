@@ -661,6 +661,22 @@ A worker cannot see files that live only on the person's computer, so it had to 
 
 **The instance tag.** Each control plane has a random tag, kept in the `instance-id` file in its data folder (`sqlitedb.InstanceID`). The file is made with an exclusive create; an empty one older than 5 s is a crash's leftover and is made again. The tag was a hash of the data folder's path before 2026-11-03, but every containerised control plane has `/data`, so they shared one tag. Hops, home-copy helpers (`decurix.homefs.instance`) and host-app helpers carry it.
 
+**Mirror (a program the person already has open).** A host app is normally *started* on a private desktop of this
+computer, in a private profile: for a browser, an empty one, and a copy of the person's profile is a second device, which
+a login bound to one device (WhatsApp Web) rejects and wipes. A **mirror** entry ("Google Chrome (live on this PC)",
+`mirror_<program>`, offered for each detected browser; `internal/desktop/mirror.go`) starts nothing and copies nothing:
+the helper's `attach <program> [title words]` finds the person's own window of that program on their own desktop and
+shows and drives it the way it does any app - `PrintWindow` for the picture, posted mouse and key messages for input, so
+the person's cursor and keyboard are not taken - and the VM shows the same process, signed in as it is, with no profile
+copied. Rules that keep it from touching the person's programs: the target is `mirror:<program>` (a bare executable name,
+checked in Go and in the helper) inside the launcher's signed token like any other; `Shutdown` returns before it closes or
+terminates anything; only the mirrored window and the popups it owns are "the app's" (`Belongs`); `OK pid=0` leaves
+nothing for the reaper to end; modifiers are not carried (`WithModifiers` would set the key state of the person's own
+keyboard), so Ctrl/Alt shortcuts do not reach it yet; a mirror is never kept ready or started ahead (`Keep`, `startHostAppAhead`)
+and is not asked of the host (`Check`). It needs the program open and not minimised (a minimised window cannot be
+captured, and the viewer says the app closed), the PC awake and unlocked, and it is the person's real, signed-in session:
+the worker acts as them in it, so it is offered at their own screen only, as the apps themselves are.
+
 **Host apps.** Every host-app helper carries `-DecurixInstance <instance tag>` on its command line. The start-up sweep, the reaper and the file-release script end only this instance's helpers; untagged helpers from older builds are logged and left alone. So two control planes on one PC no longer end each other's helpers (W-04). An app is a web app only when its command or AppID is an http(s) target; no product is guessed from a name (B-20). Host session ids are `prefix-prefix-<12 hex of sha256(desktop\0slug)>`, and `winhost.Start` never joins a session running another app. A private browser profile with an old import marker is deleted once before launch unless `DECURIX_IMPORT_HOST_BROWSER_PROFILE=1`. Host apps start suspended and run only once they are assigned to the kill-on-close job.
 
 **Requested host apps that are not added.** `MigrateHostApps` never skips one silently: each requested app it does not add is a `desktop.MissingApp` (name, plain reason, `Pending`), kept by the Manager (`missingapps.go`), returned in the create answer, `/api/desktops/status`, `/api/desktops/activity` (the card) and `POST /api/desktops/host-apps/copy`, and written to `~/.decurix/missing-apps.json` for the desktop's agent (`identity.py` lists them; `gui open` of one is refused instead of opening a stand-in). An app the host-app check could not reach (`HostAppItem.Unverified`: the helper died or timed out) is not a verdict: it is never cached, it is asked about again when a desktop wants it, and `retryPendingApps` tries it in the background for about six minutes, copying its launcher into the running desktop when it checks out. `RestoreMissingApps` reads the files back at start.

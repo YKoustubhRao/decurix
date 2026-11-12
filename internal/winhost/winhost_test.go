@@ -65,6 +65,7 @@ while IFS= read -r l; do
   case "$l" in
     launchr*) if [ "` + moved + `" = 1 ]; then echo "ERR Not found on this computer: gone"; else dolaunch; fi;;
     launch*)  dolaunch;;
+    attach*)  dolaunch;;
     keyframe) echo OK; send 1 0 0 20 10 ABC;;
     "thumb 4") if [ -z "$thumbed" ]; then thumbed=1; printf 'THUMB 4 2 3
 XYZ'; else echo "THUMB same"; fi;;
@@ -172,6 +173,12 @@ func TestStartWaitsForFirstPictureAndForwardsInputVerbatim(t *testing.T) {
 	}
 }
 
+// before reports whether both words are in s, first before second.
+func before(s, first, second string) bool {
+	a, b := strings.Index(s, first), strings.Index(s, second)
+	return a >= 0 && b > a
+}
+
 // TestEveryLaunchSaysWhetherItBringsTheSignIns: the person's per-app choice reaches the helper before each launch - on
 // as chosen, and off for any other app, so a helper reused for another app never carries the last one's answer.
 func TestEveryLaunchSaysWhetherItBringsTheSignIns(t *testing.T) {
@@ -182,16 +189,16 @@ func TestEveryLaunchSaysWhetherItBringsTheSignIns(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(received(t), "|")
-	if !strings.Contains(got, "signins 1|launch	") {
-		t.Errorf("a chosen app must be told signins 1 right before its launch; got %q", got)
+	if !before(got, "signins 1", "launch") {
+		t.Errorf("a chosen app must be told signins 1 before its launch; got %q", got)
 	}
 
 	m2, _ := fakeManager(t, fakeOpts{launch: "OK pid=43"})
 	if _, err := m2.Start(context.Background(), "vm1-other", `C:\Program Files\Apppp.exe`, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(received(t), "|"); !strings.Contains(got, "signins 0|launch	") {
-		t.Errorf("any other app must be told signins 0; got %q", got)
+	if got := strings.Join(received(t), "|"); !before(got, "signins 0", "launch") {
+		t.Errorf("any other app must be told signins 0 before its launch; got %q", got)
 	}
 
 	m.SetSignIns("vm1-chrome", false)
@@ -670,6 +677,38 @@ func TestTheBridgeTakesTheSignInChoiceFromTheControlPlaneAndFinishesCookiesLater
 	}
 	if reads != 1 { // only Test-ImportOptIn reads the old machine-wide switch
 		t.Errorf("the old machine-wide switch is read on %d code lines, want only Test-ImportOptIn's", reads)
+	}
+}
+
+// TestMirrorModeInTheBridgeNeverTouchesThePersonsOwnPrograms pins the three places the helper would otherwise act on "the
+// app on this desktop" - which in mirror mode is the person's own: Shutdown (closes, then terminates, whatever is there),
+// the windows that count as the app's, and the key state of the app's input queue.
+func TestMirrorModeInTheBridgeNeverTouchesThePersonsOwnPrograms(t *testing.T) {
+	src := strings.ReplaceAll(string(Script), "\r\n", "\n")
+	body := func(from string) string {
+		i := strings.Index(src, from)
+		if i < 0 {
+			t.Fatalf("bridge.ps1 lost %q", from)
+		}
+		return src[i:min(len(src), i+1400)]
+	}
+	// Shutdown returns before it closes or terminates anything.
+	shut := body("public static void Shutdown() {")
+	guard, closeAt, killAt := strings.Index(shut, "if (attached) return;"), strings.Index(shut, "WM_CLOSE"), strings.Index(shut, "TerminateProcess")
+	if guard < 0 || (closeAt >= 0 && closeAt < guard) || (killAt >= 0 && killAt < guard) {
+		t.Error("Shutdown must return before it closes or terminates anything when the app is the person's own")
+	}
+	// Only the mirrored window, and what it owns, is the app's.
+	if !strings.Contains(body("static bool Collect(IntPtr h, IntPtr l) {"), "if (attached && !Belongs(h)) return true;") {
+		t.Error("in mirror mode the person's other windows must not count as the app's")
+	}
+	// No borrowing the person's own input queue for modifiers.
+	if !strings.Contains(body("static string WithModifiers("), "if (attached) { act(); return \"OK unmodified\"; }") {
+		t.Error("in mirror mode WithModifiers must not join the app's input queue")
+	}
+	// The program is a bare name, chosen by the control plane's signed launcher.
+	if !strings.Contains(src, `^[A-Za-z0-9._-]{1,64}$`) || !strings.Contains(src, `"attach" {`) {
+		t.Error("the attach command lost its program-name check")
 	}
 }
 

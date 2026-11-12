@@ -173,6 +173,79 @@ public class Native {
         return Marshal.StringToHGlobalUni(string.Join("\0", vars) + "\0\0");
     }
 
+    // ---- Mirror mode. The app is not started here, and nothing here ever ends it: it is one the person already has open on
+    // their own desktop, and its window is shown and driven from the VM as it is - the same process, signed in as it is,
+    // with nothing copied. Everything below that would otherwise act on "the app on this desktop" is limited to that one
+    // window and the popups it owns, and Shutdown, which on a private desktop closes and terminates whatever is there, does
+    // nothing at all (it would be the person's own programs). Keyboard modifiers are not carried either (WithModifiers):
+    // that borrows the app's input queue, which here is the person's own keyboard.
+    static bool attached;
+    static string attachExe = "", attachTitle = "";
+    static IntPtr attachMain;
+    [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint tid);
+
+    // The name of the program a process runs, lower case and without .exe; "" when it cannot be read.
+    static string ImageBase(int pid) {
+        IntPtr proc = OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid);
+        if (proc == IntPtr.Zero) return "";
+        try {
+            var name = new StringBuilder(1024); int size = name.Capacity;
+            if (!QueryFullProcessImageName(proc, 0, name, ref size)) return "";
+            return System.IO.Path.GetFileNameWithoutExtension(name.ToString()).ToLowerInvariant();
+        } finally { CloseHandle(proc); }
+    }
+
+    // The window to mirror: the topmost visible, not minimised, unowned top-level window of the program, whose title holds
+    // the words asked for (any, when none were).
+    static IntPtr FindMain() {
+        IntPtr found = IntPtr.Zero;
+        EnumProc each = (h, l) => {
+            if (!IsWindowVisible(h) || IsIconic(h) || GetWindow(h, 4 /* GW_OWNER */) != IntPtr.Zero) return true;
+            int pid; GetWindowThreadProcessId(h, out pid);
+            if (ImageBase(pid) != attachExe) return true;
+            var title = new StringBuilder(512); GetWindowText(h, title, 512);
+            if (title.Length == 0) return true;
+            if (attachTitle.Length > 0 && title.ToString().IndexOf(attachTitle, StringComparison.OrdinalIgnoreCase) < 0) return true;
+            found = h;
+            return false;
+        };
+        EnumDesktopWindows(desktop, each, IntPtr.Zero);
+        return found;
+    }
+
+    // Whether a window is the mirrored one or a popup (a menu, a drop-down, a dialog) it owns. True for anything on a
+    // private desktop, where there is nothing else.
+    static bool Belongs(IntPtr h) {
+        if (!attached) return true;
+        if (attachMain == IntPtr.Zero || !IsWindow(attachMain)) attachMain = FindMain();
+        if (attachMain == IntPtr.Zero) return false;
+        if (h == attachMain) return true;
+        IntPtr owner = GetWindow(h, 4 /* GW_OWNER */);
+        for (int i = 0; i < 4 && owner != IntPtr.Zero; i++) {
+            if (owner == attachMain) return true;
+            owner = GetWindow(owner, 4);
+        }
+        return false;
+    }
+
+    // Mirrors the window of program exe (a bare name such as chrome) that the person has open on their own desktop.
+    public static string Attach(string exe, string title) {
+        if (exe == null || !System.Text.RegularExpressions.Regex.IsMatch(exe, @"^[A-Za-z0-9._-]{1,64}$")) return "ERR not a program name";
+        if (desktop != IntPtr.Zero || attached) return "ERR this helper already has an app";
+        attachExe = exe.ToLowerInvariant();
+        if (attachExe.EndsWith(".exe")) attachExe = attachExe.Substring(0, attachExe.Length - 4);
+        attachTitle = title == null ? "" : title.Trim();
+        desktop = GetThreadDesktop(GetCurrentThreadId()); // this helper's own: the person's
+        if (desktop == IntPtr.Zero) return "ERR no desktop";
+        attached = true;
+        attachMain = FindMain();
+        if (attachMain == IntPtr.Zero) {
+            attached = false; desktop = IntPtr.Zero;
+            return "ERR " + attachExe + " has no window open on this computer right now. Open it, and do not minimise it, then try again.";
+        }
+        return "OK pid=0"; // no process of ours: nothing for the control plane to end
+    }
+
     public static string Launch(string desktopName, string exe, string args, string workDir) {
         desktop = CreateDesktop(desktopName, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
         if (desktop == IntPtr.Zero) return "ERR CreateDesktop failed (" + Marshal.GetLastWin32Error() + ")";
@@ -437,6 +510,7 @@ public class Native {
     public static void Shutdown() {
         stopCapture = true; wake.Set();
         if (capThread != null && capThread.IsAlive) capThread.Join(1000);
+        if (attached) return; // mirror mode: the app is the person's own and stays exactly as it is
         if (desktop != IntPtr.Zero) {
             foreach (var w in AppWindows()) PostMessage(w.H, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero);
             for (int i = 0; i < 25 && AppWindows().Count > 0; i++) System.Threading.Thread.Sleep(100);
@@ -454,6 +528,7 @@ public class Native {
 
     // "running", or the code the launched process exited with (0xC0000142 means it could not start on this desktop).
     public static string Status() {
+        if (attached) return attachMain != IntPtr.Zero && IsWindow(attachMain) ? "running" : "exited 0x0";
         uint code;
         if (launched == IntPtr.Zero || !GetExitCodeProcess(launched, out code)) return "unknown";
         return code == 259 ? "running" : "exited 0x" + code.ToString("X");
@@ -481,6 +556,7 @@ public class Native {
         if (DwmGetWindowAttribute(h, 14 /* DWMWA_CLOAKED */, out cloaked, 4) == 0 && cloaked != 0) return true;
         RECT r; GetWindowRect(h, out r);
         if (r.R - r.L < 8 || r.B - r.T < 8) return true;
+        if (attached && !Belongs(h)) return true; // mirror mode: the person's other windows are not the app's
         // What the window actually shows: Windows adds an invisible resize border that captures as black.
         RECT v; if (DwmGetWindowAttribute(h, 9 /* DWMWA_EXTENDED_FRAME_BOUNDS */, out v, Marshal.SizeOf(typeof(RECT))) != 0 || v.R <= v.L || v.B <= v.T) v = r;
         ((List<Win>)GCHandle.FromIntPtr(l).Target).Add(new Win { H = h, R = r, V = v, Sc = Scale(h) });
@@ -1551,6 +1627,8 @@ public class Native {
     // Returns "OK", or "OK unmodified" if Windows would not let a thread join the app's queue.
     static string WithModifiers(IntPtr target, string mods, Action act) {
         if (string.IsNullOrEmpty(mods)) { act(); return "OK"; }
+        // Mirror mode: joining the app's input queue would set the key state of the person's own keyboard.
+        if (attached) { act(); return "OK unmodified"; }
         string result = "OK";
         var th = new System.Threading.Thread(() => {
             int pid; uint appThread = GetWindowThreadProcessId(target, out pid);
@@ -2345,6 +2423,11 @@ $Commands = [Action[string, string]] {
             if ($rest -eq '1') { $script:SignIns = $true; Reply "OK" }
             elseif ($rest -eq '0') { $script:SignIns = $false; Reply "OK" }
             else { Reply "ERR signins takes 0 or 1" }
+        }
+        "attach" {
+            # Mirror mode: show and drive a window the person already has open (their own Chrome, say); starts nothing.
+            $f = $rest.Split("`t")
+            Reply ([Native]::Attach($f[0], $(if ($f.Count -gt 1) { $f[1] } else { '' })))
         }
         "launch" {
             $f = $rest.Split("`t")
