@@ -332,6 +332,7 @@
       "basis": "Qwen3.5 model card (2026-02): natively multimodal, hybrid DeltaNet attention; ScreenSpot-Pro 54.5; Artificial Analysis v4.3.2: 7.",
       "params_b": 2.3,
       "kv_per_token_mb": 0.0117,
+      "state_mb": 19.27,
       "license": "Apache-2.0",
       "license_class": "permissive",
       "sources": [
@@ -382,6 +383,7 @@
       "basis": "Qwen3.5 model card (2026-02): MMMU 77.6, ScreenSpot-Pro 60.3, TAU2 79.9 (NVIDIA measured 61.7 at Q4_K_M); Artificial Analysis v4.3.2: 13 (est.).",
       "params_b": 4.66,
       "kv_per_token_mb": 0.0313,
+      "state_mb": 50.25,
       "license": "Apache-2.0",
       "license_class": "permissive",
       "sources": [
@@ -558,7 +560,8 @@
       },
       "basis": "Qwen3.6 model card (2026-04): SWE-V 73.4 (NVIDIA measured 70.1), MMMU 81.7, OCRBench 90.0; Artificial Analysis v4.3.2: 18.",
       "params_b": 36,
-      "kv_per_token_mb": 0.06,
+      "kv_per_token_mb": 0.0195,
+      "state_mb": 62.81,
       "license": "Apache-2.0",
       "license_class": "permissive",
       "sources": [
@@ -610,6 +613,7 @@
       "basis": "Qwen3.8 model card (2026-08): TB2.1 73.0, GPQA 89.2, OSWorld-Verified 84.3 (self-reported); Artificial Analysis v4.3.2: 34, the best open model that fits one 24 GB GPU.",
       "params_b": 27.8,
       "kv_per_token_mb": 0.0625,
+      "state_mb": 149.62,
       "license": "Apache-2.0",
       "license_class": "permissive",
       "sources": [
@@ -1652,7 +1656,8 @@
           "weights_gb": 1.274
         }
       ],
-      "kv_per_token_mb": 0.0117
+      "kv_per_token_mb": 0.0117,
+      "state_mb": 19.27
     },
     {
       "id": "slm-sql-1.5b",
@@ -1777,6 +1782,7 @@
         }
       ],
       "kv_per_token_mb": 0.0313,
+      "state_mb": 50.25,
       "thinks": true,
       "think_tokens": 4000,
       "ctx": 16384
@@ -1810,7 +1816,8 @@
           "weights_gb": 21.713
         }
       ],
-      "kv_per_token_mb": 0.06,
+      "kv_per_token_mb": 0.0195,
+      "state_mb": 62.81,
       "active_b": 3.0,
       "thinks": true,
       "think_tokens": 4000,
@@ -1850,7 +1857,8 @@
           "weights_gb": 16.547
         }
       ],
-      "kv_per_token_mb": 0.0625
+      "kv_per_token_mb": 0.0625,
+      "state_mb": 149.62
     },
     {
       "id": "hy-mt2-1.8b",

@@ -28,6 +28,18 @@ The same script runs on a laptop, a GPU box or a server. Only what it measures c
 
 Models and state live in `BRAINIAC_HOME` (default `~/.brainiac`), never in the repo. Do not put it on a RAM disk (WSL's `/tmp` is one); the census warns if you do.
 
+## Memory and speed on a small machine
+
+On a CPU, a desktop's turn is mostly prompt to read: thousands of tokens of conversation and screen text before a short answer. What makes the next turn cheap is llama-server finding the prompt's start it already read. So Brainiac counts and measures that, and leaves nothing to llama.cpp's defaults:
+
+- **Every byte is counted.** A model's memory is its file, the runtime's buffers, the KV cache at its window (q8_0, 34 bytes per 32 values), a hybrid model's recurrent state (Qwen3.5's linear-attention layers, about 20 MB for the 2B), up to `3` context checkpoints of that state per slot (llama.cpp would keep 32, over half a gigabyte for the 2B) and its prompt cache. Once a model is installed, these come from its file's own header (`internal/gguf`), not the catalog.
+- **The prompt cache is sized, not defaulted.** llama.cpp keeps up to 8 GiB of prompt starts in host memory per server unless told otherwise. Brainiac gives the brain room for one prompt start per desktop taking turns (`prompt_cache_prefixes`, default 3), only from memory nothing chosen uses (the OCR worker stays loaded beside the brain first) and at most a fifth of the budget, and passes that as `--cache-ram`; an embedding server gets none. The plan says what it kept (`keeps up to N MB of prompt starts`).
+- **Placement is explicit.** `--fit off` and the GPU layers the plan chose (`-ngl 0` on the CPU), so a new llama.cpp default cannot move a model the plan did not count.
+- **A reload keeps the conversation.** Before a server stops (unloaded for memory, a new plan, shutdown) its slot is saved to `slots/` and restored when it starts again, so the next turn reads only what is new (measured on the laptop: 525 of 544 prompt tokens restored). A saved state only ever loads into the same model file, build and settings.
+- **Measured, not guessed.** `brainiac bench` (run after `pull`; `--no-bench` skips it) starts the brain as `serve` would and measures prompt reading (short and about 6000 tokens), writing, a turn with its prompt start cached and one read cold, the thread counts worth trying, whether the machine slowed as it warmed, and mains or battery. On the laptop the 2B brain reads a 6,000-token prompt in 276 s cold and answers a new question on it in 2 s once its start is cached. The results (`speed.json`, tied to the exact file and build) replace the plan's estimates: each chat model's line says what a desktop turn takes here, cached and cold, measured or estimated.
+- **The cache is watched.** Every local answer's trace carries llama-server's timings (prompt tokens from the cache, reading and writing time, drafted tokens kept). `/v1/brainiac/status` shows each model's recent cache hit rate and speeds under `speed`, with a warning (also logged) when long prompts stop coming from the cache.
+- **Speculative decoding only when earned.** `speculative: ngram` allows llama-server's n-gram drafting (no second model; faster when the answer copies its context). A model uses it only once checked cases show it as good with it as without in every field both were measured in: `brainiac eval --cases f.jsonl --models m,m+ngram` measures the twin `m+ngram`. Batched checking of drafts is not bit-exact, so it is held to the same evidence as any cheaper path.
+
 ## Fields: math, code, SQL, law, medicine, finance, science, translation
 
 What the plan picks depends on the machine:
@@ -132,7 +144,7 @@ A model file is untrusted input to a large native parser, and it carries a chat 
 - **Hash-locked worker packages** (G-09, 2026-11-08). The worker's pip groups install only from `workers/python/locks/<group>-cp3N-<target>.txt`: every package the group reaches, transitive ones included, at one version, with the sha256 of each wheel, for CPython 3.11-3.14 on `win_amd64`, `linux_x86_64`, `linux_aarch64` and `macos_arm64` (32 files). pip runs with `--require-hashes --only-binary=:all:`, so nothing unhashed and no sdist build runs. A machine with no lock for its Python and system, or a file that is not fully locked (`worker.CheckLocked`), is refused before a venv is made: there is no unlocked fallback. `python3 -I brainiac/scripts/lock_worker.py` (`py -3 -I` on Windows) makes the locks from PyPI's JSON index alone (each project's files and sha256 from the Simple API, each chosen wheel's dependencies from its PEP 658 metadata, markers evaluated for the target); it resolves the groups together so they install side by side, and needs no install and no pip-compile. Rerun it after changing a `requirements-*.txt`; numpy is pinned there per Python (2.4.6 below 3.12, 2.5.4 from 3.12).
 - **A signed catalog.** The catalog ships inside the binary. A newer one, or extra models, arrive as an overlay (`catalog.local.json`) with a detached ed25519 signature beside it (`catalog.local.json.sig`) made with the owner's key, whose public half is compiled in (`internal/catalog/sign.go`). A signed overlay is used only when its signature verifies; an unsigned one is the operator's own (`scout adopt`, the updater) and is used except on an appliance, where only a signed overlay is and `scout adopt`, `scout pin` and the updater's adoptions are refused. Writing the overlay locally removes a signature beside it. `brainiac catalog pin <file>` fills a catalog file's missing pins from metadata (no model is downloaded) without moving anything else in the file; `catalog sign <file> --key <keyfile>` (or `BRAINIAC_CATALOG_KEY`) signs it; `catalog verify <file>` checks it against this build's key and lists what stays unpinned; `catalog keygen --out <file>` makes the owner's key pair. Until the owner's public key is compiled in, a build trusts no key, so an appliance runs the shipped catalog alone.
 - **Chat templates.** The first template a model installs is recorded in `templates.json` and its text kept under `templates/`, to read. A different one later stops the install, and the updater sets that model aside, until a person reads it and runs `brainiac update approve-template <model>`. A file whose template no longer matches its lock is not served. This catches a change; code cannot judge whether a model's first template is honest.
-- **Secrets.** `llama-server` and the Python worker get a short list of environment variables, none of them Brainiac's keys. `pip` installs for the worker run without any `*_KEY` or `*_TOKEN`.
+- **Secrets.** `llama-server` and the Python worker get a short list of environment variables, none of them Brainiac's keys. A llama-server that has to run on a TCP port (no Unix socket here) gets a random key of its own, in its environment rather than on its command line, and allows no web origin but localhost's: llama.cpp otherwise answers any program and any page on that port. `pip` installs for the worker run without any `*_KEY` or `*_TOKEN`.
 - **Downloads.** A file is checked against the catalog's sha256 before it is put in place. A llama.cpp build is reused only when its install record shows it intact. Three sherpa-onnx whisper archives (`whisper-turbo`, `whisper-small`, `whisper-tiny.en`) have no GitHub digest, so they stay unpinned and are not installed until a person hashes them.
 - **Network and files.** On Linux each model process (llama-server, the Python worker) runs with no network and in its own mount namespace, reached through a Unix socket only this user can open. Its root holds only the system's read-only directories (`/usr`, `/lib*`, `/bin`, `/sbin`, `/opt`, `/etc`, `/sys`, a few `/proc` files), its program and the libraries it loads from its build, its model files and its socket directory. Only the socket directory is writable, plus, for the worker, its venv and a temp folder in the store. A managed (non-system) Python for the worker also gets its standard library read-only: the `lib/python3.N` beside its `bin`, found by the `os.py` landmark through the venv's link to its base interpreter, and nothing else of its prefix (FIX-BR-1). Other programs' Unix sockets, this user's home and `/run` are not in its view. Its `/dev` holds only the plain devices (`null`, `zero`, `full`, `random`, `urandom`), the GPU nodes this machine has (`/dev/dri`, `/dev/kfd`, `/dev/nvidia*`, and `/dev/dxg` on WSL2) and a private `/dev/shm`. `/proc/driver/nvidia` is read-only where it exists.
 - **Where that cannot work.** Where the host refuses unprivileged namespaces (an AppArmor rule, a container), Brainiac falls back to Landlock and lists what stays reachable in `/v1/brainiac/status` under `unconfined` (`sockets`, `udp`, `network`, `files`). Windows and macOS have neither, so `unconfined` lists more there. With `sandbox: required` (the default with `BRAINIAC_APPLIANCE`) Brainiac refuses to start a process it cannot fully confine. `sandbox: off` is for a GPU driver that needs a path the sandbox does not allow; it is refused on an appliance.
@@ -154,6 +166,7 @@ Not covered: a hostile model can still give bad answers; that is what Decurix's 
 | `brainiac status` | What a running Brainiac holds in memory |
 | `brainiac paths` | Per field: which local models have earned it, and why each has or has not |
 | `brainiac eval --cases f.jsonl [--models a,b] [--learn]` | Measures models field by field on checked cases; the server uses the results to route |
+| `brainiac bench [--models a,b] [--threads 3,6] [--long N]` | Measures how fast installed models read prompts and write here, cached and cold, and keeps it for the plan and the router (refuses when the memory to load the model is not free) |
 | `brainiac update [--apply] [--json]` | Rates new open models from public evaluations and says what would change; `--apply` installs, checks and stages it (never switches) |
 | `brainiac update promote` | A person switches to the staged plan (on an appliance, only a signed release with a passed parity eval); a running `serve` follows within 30 s |
 | `brainiac update sign-release <lock.next.json> --key k [--out dir]` | Writes `release.json` and its signature, naming that lock, for an appliance to promote |
@@ -217,6 +230,7 @@ If the remote brain fails, the request fails with the status. Set `local_fallbac
 |---|---|---|
 | `listen` | `BRAINIAC_LISTEN` | `127.0.0.1:8484` |
 | `api_key_env` | `BRAINIAC_API_KEY_ENV` | none: allowed only on loopback |
+| `allowed_hosts` | `BRAINIAC_ALLOWED_HOSTS` (comma-separated) | none: without a key, only `localhost`, `127.0.0.0/8` and `::1` are answered, in the `Host` and in any `Origin` header |
 | `mode` | `BRAINIAC_MODE` | `local`, or `hybrid` when a remote is set |
 | `ollama_url` | `OLLAMA_URL` | `http://127.0.0.1:11434` |
 | `share_media` | `BRAINIAC_SHARE_MEDIA` | false |
@@ -225,7 +239,9 @@ If the remote brain fails, the request fails with the status. Set `local_fallbac
 | `reserve_gb`, `planned_load_gb` | | the selector's default; the plan flags `--reserve` and `--planned-load` win |
 | `threads` | | half the logical CPUs, at least 1 (llama-server's `-t`, the worker's `OMP_NUM_THREADS`) |
 | `image_max_side` | | 1280 for local vision models (-1 never shrinks) |
-| `max_local_seconds` | `BRAINIAC_MAX_LOCAL_SECONDS` | 0 (no limit): an earned path slower than this on average leaves the field with the remote brain |
+| `max_local_seconds` | `BRAINIAC_MAX_LOCAL_SECONDS` | 0 (no limit): an earned path slower than this on average, or on this request at the speeds it showed here, leaves the request with the remote brain |
+| `prompt_cache_prefixes` | `BRAINIAC_PROMPT_CACHE_PREFIXES` | 3: prompt starts the brain's server keeps in memory, one per desktop taking turns, counted in the plan (-1: none) |
+| `speculative` | `BRAINIAC_SPECULATIVE` | empty: never; `ngram`: n-gram speculative decoding for a model whose checked cases prove it as good with it |
 | `web` | `BRAINIAC_WEB` | `on-request` (`auto`, not in local mode; `off` also stops updates) |
 | `searx_url` | `BRAINIAC_SEARX_URL` | none: a SearXNG instance to search first |
 | `brave_key_env` | `BRAINIAC_BRAVE_KEY_ENV` | none: the variable holding a Brave Search key |
@@ -234,7 +250,7 @@ If the remote brain fails, the request fails with the status. Set `local_fallbac
 | `sandbox` | `BRAINIAC_SANDBOX` | empty: confine as far as the system allows; `required`: start no model process that is not fully confined (the default with `BRAINIAC_APPLIANCE`); `off`: refused on an appliance |
 | (none) | `BRAINIAC_APPLIANCE` | set on an office box: sandbox required, `web_render` off, an API key required even on loopback |
 
-A key is never stored in the config, only the name of the variable that holds it. Brainiac refuses to listen beyond loopback without an API key, because it controls this machine's memory and disk.
+A key is never stored in the config, only the name of the variable that holds it. Brainiac refuses to listen beyond loopback without an API key, because it controls this machine's memory and disk. Without a key it also refuses a request whose `Host` is not a loopback name (or one in `allowed_hosts`), and one whose `Origin` is a web page on another site, so a page in the person's browser cannot reach it through DNS rebinding or WSL's forwarded localhost. What Brainiac writes (the perception cache's screen and document text, traces, settings, results) is owner-only: the store root and its `cache`, `traces`, `logs` and `tmp` folders are `0700`, its files `0600`.
 
 ## Layout
 
@@ -257,6 +273,8 @@ internal/scout/      finds and checks new open models
 internal/bench/      public evaluations: leaderboards and model-card tables, ratings against the catalog
 internal/update/     the update cycle: rate, adopt, plan, install aside, check, stage; Promote is the one switch
 internal/evals/      checked cases, scoring, evals.json
+internal/gguf/       a model file's header: chat templates, and the memory facts (KV, recurrent state, checkpoints, tensor bytes)
+internal/speed/      what brainiac bench measured here (speed.json)
 internal/gguf/       reads the chat templates in a GGUF header, with every length bounded
 internal/isolate/    what a model process can reach: its environment and, on Linux, its network and mount view
 internal/{config,store,cache,trace}/

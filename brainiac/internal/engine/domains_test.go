@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"brainiac/internal/backend"
 	"brainiac/internal/catalog"
 	"brainiac/internal/config"
 	"brainiac/internal/evals"
@@ -350,5 +351,25 @@ func TestAPathProvenByNameButMisroutedDoesNotEarn(t *testing.T) {
 	e.evals.res = nil
 	if res := ask(t, e, "brainiac", "", mathAsk); res.Brain != "math-1.5b" {
 		t.Fatalf("a well-routed path did not earn: %s", res.Brain)
+	}
+}
+
+// A path fast on its eval's short questions can still be slow on a request:
+// with a time limit set, the request's own estimate (its length at the
+// speeds the model showed here) keeps it with the remote brain.
+func TestARequestTheLocalPathWouldTakeTooLongOnStaysRemote(t *testing.T) {
+	e := remoteEngine(t)
+	e.cfg.MaxLocalSeconds = 60
+	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 99, MeanMs: 5000}, RemoteEvalName: {N: 100, Correct: 92}})
+	// Recent calls showed 20 prompt tokens/s and 5 answer tokens/s.
+	e.speed.record("math-1.5b", backend.Timings{PromptN: 2000, PromptMs: 100000, PredictedN: 500, PredictedMs: 100000}, nil)
+	short := Request{Messages: []InMessage{{Role: "user", Parts: []Part{{Kind: "text", Text: mathAsk}}}}, MaxTokens: 100}
+	if u, why := e.earnedPath("math", short); u == nil || u.model != "math-1.5b" {
+		t.Fatalf("a short request: %v %s", u, why)
+	}
+	// 3000 characters is about 1000 tokens: 50 s to read, 20 s to write 100.
+	long := Request{Messages: []InMessage{{Role: "user", Parts: []Part{{Kind: "text", Text: mathAsk + " " + strings.Repeat("x = 1. ", 430)}}}}, MaxTokens: 100}
+	if u, why := e.earnedPath("math", long); u != nil || !strings.Contains(why, "would take about") {
+		t.Fatalf("a long request: %v %s", u, why)
 	}
 }

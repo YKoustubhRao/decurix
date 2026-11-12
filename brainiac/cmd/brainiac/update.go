@@ -167,7 +167,7 @@ func runApproveTemplate(args []string) error {
 func updateOptions(st *store.Store, cfg config.Config, lg *log.Logger, apply bool, srv *api.Server) update.Options {
 	o := update.Options{
 		Store:      st,
-		Policy:     selector.Policy{ReserveGB: cfg.ReserveGB, PlannedLoadGB: cfg.PlannedLoadGB, Licenses: cfg.Licenses},
+		Policy:     selector.Policy{ReserveGB: cfg.ReserveGB, PlannedLoadGB: cfg.PlannedLoadGB, Licenses: cfg.Licenses, PromptPrefixes: cfg.PromptCachePrefixes},
 		Apply:      apply,
 		SignedOnly: config.Appliance(),
 		WorkerDir:  workerDir(),

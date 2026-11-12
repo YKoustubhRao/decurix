@@ -53,6 +53,10 @@ type Config struct {
 	Mode      string  `json:"mode,omitempty"`
 	OllamaURL string  `json:"ollama_url,omitempty"`
 	Remote    *Remote `json:"remote,omitempty"`
+	// AllowedHosts are names besides loopback a keyless Brainiac answers to
+	// (Host and Origin headers); anything else is refused, so a web page
+	// behind a rebinding name cannot use it.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
 	// ShareMedia lets a remote brain see pictures. Off by default: what is
 	// on a screen or a scan stays on this machine unless allowed.
 	ShareMedia bool `json:"share_media,omitempty"`
@@ -106,7 +110,20 @@ type Config struct {
 	// MaxLocalSeconds keeps a field with the remote brain when a local model
 	// that earned it takes longer than this on average; 0 means no limit.
 	MaxLocalSeconds float64 `json:"max_local_seconds,omitempty"`
+	// PromptCachePrefixes is how many conversations' prompt starts the
+	// brain's server keeps in memory (one per desktop taking turns); 0 means
+	// 3, -1 none. The plan counts what they take.
+	PromptCachePrefixes int `json:"prompt_cache_prefixes,omitempty"`
+	// Speculative "ngram" lets a local model draft from text already in its
+	// context (llama-server's n-gram drafting): faster when it copies, as
+	// when filling a form from a document. A model uses it only once checked
+	// cases show its answers as good with it as without (brainiac eval
+	// --models m,m+ngram); "" (the default) never.
+	Speculative string `json:"speculative,omitempty"`
 }
+
+// SpeculativeNgram is n-gram speculative decoding (see Config.Speculative).
+const SpeculativeNgram = "ngram"
 
 // The sandbox settings: SandboxOff turns the model processes' file sandbox
 // off; SandboxRequired starts none that cannot be fully confined.
@@ -201,6 +218,14 @@ func (c *Config) fromEnv() {
 	}
 	set("BRAINIAC_LISTEN", &c.Listen)
 	set("BRAINIAC_API_KEY_ENV", &c.APIKeyEnv)
+	if v := strings.TrimSpace(os.Getenv("BRAINIAC_ALLOWED_HOSTS")); v != "" {
+		c.AllowedHosts = nil
+		for _, h := range strings.Split(v, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				c.AllowedHosts = append(c.AllowedHosts, h)
+			}
+		}
+	}
 	set("BRAINIAC_MODE", &c.Mode)
 	set("OLLAMA_URL", &c.OllamaURL)
 	set("BRAINIAC_WEB", &c.Web)
@@ -211,6 +236,10 @@ func (c *Config) fromEnv() {
 	if v := os.Getenv("BRAINIAC_MAX_LOCAL_SECONDS"); v != "" {
 		c.MaxLocalSeconds, _ = strconv.ParseFloat(v, 64)
 	}
+	if v := os.Getenv("BRAINIAC_PROMPT_CACHE_PREFIXES"); v != "" {
+		c.PromptCachePrefixes, _ = strconv.Atoi(v)
+	}
+	set("BRAINIAC_SPECULATIVE", &c.Speculative)
 	if v := os.Getenv("BRAINIAC_SHARE_MEDIA"); v != "" {
 		c.ShareMedia, _ = strconv.ParseBool(v)
 	}
@@ -277,6 +306,11 @@ func (c Config) Validate() error {
 	case "", WebAuto, WebOnRequest, WebOff:
 	default:
 		return fmt.Errorf("web %q is not auto, on-request or off", c.Web)
+	}
+	switch c.Speculative {
+	case "", SpeculativeNgram:
+	default:
+		return fmt.Errorf("speculative %q is not ngram or empty", c.Speculative)
 	}
 	switch c.Sandbox {
 	case "", SandboxOff, SandboxRequired:
@@ -358,5 +392,5 @@ func (c Config) Save(home string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(home, "config.json"), append(data, '\n'), 0o644)
+	return os.WriteFile(filepath.Join(home, "config.json"), append(data, '\n'), 0o600)
 }

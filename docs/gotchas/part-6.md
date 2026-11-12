@@ -1070,3 +1070,22 @@ explains the one thing Windows cannot do - virtualization off in the firmware. T
   approval's `note_id` (its Approve button) or the chat's `seen_at` (`httpapi/gatereply.go` `replyBinding`). The gate
   then logs "not an answer to a question of the gate's" and the run says "not approved. Your reply: yes". That is the
   boundary working, not a bug: a scripted live check must send `note_id`.
+
+## llama.cpp defaults took memory Brainiac never counted (laptop plan, 2026-11-11)
+
+- llama-server b11541 keeps a host prompt cache of up to 8 GiB per server (`--cache-ram 8192`) and 32 context
+  checkpoints per slot. For a hybrid model (Qwen3.5: 18 of the 2B's 24 layers are linear attention) a checkpoint is a
+  copy of the recurrent state, about 20 MB for the 2B and 150 MB for the 27B, so 32 of them is 646 MB for the 2B. The
+  residency checks free memory only at load, and both grow after it, so on the 8 GB laptop they could push WSL into swap
+  unseen. Now Brainiac passes `--cache-ram` as the plan counted it (0 when nothing was), `--ctx-checkpoints 3`, and
+  counts state and checkpoints in the plan (read from the file's header once installed, `gguf.Info`).
+- The same build turns automatic GPU fitting on (`--fit on`, MoE experts to RAM) while the selector planned a model
+  wholly on one pool: the run was not the plan. Brainiac passes `--fit off` and `-ngl` as planned.
+- Sizing the prompt cache inside each candidate's fit check let the brain fill the budget and pushed the OCR worker out
+  from beside it (every screenshot would have unloaded the brain). The cache is sized last, from memory the resident set
+  leaves. Lesson: a new memory consumer goes after the choices it must not displace, not inside them.
+- On a TCP port llama-server answers any program and, with its default CORS `*`, any web page. The fallback now gets its
+  own key through `LLAMA_API_KEY` (not the command line, which other users can read in `/proc`) and
+  `LLAMA_ARG_CORS_ORIGINS=localhost`.
+- The live llama-server tests had a 2-minute load limit; a cold load of Qwen3.5 2B on the laptop takes 4 to 6 minutes
+  while other work runs. They now allow 10. Lesson: a timeout in a live test is a claim about the slowest machine it runs on.

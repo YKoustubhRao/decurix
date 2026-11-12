@@ -81,6 +81,8 @@ func main() {
 		err = runPaths(args)
 	case "eval":
 		err = runEval(args)
+	case "bench":
+		err = runBench(args)
 	case "scout":
 		err = runScout(args)
 	case "update":
@@ -114,6 +116,7 @@ func usage() {
   status [--url u]
   paths  [--url u]                                 per field: what could answer here, and why each does or does not
   eval   --cases file.jsonl [--models a,b] [--learn]  measure models field by field on checked cases
+  bench  [--models a,b] [--threads 3,6] [--long N]  measure how fast installed models read and write here
   update [--apply] [--json]                       find better open models from public evaluations; --apply
                                                  installs, checks and stages them, changing nothing served
   update promote                                  switch to the staged plan; a running serve follows
@@ -153,7 +156,7 @@ func flags(name string, args []string, plan bool) (*common, *flag.FlagSet, error
 	fs.BoolVar(&c.json, "json", false, "print JSON")
 	fs.BoolVar(&c.verbose, "verbose", false, "list every model not chosen, and why")
 	fs.BoolVar(&c.yes, "yes", false, "install without asking")
-	fs.BoolVar(&c.noBench, "no-bench", false, "skip the memory-bandwidth test")
+	fs.BoolVar(&c.noBench, "no-bench", false, "skip the speed tests (memory bandwidth; the brain's speed after pull)")
 	fs.BoolVar(&c.noNetwork, "no-network", false, "skip the network checks")
 	if plan {
 		fs.BoolVar(&c.offline, "offline", false, "choose only what is installed")
@@ -217,7 +220,8 @@ func makePlan(ctx context.Context, c *common, st *store.Store, cfg config.Config
 	if err != nil {
 		return nil, cs, err
 	}
-	pol := selector.Policy{Offline: c.offline, ReserveGB: firstNonZero(c.reserve, cfg.ReserveGB), PlannedLoadGB: firstNonZero(c.plannedLoad, cfg.PlannedLoadGB)}
+	pol := selector.Policy{Offline: c.offline, ReserveGB: firstNonZero(c.reserve, cfg.ReserveGB), PlannedLoadGB: firstNonZero(c.plannedLoad, cfg.PlannedLoadGB),
+		PromptPrefixes: cfg.PromptCachePrefixes}
 	if c.licenses != "" {
 		pol.Licenses = strings.Split(c.licenses, ",")
 	} else if len(cfg.Licenses) > 0 {
@@ -313,7 +317,33 @@ func pull(ctx context.Context, c *common, st *store.Store, cfg config.Config) (*
 		return nil, err
 	}
 	fmt.Printf("\nInstalled. Lock file: %s\n", st.Path("lock.json"))
+	if !c.noBench {
+		benchAfterPull(ctx, st, lock)
+	}
 	return lock, nil
+}
+
+// benchAfterPull measures the brain's speed once it is installed, so the
+// next plan and the router work from this machine's numbers. A failure is
+// reported, never fatal: the install stands.
+func benchAfterPull(ctx context.Context, st *store.Store, lock *install.Lock) {
+	if b, ok := lock.Plan.Pick(catalog.RoleBrain); !ok || b.Source.Runtime != catalog.RuntimeLlamaCpp {
+		return
+	}
+	cat, err := loadCatalog(st)
+	if err != nil {
+		return
+	}
+	cfg, _ := config.Load(st.Root)
+	fmt.Println("\nMeasuring the brain's speed on this machine (a few minutes on a CPU; skip with --no-bench)...")
+	opt := engine.SpeedOptions{NoSandbox: cfg.Sandbox == config.SandboxOff, TempDir: st.Path("tmp"),
+		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	results, err := measure(ctx, st, lock, cat, opt)
+	if err != nil {
+		fmt.Printf("Speed not measured: %v. Run `brainiac bench` later.\n", err)
+		return
+	}
+	printSpeeds(os.Stdout, results)
 }
 
 func confirm(question string) (bool, error) {
@@ -389,7 +419,7 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 	if err != nil {
 		return err
 	}
-	as := &api.Server{Eng: eng, APIKey: cfg.APIKey(), Log: lg, WorkSlots: workSlots(lock), Residency: res}
+	as := &api.Server{Eng: eng, APIKey: cfg.APIKey(), Log: lg, WorkSlots: workSlots(lock), Residency: res, AllowedHosts: cfg.AllowedHosts}
 	defer func() {
 		as.Current().Close()
 		res.UnloadAll() // an engine still finishing a request on the old plan is gone with serve

@@ -3,6 +3,7 @@ package trace
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -30,5 +31,21 @@ func TestStoredTracesHoldCountsAndRotate(t *testing.T) {
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatal("an old trace file was kept")
+	}
+}
+
+// The trace folder is owner-only like its files.
+func TestModeTraceDirIsOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ignores Unix file modes")
+	}
+	dir := filepath.Join(t.TempDir(), "traces")
+	NewStore(dir).Add(&Record{ID: "a", At: time.Now().UTC()})
+	st, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o700 {
+		t.Fatalf("traces dir %o, want 700", st.Mode().Perm())
 	}
 }

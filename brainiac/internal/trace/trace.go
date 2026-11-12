@@ -43,6 +43,13 @@ type Tokens struct {
 	Completion int  `json:"completion"`
 	Cached     int  `json:"cached,omitempty"`
 	Remote     bool `json:"remote,omitempty"`
+	// PromptMs and GenMs are a local server's time reading the prompt (what
+	// the cache did not hold) and writing the answer; Drafted and Accepted
+	// are speculative decoding's drafted tokens and the ones kept.
+	PromptMs int64 `json:"prompt_ms,omitempty"`
+	GenMs    int64 `json:"gen_ms,omitempty"`
+	Drafted  int   `json:"drafted,omitempty"`
+	Accepted int   `json:"accepted,omitempty"`
 }
 
 // Record is one request.
@@ -155,7 +162,7 @@ func (s *Store) Add(r *Record) {
 	if s.Dir == "" {
 		return
 	}
-	if os.MkdirAll(s.Dir, 0o755) != nil {
+	if os.MkdirAll(s.Dir, 0o700) != nil {
 		return
 	}
 	day := r.At.UTC().Format("2006-01-02")

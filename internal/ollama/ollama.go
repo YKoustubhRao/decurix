@@ -335,6 +335,9 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 				"OLLAMA_KV_CACHE_TYPE=" + getenvDefault("OLLAMA_KV_CACHE_TYPE", "q8_0"),
 				"OLLAMA_NUM_PARALLEL=" + getenvDefault("OLLAMA_NUM_PARALLEL", "1"),
 				"OLLAMA_NUM_THREAD=" + strconv.Itoa(DefaultNumThread()),
+				// Desktops send screens and documents here: no cloud models
+				// or web search beside the local ones.
+				"OLLAMA_NO_CLOUD=1",
 			},
 
 			Labels: map[string]string{

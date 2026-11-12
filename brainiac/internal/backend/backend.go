@@ -71,6 +71,21 @@ type ChatResult struct {
 	Duration time.Duration
 	// Model is the model the backend says answered.
 	Model string
+	// Timings is what a llama-server says the call took; nil from others.
+	Timings *Timings
+}
+
+// Timings is llama-server's account of one call: how many prompt tokens
+// came from its cache and how many it read, how long reading and writing
+// took, and, with speculative decoding, how many drafted tokens it kept.
+type Timings struct {
+	CacheN        int     `json:"cache_n"`
+	PromptN       int     `json:"prompt_n"`
+	PromptMs      float64 `json:"prompt_ms"`
+	PredictedN    int     `json:"predicted_n"`
+	PredictedMs   float64 `json:"predicted_ms"`
+	DraftN        int     `json:"draft_n,omitempty"`
+	DraftAccepted int     `json:"draft_n_accepted,omitempty"`
 }
 
 // Chatter is anything that answers a conversation.

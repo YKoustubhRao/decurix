@@ -56,6 +56,9 @@ type Server struct {
 	// an engine for a changed plan keeps the unchanged models running and
 	// the one it replaces stops only its own (G-11).
 	Residency *engine.Residency
+	// AllowedHosts are names, besides loopback, a keyless server answers
+	// to (config allowed_hosts); with a key they do not matter.
+	AllowedHosts []string
 
 	cur    atomic.Pointer[engine.Engine]
 	hold   sync.RWMutex // work requests share it; Hold takes it alone
@@ -187,8 +190,13 @@ func (s *Server) Handler() http.Handler {
 	return s.auth(s.track(mux))
 }
 
+// auth checks the key when one is set; without one, it lets in only requests
+// from this machine's own programs (guardLocal).
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.APIKey == "" && !s.guardLocal(w, r) {
+			return
+		}
 		if s.APIKey != "" && r.URL.Path != "/healthz" {
 			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			if subtle.ConstantTimeCompare([]byte(got), []byte(s.APIKey)) != 1 {

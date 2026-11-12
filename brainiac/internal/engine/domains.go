@@ -15,6 +15,7 @@ import (
 	"brainiac/internal/evals"
 	"brainiac/internal/router"
 	"brainiac/internal/selector"
+	"brainiac/internal/speed"
 	"brainiac/internal/trace"
 )
 
@@ -274,6 +275,12 @@ func (e *Engine) earnedPath(d string, req Request) (*unit, string) {
 			why = "the remote brain answers " + d + ": this request is too long for " + u.model
 			continue
 		}
+		if max := e.cfg.MaxLocalSeconds; max > 0 {
+			if est, ok := e.estimateSeconds(u, req); ok && est > max {
+				why = fmt.Sprintf("the remote brain answers %s: %s would take about %.0f s on this request here, over the %.0f s allowed (max_local_seconds)", d, u.model, est, max)
+				continue
+			}
+		}
 		if best == nil || st.Score.MeanMs < bestMs {
 			best, bestMs = u, st.Score.MeanMs
 			why = u.model + " answers " + d + ": " + st.Why
@@ -288,6 +295,17 @@ func (e *Engine) earnedPath(d string, req Request) (*unit, string) {
 // picture or recording counts as the most evidence it can add, and a web
 // lookup as the most its pages can.
 func fitsWindow(u *unit, req Request) bool {
+	window := u.ctx
+	if window <= 0 {
+		window = selector.Context
+	}
+	return promptChars(req)/3 <= window*3/4
+}
+
+// promptChars is the most text a request can put in a prompt: its own,
+// each picture or recording at the most evidence it can add, and a web
+// lookup at the most its pages can.
+func promptChars(req Request) int {
 	chars := 0
 	for _, m := range req.Messages {
 		for _, p := range m.Parts {
@@ -300,11 +318,34 @@ func fitsWindow(u *unit, req Request) bool {
 	if (req.Web != nil && *req.Web) || strings.TrimSpace(req.WebQuery) != "" {
 		chars += webResults * webPassageChars
 	}
-	window := u.ctx
-	if window <= 0 {
-		window = selector.Context
+	return chars
+}
+
+// estimateSeconds is how long a local model would take on a request, from
+// the speeds its recent calls showed or, before any, what brainiac bench
+// measured: the whole prompt read (an earned path's question shares no
+// cached start) and the most it may write. ok is false with no measurement.
+func (e *Engine) estimateSeconds(u *unit, req Request) (float64, bool) {
+	var pre, dec float64
+	if st, ok := e.speed.get(u.model); ok && st.PrefillTPS > 0 && st.DecodeTPS > 0 {
+		pre, dec = st.PrefillTPS, st.DecodeTPS
+	} else if r, ok := e.speeds.Find(u.model, u.src.Label(), speed.FileSig(u.files["model"])); ok {
+		pre, dec = r.PrefillShortTPS, r.DecodeTPS
 	}
-	return chars/3 <= window*3/4
+	if pre <= 0 || dec <= 0 {
+		return 0, false
+	}
+	out := req.MaxTokens
+	if out <= 0 {
+		out = 512
+		if u.thinks {
+			out = 4096
+			if m, ok := e.cat.Model(u.model); ok && m.ThinkTokens > 0 {
+				out = m.ThinkTokens
+			}
+		}
+	}
+	return float64(promptChars(req)/3)/pre + float64(out)/dec, true
 }
 
 // Paths reports, per field, what could answer here and why each does or does not.

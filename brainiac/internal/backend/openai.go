@@ -105,6 +105,8 @@ type oaResponse struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *oaUsage `json:"usage"`
+	// Timings is llama-server's own field (on the last chunk of a stream).
+	Timings *Timings `json:"timings"`
 }
 
 // Chat runs one conversation turn.
@@ -159,6 +161,7 @@ func (c *OpenAI) Chat(ctx context.Context, req ChatRequest) (ChatResult, error) 
 		out.Complete = true // a whole JSON document came back
 		c.usage(&out, r.Usage)
 		out.Model = r.Model
+		out.Timings = r.Timings
 		if req.OnDelta != nil && out.Text != "" {
 			req.OnDelta(out.Text)
 		}
@@ -206,6 +209,9 @@ func (c *OpenAI) Chat(ctx context.Context, req ChatRequest) (ChatResult, error) 
 			}
 		}
 		c.usage(&out, r.Usage)
+		if r.Timings != nil {
+			out.Timings = r.Timings
+		}
 	}
 	out.Text = text.String()
 	out.Duration = time.Since(start)
@@ -260,6 +266,17 @@ func (c *OpenAI) Embed(ctx context.Context, model string, inputs []string) ([][]
 		}
 	}
 	return vecs, nil
+}
+
+// SlotAction asks llama-server to save or restore one slot's prompt state
+// ("save" | "restore") to or from filename in its --slot-save-path.
+func (c *OpenAI) SlotAction(ctx context.Context, id int, action, filename string) error {
+	resp, err := c.post(ctx, fmt.Sprintf("/slots/%d?action=%s", id, action), map[string]any{"filename": filename})
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // Healthy reports whether the server answers its health or models route.
