@@ -101,6 +101,9 @@ if ($Action -eq 'serve') {
     $env:OLLAMA_FLASH_ATTENTION = '1'
     $env:OLLAMA_KV_CACHE_TYPE = 'q8_0'
     $env:OLLAMA_KEEP_ALIVE = '-1'
+    # Desktops send screens and documents here: no cloud models or web search
+    # beside the local ones, and this cannot be turned back on from settings.
+    $env:OLLAMA_NO_CLOUD = '1'
     foreach ($key in @('OLLAMA_NUM_PARALLEL','OLLAMA_MAX_LOADED_MODELS','OLLAMA_FLASH_ATTENTION','OLLAMA_KV_CACHE_TYPE','OLLAMA_KEEP_ALIVE','OLLAMA_MAX_QUEUE','OLLAMA_CONTEXT_LENGTH')) {
         if ($settings[$key]) { [Environment]::SetEnvironmentVariable($key, $settings[$key], 'Process') }
     }

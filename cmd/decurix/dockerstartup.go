@@ -38,6 +38,9 @@ func dockerStartup(ctx context.Context, desktops *desktop.Manager, server *httpa
 	// And the host-app helpers (with the apps they started) that this instance's earlier run left: a Windows program
 	// started through WSL outlives the hop that started it. Only helpers carrying this instance's tag (W-04).
 	server.SweepHostHelpersAtStart()
+	// Requests a crash cut short between their delivery and their record are settled with their desktops, in the
+	// background: a desktop that does not answer must not hold up the start (httpapi.ReconcileDeliveries).
+	go server.ReconcileDeliveries(context.Background())
 
 	// Non-blocking: the dashboard is still useful (and says what is wrong) when the images have not been built yet.
 	if err := desktops.EnsureImages(ctx); err != nil {

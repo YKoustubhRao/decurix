@@ -906,6 +906,9 @@ func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	st, resumed := rc.Resume.(*operatorState)
 	if resumed && st != nil {
 		st.jobSecrets = withheld.From(rc.Ctx)
+		if st.readDocument == nil {
+			st.useDocumentReader(rc) // a goal soul kept on disk across a restart (DecodeCheckpoint) has none
+		}
 		var blocked string
 		st, blocked = o.resume(rc, subtask, st)
 		if blocked != "" {
@@ -934,6 +937,14 @@ func (o *OperatorSkill) pause(subtask Subtask, st *operatorState, reason string)
 	return res
 }
 
+// useDocumentReader gives st code's own read of a document, for checking what a loop showed of it (creditLoopMarkers).
+func (st *operatorState) useDocumentReader(rc RunContext) {
+	st.readDocument = func(file string) (string, bool) {
+		res := runShell(rc.Ctx, rc.Dir(), "office read "+shellPath(file), 90*time.Second, st.guiEnv()...)
+		return res.Output, res.ExitCode == 0
+	}
+}
+
 func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 	findings := ""
 	if f := rc.PriorFindings(); f != "" {
@@ -950,11 +961,7 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 		Turns:           caps.OperatorTurns(),
 		Hosted:          caps.Hosted,
 	}
-	// Code's own read of a document, for checking what a loop showed of it (creditLoopMarkers).
-	st.readDocument = func(file string) (string, bool) {
-		res := runShell(rc.Ctx, rc.Dir(), "office read "+shellPath(file), 90*time.Second, st.guiEnv()...)
-		return res.Output, res.ExitCode == 0
-	}
+	st.useDocumentReader(rc)
 	vision := ""
 	if caps.Hosted {
 		rules := rulesFor(sharedFolderHost())

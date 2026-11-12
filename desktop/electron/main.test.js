@@ -85,6 +85,10 @@ async function boot(initialState, {
   // screen: 'ok' (the start screen shows every status and says so), 'silent' (it shows nothing: a frozen renderer)
   // or 'throws' (sending to it throws: a renderer that is gone).
   screen = 'ok',
+  // health: the control plane answers GET /healthz (one from before it does not, and is known by its favicon); a
+  // stack in state 'draining' always does, saying so. floor: what the version floor file says (null: it cannot be
+  // read, as offline). appVersion: this build's version.
+  health = false, floor = null, appVersion = '0.1.0',
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
@@ -140,6 +144,7 @@ async function boot(initialState, {
   app.requestSingleInstanceLock = () => true;
   app.whenReady = () => Promise.resolve();
   app.quit = () => { quits += 1; };
+  app.getVersion = () => appVersion;
 
   const posts = [];
   const lanCalls = [];
@@ -153,7 +158,7 @@ async function boot(initialState, {
       };
       return request;
     },
-    get(_url, _options, callback) {
+    get(url, _options, callback) {
       const request = new EventEmitter();
       request.destroy = () => request.emit('error', new Error('timeout'));
       queueMicrotask(() => {
@@ -165,7 +170,12 @@ async function boot(initialState, {
         response.statusCode = 200;
         response.setEncoding = () => {};
         callback(response);
-        response.emit('data', state === 'ready' ? favicon : '<svg>another app</svg>');
+        if (String(url).endsWith('/healthz') && (state === 'draining' || (health && state === 'ready'))) {
+          response.emit('data', JSON.stringify({ service: 'decurix-control-plane', version: '9.9.9', pid: 42,
+            started_at: '2026-11-11T10:00:00Z', instance: '0123456789ab', draining: state === 'draining' }));
+        } else {
+          response.emit('data', state === 'ready' ? favicon : '<svg>another app</svg>');
+        }
         response.emit('end');
       });
       return request;
@@ -322,6 +332,9 @@ async function boot(initialState, {
     './gated-port': loadGatedPort(fileSystem, http),
     './windows-lan': { ensureLanForward: async (dir, address, port) => { lanCalls.push({ dir, address, port }); return lanForwards; } },
     './public-name': { namedLink: async () => null },
+    './stack-health': require('./stack-health'),
+    // The floor file is never fetched from the network here.
+    './version-floor': { ...require('./version-floor'), fetchFloor: async () => { if (floor === null) throw new Error('offline'); return floor; } },
     './mobile-access': { setupMobileAccess: async (_dir, tunnelCommand, options = {}) => {
       mobileCalls.push('start');
       tunnel = tunnelCommand(8090);
@@ -717,18 +730,86 @@ test('starts it again even though the phone link cannot be cleared', async () =>
 
 test('one that keeps dying is left stopped, with a Retry', async () => {
   const result = await boot('ready');
-  for (let death = 0; death < 3; death += 1) {
+  for (let death = 0; death < 6; death += 1) {
     result.setState('absent');
     await result.tick(3);
   }
-  assert.equal(result.ups, 3);
+  assert.equal(result.ups, 6);
+  // Each restart waits longer than the one before (1 s, 2 s, 4 s ... up to 30 s).
+  assert.match(result.logged(), /starting it again in 1 s \(restart 1 /);
+  assert.match(result.logged(), /starting it again in 16 s \(restart 5 /);
+  assert.match(result.logged(), /starting it again in 30 s \(restart 6 /);
 
   result.setState('absent');
   await result.tick(3);
-  assert.equal(result.ups, 3, 'it was started a fourth time');
+  assert.equal(result.ups, 6, 'it was started a seventh time');
   assert.equal(result.window.lastStatus.value.failed, true);
   assert.match(result.window.lastStatus.value.message, /keeps stopping/);
   assert.match(result.window.lastStatus.value.detail, /address in use/);
+});
+
+test('the control plane is supervised through /healthz, and which one answers is logged', async () => {
+  const result = await boot('ready', { health: true });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.match(result.logged(), /Decurix 9\.9\.9 answers \(pid 42, started 2026-11-11T10:00:00Z\)/);
+  await result.tick(3);
+  assert.equal(result.ups, 0);
+});
+
+// An update recreates the control plane's container: it drains first (internal/httpapi/healthz.go), then is gone
+// until its successor answers. Neither is a death.
+test('a control plane that drains is being replaced, and is never started again over it', async () => {
+  const result = await boot('ready', { health: true });
+  result.setState('draining');
+  await result.tick(4);
+  assert.match(result.logged(), /is draining: it is being replaced/);
+  result.setState('absent');
+  await result.tick(6);
+  assert.equal(result.ups, 0, 'the stack was started during a swap');
+  assert.equal(result.window.loadFileCount, 1);
+  result.setState('ready');
+  await result.tick(1);
+  // Once the successor answers, a death counts again.
+  result.setState('absent');
+  await result.tick(3);
+  assert.equal(result.ups, 1);
+});
+
+test('a start that finds the control plane draining waits for it, and starts none beside it', async () => {
+  const result = await boot('draining');
+  await result.settle(600);
+  assert.equal(result.ups, 0);
+  assert.ok(result.window.statuses.some((s) => /being updated\. Waiting/.test(s.message)));
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /still being updated/);
+});
+
+test('the version floor: a build below min is retired, and starts nothing', async () => {
+  const result = await boot('absent', { floor: { min: '0.2.0', latest: '0.3.1', downloadUrl: 'https://example.com/evil.exe' } });
+  assert.ok(result.questions.some((q) => q.type === 'error' && /can no longer be used/.test(q.message)));
+  // Download was chosen; a download URL off the site and its releases is replaced by the site.
+  assert.deepEqual(result.external, ['https://decurix.computer/']);
+  assert.equal(result.quits, 1);
+  assert.equal(result.ups, 0);
+  assert.equal(result.window.url, undefined);
+});
+
+test('the version floor: a build below latest is told once, and starts', async () => {
+  const result = await boot('ready', { floor: { min: '0.0.0', latest: '0.2.0', downloadUrl: 'https://github.com/YKoustubhRao/decurix-site/releases/latest' } });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(result.questions.some((q) => q.type === 'info' && /0\.2\.0/.test(q.message)));
+  assert.deepEqual(result.external, ['https://github.com/YKoustubhRao/decurix-site/releases/latest']);
+  assert.ok(result.written.some((w) => /version-notice\.json$/.test(w.file) && JSON.parse(w.content).dismissed === '0.2.0'));
+  assert.equal(result.quits, 0);
+});
+
+test('the version floor fails open: unread, unreadable or current, the app starts and asks nothing', async () => {
+  for (const floor of [null, { min: 'soon' }, ['0.9.0'], { min: '0.1.0', latest: '0.1.0' }]) {
+    const result = await boot('ready', { floor });
+    assert.equal(result.window.url, 'http://127.0.0.1:8080');
+    assert.equal(result.questions.length, 0);
+    assert.equal(result.quits, 0);
+  }
 });
 
 test('does not start it again while the app is closing', async () => {

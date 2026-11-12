@@ -372,11 +372,17 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string, or
 	unlockLifecycle := s.Desktops.LockDesktop(id)
 	defer unlockLifecycle()
 
+	// Written down before it is sent and settled once recorded: a crash between the delivery and the record is found
+	// again at the next start (ReconcileDeliveries), never a run the records do not know of.
+	sending := s.beginSending(ctx, id, content, route)
+
 	if err := s.deliverRequest(ctx, desktopID, content, route); err != nil {
+		s.settleSending(sending)
 		return tasks.Route{}, "", err
 	}
 
 	route, stored := s.recordDelivered(ctx, id, content, route)
+	s.settleSending(sending)
 	return route, stored, nil
 }
 

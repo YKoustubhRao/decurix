@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -128,5 +129,33 @@ func TestTheApplianceDoesNotRenderByDefault(t *testing.T) {
 	os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"web_render": true}`), 0o644)
 	if c, err := Load(home); err != nil || !c.Render() {
 		t.Fatalf("the operator's web_render true was ignored: %v", err)
+	}
+}
+
+// BRAINIAC_ALLOWED_HOSTS is a comma-separated list; empty items are dropped.
+func TestAllowedHostsFromEnv(t *testing.T) {
+	t.Setenv("BRAINIAC_ALLOWED_HOSTS", " host.docker.internal, ,brainiac.lan ")
+	c := Default()
+	c.fromEnv()
+	if len(c.AllowedHosts) != 2 || c.AllowedHosts[0] != "host.docker.internal" || c.AllowedHosts[1] != "brainiac.lan" {
+		t.Fatalf("allowed hosts %q", c.AllowedHosts)
+	}
+}
+
+// config.json is written owner-only.
+func TestModeSavedConfigIsOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ignores Unix file modes")
+	}
+	home := t.TempDir()
+	if err := Default().Save(home); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(filepath.Join(home, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("config.json %o, want 600", st.Mode().Perm())
 	}
 }

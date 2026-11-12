@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -34,6 +36,22 @@ type LlamaProc struct {
 	// that no longer carries it is not served. Empty for an older lock.
 	TemplateSHA string
 	NoSandbox   bool // the operator turned the file sandbox off
+	// CacheRAMMiB is the host-memory prompt cache the plan counted for this
+	// model (--cache-ram); 0 turns it off. llama.cpp's own default, 8 GiB,
+	// is never left to apply: nobody would have counted it.
+	CacheRAMMiB int
+	// Checkpoints caps the context checkpoints per slot (--ctx-checkpoints).
+	Checkpoints int
+	// OnGPU places every layer on the GPU, as the plan counted it; otherwise
+	// none. llama.cpp's automatic fit is off, so the run is what was planned.
+	OnGPU bool
+	// SlotDir, when set, is where the slot's prompt state is saved before the
+	// server stops and restored when it starts again (--slot-save-path), so
+	// the next turn after a reload does not read its whole prompt again.
+	SlotDir string
+	// Spec is the speculative decoding to use: "" none, SpecNgram the
+	// build's default n-gram drafting (no second model).
+	Spec string
 	// Required refuses to start a server that could reach anything beyond
 	// its own files and socket (sandbox: required).
 	Required bool
@@ -45,6 +63,8 @@ type LlamaProc struct {
 	client *backend.OpenAI // set once the server answers its health check
 	open   []string
 	sock   string // the Unix socket's private directory, when one is used
+	// slotFile is the saved prompt state this server's recipe uses.
+	slotFile string
 	// loading is closed when a start in progress ends; nil when none is.
 	// The lock is not held while a model loads (minutes on a CPU), so
 	// status and the other accessors never wait for it.
@@ -77,9 +97,18 @@ func has(help, flag string) bool {
 	return strings.Contains(help, flag+" ") || strings.Contains(help, flag+",") || strings.Contains(help, flag+"\n") || strings.Contains(help, flag+"=")
 }
 
+// SpecNgram is n-gram speculative decoding (llama-server --spec-default): it
+// drafts from text already in the context and needs no second model. The
+// model checks every drafted token, but batched checking is not bit-exact,
+// so it is turned on only when checked evals say the answers stay as good.
+const SpecNgram = "ngram"
+
 // args are the server's flags: the model, a fixed window, a q8_0 KV cache
 // with flash attention when the build has them, one slot (its prompt cache
 // is what makes the next turn cheap), and loopback or a Unix socket only.
+// Every setting that changes memory or placement is passed explicitly, so a
+// new llama.cpp default cannot change what runs: placement (--fit off and
+// the GPU layers the plan chose), the prompt cache and the checkpoints.
 func (p *LlamaProc) args(host string, port int) []string {
 	help := serverHelp(p.Bin)
 	a := []string{"-m", p.Model, "--host", host}
@@ -95,6 +124,22 @@ func (p *LlamaProc) args(host string, port int) []string {
 	}
 	if has(help, "--parallel") {
 		a = append(a, "--parallel", "1")
+	}
+	if has(help, "--fit") {
+		a = append(a, "--fit", "off")
+	}
+	if has(help, "--gpu-layers") || has(help, "--n-gpu-layers") {
+		ngl := "0"
+		if p.OnGPU {
+			ngl = "999" // every layer
+		}
+		a = append(a, "-ngl", ngl)
+	}
+	if has(help, "--cache-ram") {
+		a = append(a, "--cache-ram", strconv.Itoa(max(0, p.CacheRAMMiB)))
+	}
+	if p.Checkpoints > 0 && has(help, "--ctx-checkpoints") {
+		a = append(a, "--ctx-checkpoints", strconv.Itoa(p.Checkpoints))
 	}
 	if p.Embedding {
 		if has(help, "--embeddings") {
@@ -115,6 +160,12 @@ func (p *LlamaProc) args(host string, port int) []string {
 	}
 	if has(help, "--no-webui") {
 		a = append(a, "--no-webui")
+	}
+	if p.SlotDir != "" && has(help, "--slot-save-path") {
+		a = append(a, "--slot-save-path", p.SlotDir)
+	}
+	if p.Spec == SpecNgram && has(help, "--spec-default") {
+		a = append(a, "--spec-default")
 	}
 	return a
 }
@@ -147,6 +198,9 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 	p.mu.Unlock()
 
 	err = p.waitHealthy(ctx, client, done)
+	if err == nil {
+		p.restoreSlot(ctx, client)
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -179,8 +233,8 @@ func (p *LlamaProc) launchLocked() (*exec.Cmd, *backend.OpenAI, chan struct{}, e
 	}
 	var logf *os.File
 	if p.LogPath != "" {
-		_ = os.MkdirAll(filepath.Dir(p.LogPath), 0o755)
-		logf, _ = os.Create(p.LogPath)
+		_ = os.MkdirAll(filepath.Dir(p.LogPath), 0o700)
+		logf, _ = os.OpenFile(p.LogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	}
 	p.removeSock()
 	l, err := p.launchNoNetwork(logf)
@@ -203,6 +257,11 @@ func (p *LlamaProc) launchLocked() (*exec.Cmd, *backend.OpenAI, chan struct{}, e
 	}
 	cmd, client := l.cmd, l.client
 	p.open = l.open
+	if p.SlotDir != "" {
+		// Saved state is only ever loaded into the same model, build and
+		// settings it came from.
+		p.slotFile = "slot-" + fingerprint(p.Bin, fileSig(p.Bin), p.Model, fileSig(p.Model), p.MMProj, fileSig(p.MMProj), p.Ctx, p.OnGPU, p.Spec) + ".bin"
+	}
 	if len(p.open) > 0 {
 		p.logf("llama-server: %s runs with access to: %s", filepath.Base(p.Model), strings.Join(p.open, ", "))
 	}
@@ -243,11 +302,12 @@ func (p *LlamaProc) waitHealthy(ctx context.Context, client *backend.OpenAI, don
 	}
 }
 
-// command is the server process: none of Brainiac's secrets in its environment.
-func (p *LlamaProc) command(host string, port int, logf *os.File) *exec.Cmd {
+// command is the server process: none of Brainiac's secrets in its
+// environment, only env (its own key on a TCP port).
+func (p *LlamaProc) command(host string, port int, logf *os.File, env ...string) *exec.Cmd {
 	cmd := exec.Command(p.Bin, p.args(host, port)...)
 	cmd.Dir = buildDir(p.Bin) // where ggml looks for its backends when it cannot read /proc/self/exe
-	cmd.Env = isolate.Env()
+	cmd.Env = isolate.Env(env...)
 	if logf != nil {
 		cmd.Stdout, cmd.Stderr = logf, logf
 	}
@@ -261,6 +321,9 @@ func (p *LlamaProc) command(host string, port int, logf *os.File) *exec.Cmd {
 // /proc/self/exe), so the build may be listed: in a view it holds only
 // what is granted.
 func (p *LlamaProc) policy(write ...string) isolate.Policy {
+	if p.SlotDir != "" {
+		write = append(write, p.SlotDir)
+	}
 	read := []string{p.Model}
 	if p.MMProj != "" {
 		read = append(read, p.MMProj)
@@ -330,14 +393,23 @@ func (p *LlamaProc) launchOnLoopback(logf *os.File) (launch, error) {
 	if err != nil {
 		return launch{}, err
 	}
-	cmd := p.command("127.0.0.1", port, logf)
+	// A port on loopback is open to every program here and to any web page
+	// the browser opens (llama-server answers every origin by default). So
+	// this server gets a key of its own, passed in its environment rather
+	// than on its command line, and reflects no origin but localhost's.
+	key, err := randomKey()
+	if err != nil {
+		return launch{}, err
+	}
+	env := []string{"LLAMA_API_KEY=" + key, "LLAMA_ARG_CORS_ORIGINS=localhost"}
+	cmd := p.command("127.0.0.1", port, logf, env...)
 	open := []string{"network", "files", "sockets"}
 	if p.sandboxes() {
 		pol := p.policy()
 		pol.BlockTCP, pol.BindTCP = isolate.CanBlockTCP(), []int{port}
 		if err := isolate.Wrap(cmd, pol); err != nil {
 			p.logf("llama-server: no file sandbox: %v", err)
-			cmd = p.command("127.0.0.1", port, logf)
+			cmd = p.command("127.0.0.1", port, logf, env...)
 		} else if pol.BlockTCP {
 			open = []string{"udp", "sockets"}
 		} else {
@@ -345,7 +417,7 @@ func (p *LlamaProc) launchOnLoopback(logf *os.File) (launch, error) {
 		}
 	}
 	return launch{cmd: cmd, open: open,
-		client: &backend.OpenAI{Name: "llama-server", BaseURL: fmt.Sprintf("http://127.0.0.1:%d", port), TemplateThinking: true}}, nil
+		client: &backend.OpenAI{Name: "llama-server", BaseURL: fmt.Sprintf("http://127.0.0.1:%d", port), Key: key, TemplateThinking: true}}, nil
 }
 
 // launchNoNetwork prepares the server with no network at all and, unless
@@ -448,8 +520,50 @@ func (p *LlamaProc) running() bool {
 	}
 }
 
-// Stop kills the server and waits for it to exit.
+// saveSlot writes the slot's prompt state to disk before the server goes,
+// so the conversation it held is not read from its start after a reload.
+// It is only a saving: a failure costs a slower next turn and is logged.
+func (p *LlamaProc) saveSlot() {
+	p.mu.Lock()
+	file, running := p.slotFile, p.running() && p.loading == nil
+	c := p.client
+	p.mu.Unlock()
+	if p.SlotDir == "" || file == "" || !running || c == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.SlotAction(ctx, 0, "save", file); err != nil {
+		p.logf("llama-server: could not save %s's prompt state: %v", filepath.Base(p.Model), err)
+		_ = os.Remove(filepath.Join(p.SlotDir, file))
+	}
+}
+
+// restoreSlot loads the prompt state saved for this recipe, if there is one.
+// A file that will not load is removed: the next turn reads its prompt.
+func (p *LlamaProc) restoreSlot(ctx context.Context, c *backend.OpenAI) {
+	p.mu.Lock()
+	file := p.slotFile
+	p.mu.Unlock()
+	if p.SlotDir == "" || file == "" {
+		return
+	}
+	path := filepath.Join(p.SlotDir, file)
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	if err := c.SlotAction(rctx, 0, "restore", file); err != nil {
+		p.logf("llama-server: could not restore %s's prompt state, it starts empty: %v", filepath.Base(p.Model), err)
+		_ = os.Remove(path)
+	}
+}
+
+// Stop saves the slot's prompt state (when SlotDir is set), kills the
+// server and waits for it to exit.
 func (p *LlamaProc) Stop() {
+	p.saveSlot()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.stopLocked()
@@ -465,6 +579,15 @@ func (p *LlamaProc) stopLocked() {
 	}
 	p.cmd, p.client = nil, nil
 	p.removeSock()
+}
+
+// randomKey is a fresh secret for one server's API.
+func randomKey() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func freePort() (int, error) {

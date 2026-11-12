@@ -6,6 +6,7 @@ import traceback
 from decurix_agent import (ask_task, attachments, config, guidance, lessons, long_task, messaging, playbooks, procedures, progress, record_task, replay_task,
                            skill_task, state, task_context, tool_task, usage, workflow_task)
 from decurix_agent.computer import approval, browser
+from decurix_agent import harness
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
 from decurix_agent.messaging import REPLY_MARK, resend_unsent_loop, write_final_reply, write_stopped
@@ -232,6 +233,13 @@ def _report_interrupted():
             return
     except Exception as exc:
         log(f"Could not resume the long request of task {record['task_id']}: {exc}")
+
+    # A task waiting on the person whose paused job the engine kept through the restart is waited on again.
+    try:
+        if harness.resume_waiting(record):
+            return
+    except Exception as exc:  # noqa: BLE001 - not resumed: reported as interrupted below
+        log(f"Could not resume the wait of task {record['task_id']}: {exc}")
 
     log(f"Task {record['task_id']} was interrupted by a restart; reporting it.")
     task_context.start(record["task_id"], request=record.get("request"))

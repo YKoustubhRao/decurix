@@ -47,6 +47,10 @@ var containerRoutes = []containerRoute{
 	// What the agent reports: progress, outcomes, questions for a person, memory, drafted emails.
 	{path: "/api/agent/events"},
 	{path: "/api/querytext"},
+	// Which of its own tasks wait on a person (actingAs), read by an agent coming back from a restart. Found live
+	// 2026-11-11: missing here, every desktop got 403, and a restarted agent could neither close a lost question nor
+	// wait again on one its engine kept.
+	{path: "/api/agent/waiting", readOnly: true},
 	{path: "/api/desktops/memory"},
 	{path: "/api/desktops/learned"},
 	{path: "/api/desktops/judgements", readOnly: true},

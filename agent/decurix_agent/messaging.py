@@ -37,6 +37,24 @@ REPORTS_DIR = "decurix-reports"
 # Kinds whose refusal is never the end of it: the person must hear a task's outcome, and a question must be asked.
 _MUST_REACH = {"final", "error", "query", "approval"}
 
+# A question the control plane could not be told within SEND_RETRY_SECONDS is kept and sent again (resend_unsent), as a
+# task's outcome is: a desktop left waiting on a question nobody was shown (the control plane restarting or being
+# updated for longer than that) waited for good.
+_QUESTION_KINDS = {"query", "approval"}
+_OUTCOME_KINDS = {"final", "error"}
+
+# The keys of a kept note written without credential shapes (privacy.write_scrubbed's `exempt`; literal secrets are
+# still withheld): the gate's signed question is the gate's words and signature, and a shape taken out of either would
+# make the person's reply grant nothing; the note's event_id is compared by the control plane.
+_KEPT_EXEMPT = ("gate", "event_id")
+
+
+def _event_id():
+    """A new note's own id (32 hex characters): the same on every try of that note, so the control plane, which
+    applies each (desktop, event_id) once, applies it once however often it is sent."""
+
+    return uuid.uuid4().hex
+
 
 def cut_text(text, limit):
     """`text` in at most `limit` characters, cut where a paragraph, a line or a sentence ends - never mid-sentence."""
@@ -112,7 +130,8 @@ def _minimal(payload):
     keep = {k: payload[k] for k in ("desktop_id", "vm_name", "filename", "kind", "task_id", "engine", "checked")
             if k in payload}
     text = cut_text(payload.get("reply") or payload.get("content") or "", 600)
-    keep.update(content=text, reply=text)
+    # Another body than the one refused: an id of its own (the refused one was not applied, so nothing is sent twice).
+    keep.update(content=text, reply=text, event_id=_event_id())
     if isinstance(payload.get("verdict"), dict):
         keep["verdict"] = verdicts.bound(payload["verdict"], limit=2000)
     return keep
@@ -206,6 +225,12 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
                     verdict == "done" (C5)
         skill     - on a final or error: {name, version} of the taught skill that
                     drove the task, when one did (task_context.skill, R7)
+        event_id  - this note's own id (32 hex characters), the same on every
+                    try of it, a kept copy's resends included: the control plane
+                    applies each (desktop, event_id) once and answers a repeat
+                    200 {"status": "received", "duplicate": true}. A body sent
+                    in place of a refused one (its short or least form) is another
+                    note, with an id of its own: the refused one was not applied.
 
     `content` is the whole formatted note, which the dashboard's Query rail
     still shows verbatim. `kind`/`reply` are what the chat renders: the
@@ -239,6 +264,7 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         # sends the same fields. A replay (replay_task.py) ran no engine at
         # all, and says so.
         "engine": engine or config.AGENT_HARNESS,
+        "event_id": _event_id(),
     }
 
     if kind == "approval":
@@ -289,26 +315,39 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
     # plane's word. A task's outcome that still could not be delivered is kept and sent again (resend_unsent): found
     # live (2026-10-20), the report of a request stopped a moment before a control-plane restart never reached the
     # chat, which said "running" for good.
+    # A question that could not be delivered in that time is kept and sent again the same way: the desktop still waits
+    # on it (state.waiting_for_query), and the reply to it, once it is shown, is matched as any reply is.
+    # A note never passes one kept before it (_older_waiting): sent in the order they happened. And a task's outcome
+    # makes its kept questions moot - dropped before the outcome goes, so none is ever shown after it.
+    if kind in _OUTCOME_KINDS and not still_working:
+        _drop_questions_of(payload.get("task_id") or "")
     deadline = time.monotonic() + SEND_RETRY_SECONDS
     wait = 2.0
     while True:
-        outcome, detail = _post_querytext(payload)
+        if _older_waiting():
+            outcome, detail = "unreachable", "notes kept earlier are not delivered yet, and this one goes after them"
+        else:
+            outcome, detail = _post_querytext(payload)
         if outcome == "sent":
             return True
         if outcome == "refused" and kind in _MUST_REACH and not short_sent:
             short_sent = True
             log(f"The control plane refused the {kind} ({detail}); sending a short plain version.")
             payload, saved = _fallback(payload, fallback, saved)
+            # Another body than the one refused: an id of its own (the refused one was not applied).
+            payload["event_id"] = _event_id()
             continue
-        if outcome == "refused" and kind in ("final", "error") and not minimal_sent:
+        if outcome == "refused" and kind in _OUTCOME_KINDS and not minimal_sent:
             minimal_sent = True
             log(f"The control plane refused the short {kind} too ({detail}); sending the least it needs.")
             payload = _minimal(payload)
             continue
         if outcome == "refused" or time.monotonic() + wait > deadline:
             log(f"Failed to send query: {detail}")
-            if kind in ("final", "error"):
+            if kind in _OUTCOME_KINDS or (kind in _QUESTION_KINDS and outcome != "refused"):
                 # Kept and sent again either way: a task must never stay "running" because its outcome did not land.
+                # A question is kept while the control plane cannot be reached; one it refused (a 4xx: the task is not
+                # open) is its word, as before.
                 _keep_unsent(payload)
             return False
         log(f"Could not reach the control plane ({detail}); sending again in {int(wait)} s.")
@@ -361,12 +400,28 @@ def _post_querytext(payload):
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             if 200 <= response.status < 300:
+                # {"duplicate": true}: it had this note (event_id) already - an earlier try landed and its answer was
+                # lost. Delivered all the same.
+                if _said_duplicate(response):
+                    log(f"The control plane already had this {payload.get('kind') or 'note'} "
+                        f"({payload.get('event_id') or '?'}); delivered.")
                 return "sent", ""
             return "unreachable", f"control plane returned HTTP {response.status}"
     except urllib.error.HTTPError as exc:
         return ("unreachable" if exc.code >= 500 or exc.code in NOT_YET_CODES else "refused"), str(exc)
     except Exception as exc:  # noqa: BLE001 - every way of not getting through is "not yet"
         return "unreachable", str(exc)
+
+
+def _said_duplicate(response):
+    """Whether a 2xx answer says the control plane had this note already. Never raises: its answer is read only for
+    the log, a 2xx is delivered whatever its body."""
+
+    try:
+        body = json.loads(response.read(4096).decode("utf-8"))
+        return isinstance(body, dict) and body.get("duplicate") is True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def waiting_tasks():
@@ -384,77 +439,179 @@ def _unsent_dir():
     return config.DECURIX_DIR / "unsent"
 
 
+# One sender of kept notes at a time: the resend thread and a note being sent (which first sends what was kept before
+# it) never post the same file twice or out of order, and an outcome's dropping of its task's questions never races a
+# post of one of them.
+_unsent_lock = threading.RLock()
+
+
+def _write_kept(path, payload):
+    """Write a kept note (privacy.write_scrubbed, whole or not at all); the gate's signed question and the note's
+    event_id are written without credential shapes (_KEPT_EXEMPT)."""
+
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(path, payload, atomic=True, exempt=_KEPT_EXEMPT)
+
+
+def _what(payload):
+    kind = payload.get("kind") or "note"
+    return ("outcome" if kind in _OUTCOME_KINDS else kind) + f" of task {payload.get('task_id') or '?'}"
+
+
 def _keep_unsent(payload):
-    """Keep a task's outcome the control plane could not be told, to send again (resend_unsent)."""
+    """Keep a task's outcome or a question the control plane could not be told, to send again (resend_unsent), with the
+    event_id it was sent with."""
 
     try:
-        folder = _unsent_dir()
-        folder.mkdir(parents=True, exist_ok=True)
-        # Named by the moment to the nanosecond: sent again in the order they happened.
-        path = folder / (f"{time.time_ns():020d}_" + uuid.uuid4().hex[:8] + ".json")
-        from decurix_agent.computer import privacy
-        privacy.write_scrubbed(path, payload, atomic=True)
-        log(f"Kept the undelivered outcome of task {payload.get('task_id') or '?'} to send again: {path.name}")
+        with _unsent_lock:
+            folder = _unsent_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            # Named by the moment to the nanosecond: sent again in the order they happened.
+            path = folder / (f"{time.time_ns():020d}_" + uuid.uuid4().hex[:8] + ".json")
+            _write_kept(path, payload)
+        log(f"Kept the undelivered {_what(payload)} to send again: {path.name}")
     except OSError as exc:
-        log(f"Could not keep the undelivered outcome: {exc}")
+        log(f"Could not keep the undelivered {_what(payload)}: {exc}")
 
 
-# How often kept outcomes are sent again, and for how long one is kept trying.
-RESEND_SECONDS = 30
-RESEND_FOR_SECONDS = 24 * 3600
-
-
-def resend_unsent():
-    """Send again every kept outcome, oldest first; one delivered (or refused by the control plane) is let go."""
+def _kept():
+    """[(path, payload)] of the kept notes, oldest first; a file that cannot be read is let go."""
 
     folder = _unsent_dir()
     if not folder.is_dir():
-        return 0
-    sent = 0
+        return []
+    kept = []
     for path in sorted(folder.glob("*.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             path.unlink(missing_ok=True)
             continue
-        outcome, detail = _post_querytext(payload)
-        if outcome == "unreachable":
-            try:
-                too_old = time.time() - path.stat().st_mtime > RESEND_FOR_SECONDS
-            except OSError:
-                too_old = True
-            if too_old:
-                log(f"Giving up sending {path.name} after a day: {detail}")
-                path.unlink(missing_ok=True)
-            break  # the control plane is not there: the rest wait for the next round, in order
-        if outcome == "refused" and not path.name.endswith(".min.json"):
-            # Kept once more as the least it must say, sent at the next round (review round 2, B7).
-            log(f"The control plane refused the kept outcome {path.name} ({detail}); keeping its least form to send.")
-            try:
-                smaller = path.with_name(path.name[:-len(".json")] + ".min.json")
-                from decurix_agent.computer import privacy
-                privacy.write_scrubbed(smaller, _minimal(payload))
-            except OSError as exc:
-                log(f"Could not keep the least form of {path.name}: {exc}")
-            path.unlink(missing_ok=True)
-            continue
-        if outcome == "refused":
-            log(f"The control plane refused the kept outcome {path.name}: {detail}")
+        if isinstance(payload, dict):
+            kept.append((path, payload))
         else:
-            sent += 1
-            log(f"Sent the kept outcome {path.name}.")
-        path.unlink(missing_ok=True)
-    return sent
+            path.unlink(missing_ok=True)
+    return kept
+
+
+def _drop_questions_of(task_id):
+    """Let go of the kept questions of a task whose outcome is being sent: nobody waits on them any more, and one shown
+    after the outcome would leave the task waiting on a question that was over. Never raises."""
+
+    try:
+        with _unsent_lock:
+            for path, payload in _kept():
+                if payload.get("kind") in _QUESTION_KINDS and (payload.get("task_id") or "") == task_id:
+                    log(f"The kept {_what(payload)} ({path.name}) is moot: the task's outcome is being sent.")
+                    path.unlink(missing_ok=True)
+    except OSError as exc:
+        log(f"Could not look through the kept notes: {exc}")
+
+
+def _moot(payload, outcomes):
+    """Why a kept question is no longer to be asked, or "": its task's outcome is kept to send too, or its task is not
+    the one in hand (it ended, or the agent restarted and does not hold the question: it would wait on the person for
+    good)."""
+
+    task = payload.get("task_id") or ""
+    if task in outcomes:
+        return "the task's outcome is kept to send"
+    if task != (task_context.current() or ""):
+        return "its task is no longer in hand"
+    return ""
+
+
+# How often kept notes are sent again, and for how long one is kept trying.
+RESEND_SECONDS = 30
+RESEND_FOR_SECONDS = 24 * 3600
+
+
+def _resend_round():
+    """Send every kept note once, oldest first, stopping at the first the control plane does not answer: (how many were
+    delivered, whether one is still waiting on the control plane)."""
+
+    sent = 0
+    with _unsent_lock:
+        kept = _kept()
+        outcomes = {p.get("task_id") or "" for _, p in kept if p.get("kind") in _OUTCOME_KINDS}
+        for path, payload in kept:
+            question = payload.get("kind") in _QUESTION_KINDS
+            why = _moot(payload, outcomes) if question else ""
+            if why:
+                log(f"Not sending the kept {_what(payload)} ({path.name}): {why}.")
+                path.unlink(missing_ok=True)
+                continue
+            if not payload.get("event_id"):
+                # Kept before notes had ids: given one now, kept with it, so every later try is the same note.
+                payload["event_id"] = _event_id()
+                try:
+                    _write_kept(path, payload)
+                except OSError as exc:
+                    log(f"Could not keep the id of {path.name}: {exc}")
+            outcome, detail = _post_querytext(payload)
+            if outcome == "unreachable":
+                try:
+                    too_old = time.time() - path.stat().st_mtime > RESEND_FOR_SECONDS
+                except OSError:
+                    too_old = True
+                if too_old:
+                    log(f"Giving up sending {path.name} after a day: {detail}")
+                    path.unlink(missing_ok=True)
+                return sent, True  # the control plane is not there: the rest wait for the next round, in order
+            if outcome == "refused" and question:
+                # Its word on the question itself (409: the task is not open): let go. Never sent in a least form,
+                # which would drop the gate's signed question and the secret mark.
+                log(f"The control plane refused the kept {_what(payload)} {path.name}: {detail}")
+            elif outcome == "refused" and not path.name.endswith(".min.json"):
+                # Kept once more as the least it must say, sent at the next round (review round 2, B7).
+                log(f"The control plane refused the kept outcome {path.name} ({detail}); keeping its least form to "
+                    "send.")
+                try:
+                    _write_kept(path.with_name(path.name[:-len(".json")] + ".min.json"), _minimal(payload))
+                except OSError as exc:
+                    log(f"Could not keep the least form of {path.name}: {exc}")
+            elif outcome == "refused":
+                log(f"The control plane refused the kept outcome {path.name}: {detail}")
+            else:
+                sent += 1
+                log(f"Sent the kept {_what(payload)} {path.name}.")
+            path.unlink(missing_ok=True)
+    return sent, False
+
+
+def resend_unsent():
+    """Send again every kept outcome and question, oldest first; one delivered (or refused by the control plane) is let
+    go, and a question that is moot (_moot) is let go unsent. How many were delivered."""
+
+    return _resend_round()[0]
+
+
+def _older_waiting():
+    """Send what was kept first, in order; True while a kept note is still not delivered, so the note in hand waits
+    behind it (a few rounds: a refused outcome's least form is sent at the round after)."""
+
+    try:
+        for _ in range(3):
+            if not _kept():
+                return False
+            _, blocked = _resend_round()
+            if blocked:
+                return True
+        return bool(_kept())
+    except OSError as exc:
+        log(f"Could not send the kept notes first: {exc}")
+        return False
 
 
 def resend_unsent_loop():
-    """Send kept outcomes again now and every RESEND_SECONDS (the agent's start runs this on a thread of its own)."""
+    """Send kept outcomes and questions again now and every RESEND_SECONDS (the agent's start runs this on a thread of
+    its own)."""
 
     while True:
         try:
             resend_unsent()
         except Exception as exc:  # noqa: BLE001 - this loop must outlive anything one round meets
-            log(f"Sending kept outcomes again failed: {exc}")
+            log(f"Sending kept notes again failed: {exc}")
         time.sleep(RESEND_SECONDS)
 
 

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -74,8 +75,39 @@ func fakeLlama(args []string) {
 			go func() { time.Sleep(50 * time.Millisecond); os.Exit(9) }()
 		}
 	})
+	timed := strings.TrimSpace(string(spec)) == "timed"
+	var last string // the prompt this server last read: its cache
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"model":"fake","choices":[{"message":{"content":"answer from the fake server"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4}}`)
+		if !timed {
+			fmt.Fprint(w, `{"model":"fake","choices":[{"message":{"content":"answer from the fake server"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4}}`)
+			return
+		}
+		// "timed": llama-server's timings at 100 prompt and 10 answer
+		// tokens a second, 4 characters a token, the shared start with the
+		// last prompt taken from the cache.
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+			MaxTokens int `json:"max_tokens"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var b strings.Builder
+		for _, m := range req.Messages {
+			b.WriteString(m.Content)
+		}
+		prompt := b.String()
+		shared := 0
+		for shared < len(prompt) && shared < len(last) && prompt[shared] == last[shared] {
+			shared++
+		}
+		last = prompt
+		total, cached := len(prompt)/4, shared/4
+		out := max(1, req.MaxTokens)
+		fmt.Fprintf(w, `{"model":"fake","choices":[{"message":{"content":"1, 2, 3"},"finish_reason":"length"}],`+
+			`"usage":{"prompt_tokens":%d,"completion_tokens":%d,"prompt_tokens_details":{"cached_tokens":%d}},`+
+			`"timings":{"cache_n":%d,"prompt_n":%d,"prompt_ms":%d,"predicted_n":%d,"predicted_ms":%d}}`,
+			total, out, cached, cached, total-cached, (total-cached)*10, out, out*100)
 	})
 	_ = http.Serve(l, mux)
 	os.Exit(0)

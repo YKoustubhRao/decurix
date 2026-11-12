@@ -430,10 +430,8 @@ func TestSchedulerResumesAnOperatorQuestionWithTheAnswer(t *testing.T) {
 
 var registerAskFixtureOnce sync.Once
 
-// Two steps running side by side that both need the person - one an approval, one a question - are both asked, one
-// after the other, and the job finishes: a second pause never overwrites the first (review T-13).
-func TestTwoPausedStepsAreBothAsked(t *testing.T) {
-	registerGraphFixtures()
+// registerAskFixture wires fx-ask: a step that asks a question (with a text checkpoint) and takes the reply.
+func registerAskFixture() {
 	registerAskFixtureOnce.Do(func() {
 		atomizer.Register("fx-ask", func(s string) bool { return strings.HasPrefix(s, "fx-ask") })
 		skills.Register(&fixtureSkill{typ: "fx-ask", run: func(rc skills.RunContext, st skills.Subtask) skills.Result {
@@ -444,6 +442,13 @@ func TestTwoPausedStepsAreBothAsked(t *testing.T) {
 			return skills.Result{Output: "answered " + rc.HumanReply, Verified: true}
 		}})
 	})
+}
+
+// Two steps running side by side that both need the person - one an approval, one a question - are both asked, one
+// after the other, and the job finishes: a second pause never overwrites the first (review T-13).
+func TestTwoPausedStepsAreBothAsked(t *testing.T) {
+	registerGraphFixtures()
+	registerAskFixture()
 	provider := &funcProvider{fn: func(m []llm.Message) string {
 		if strings.Contains(lastUser(m), "Plan the request below") {
 			return "1. fx-pay acme\n2. fx-ask which (independent)"

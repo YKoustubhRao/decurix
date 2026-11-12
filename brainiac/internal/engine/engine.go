@@ -28,6 +28,7 @@ import (
 	"brainiac/internal/install"
 	"brainiac/internal/isolate"
 	"brainiac/internal/router"
+	"brainiac/internal/speed"
 	"brainiac/internal/store"
 	"brainiac/internal/trace"
 	"brainiac/internal/verify"
@@ -166,6 +167,15 @@ type Engine struct {
 	evals    *evalCache
 	outcomes *evals.Outcomes
 	web      *web.Client
+	// speed is what local models' recent calls measured: prompt-cache hits
+	// and reading and writing speeds.
+	speed *liveSpeed
+	// variants are the speculative twins made for measuring, by base key;
+	// varMu guards them (the residency asks owns while holding its lock).
+	variants map[string]*unit
+	varMu    sync.Mutex
+	// speeds are what brainiac bench measured here (empty when nothing).
+	speeds *speed.Table
 	// refs counts the holds callers took with Enter; once retired, no new
 	// hold is given and drained closes when the last one is let go.
 	refMu   sync.Mutex
@@ -273,7 +283,7 @@ func New(opt Options) (*Engine, error) {
 	if threads <= 0 {
 		threads = max(1, runtime.NumCPU()/2)
 	}
-	e := &Engine{cfg: opt.Config, st: opt.Store, lock: opt.Lock, threads: threads, log: lg,
+	e := &Engine{cfg: opt.Config, st: opt.Store, lock: opt.Lock, threads: threads, log: lg, speed: newLiveSpeed(),
 		cache: cache.New(opt.Store.Path("cache")), traces: trace.NewStore(opt.Store.Path("traces"))}
 	// A program Brainiac installed may fall back to its directory in the
 	// sandbox when its ELF cannot be read; nothing else may.
@@ -312,7 +322,11 @@ func New(opt Options) (*Engine, error) {
 	if e.cat == nil {
 		e.cat, _ = catalog.Default()
 	}
-	e.units, e.byRole = buildUnits(opt.Lock, e.cat, opt.Config.OllamaURL, opt.Store.Path("logs"), threads, e.wk, sw)
+	slotDir := opt.Store.Path("slots")
+	if os.MkdirAll(slotDir, 0o700) != nil {
+		slotDir = "" // the prompt state is then not kept across a reload
+	}
+	e.units, e.byRole = buildUnits(opt.Lock, e.cat, opt.Config.OllamaURL, opt.Store.Path("logs"), slotDir, threads, e.wk, sw)
 	if e.cat != nil {
 		for _, u := range e.units {
 			if m, ok := e.cat.Model(u.model); ok {
@@ -327,9 +341,15 @@ func New(opt Options) (*Engine, error) {
 			u.llama.Required = opt.Config.Sandbox == config.SandboxRequired
 		}
 	}
+	e.evals = &evalCache{path: opt.Store.Path("evals.json")}
+	e.applySpeculative()
 	e.shareUnits(opt.Config.OllamaURL, workerRecipe)
 	e.rt = buildRouter(e.cat, opt.Store.Path(RouterExamplesFile))
-	e.evals = &evalCache{path: opt.Store.Path("evals.json")}
+	var err error
+	if e.speeds, err = speed.Load(opt.Store.Path(speed.File)); err != nil {
+		lg.Printf("speed measurements unreadable, estimating instead: %v", err)
+		e.speeds = &speed.Table{}
+	}
 	e.outcomes = evals.OpenOutcomes(opt.Store.Path(OutcomesFile))
 	if opt.Config.Web != config.WebOff {
 		e.web = web.New()
@@ -380,7 +400,8 @@ func (e *Engine) shareUnits(ollamaURL, workerRecipe string) {
 		case u.llama != nil:
 			p := u.llama
 			rec := "llama:" + fingerprint(p.Bin, fileSig(p.Bin), p.Model, fileSig(p.Model), p.MMProj, fileSig(p.MMProj),
-				p.Ctx, p.Threads, p.Embedding, p.TemplateSHA, p.NoSandbox, p.Required, p.LogPath)
+				p.Ctx, p.Threads, p.Embedding, p.TemplateSHA, p.NoSandbox, p.Required, p.LogPath,
+				p.CacheRAMMiB, p.Checkpoints, p.OnGPU, p.SlotDir, p.Spec)
 			u.llama = e.res.share(rec, p, p.Stop).(*LlamaProc)
 			e.procs = append(e.procs, rec)
 			u.rec = fingerprint(u.pl, rec)
@@ -395,7 +416,20 @@ func (e *Engine) shareUnits(ollamaURL, workerRecipe string) {
 // owns says a resident is one of this engine's units.
 func (e *Engine) owns(l loadable) bool {
 	u, ok := l.(*unit)
-	return ok && e.units[u.k] == u
+	if !ok {
+		return false
+	}
+	if e.units[u.k] == u {
+		return true
+	}
+	e.varMu.Lock()
+	defer e.varMu.Unlock()
+	for _, v := range e.variants {
+		if v == u {
+			return true
+		}
+	}
+	return false
 }
 
 // remoteChatter builds the client for a remote brain.
@@ -504,6 +538,10 @@ func (e *Engine) route(req Request) (brainChoice, error) {
 			}
 		}
 		if local == nil {
+			if v := e.specVariant(name); v != nil {
+				return brainChoice{mode: config.ModeLocal, local: v, name: SpecName(v.model), sees: v.vision, thinks: v.thinks,
+					why: "the client asked for " + SpecName(v.model) + ", with n-gram speculation (to measure it)"}, nil
+			}
 			return brainChoice{}, fmt.Errorf("model %q is not installed here (see /v1/models)", req.Model)
 		}
 		return brainChoice{mode: config.ModeLocal, local: local, name: local.model, sees: local.vision, thinks: local.thinks}, nil
@@ -717,6 +755,14 @@ func (e *Engine) callBrain(ctx context.Context, bc brainChoice, req backend.Chat
 	}
 	atom.OutSize = len(res.Text)
 	atom.Tokens = &trace.Tokens{Prompt: res.PromptTokens, Completion: res.CompletionTokens, Cached: res.CachedTokens, Remote: bc.remote != nil}
+	if t := res.Timings; t != nil && bc.local != nil {
+		atom.Tokens.PromptMs, atom.Tokens.GenMs = int64(t.PromptMs), int64(t.PredictedMs)
+		atom.Tokens.Drafted, atom.Tokens.Accepted = t.DraftN, t.DraftAccepted
+		if atom.Tokens.Cached == 0 {
+			atom.Tokens.Cached = t.CacheN
+		}
+		e.speed.record(bc.name, *t, e.log) // the served name: a speculative twin is measured apart
+	}
 	return res, atom, nil
 }
 
@@ -1090,6 +1136,10 @@ type Status struct {
 	// their own files: what each can still reach ("files", "network", "udp",
 	// "sockets" for other programs' Unix sockets).
 	Unconfined map[string][]string `json:"unconfined,omitempty"`
+	// Speed is, per local model, what its recent calls measured: how much
+	// of each prompt came from the prompt cache, and how fast it read and
+	// wrote. A Warning says the cache stopped working.
+	Speed map[string]SpeedStat `json:"speed,omitempty"`
 }
 
 // Status reports the mode, the model per role and what is in memory.
@@ -1114,6 +1164,7 @@ func (e *Engine) Status() Status {
 			s.Unconfined[u.model] = open
 		}
 	}
+	s.Speed = e.speed.snapshot()
 	return s
 }
 

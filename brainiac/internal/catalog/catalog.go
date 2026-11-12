@@ -145,6 +145,11 @@ type Model struct {
 	// KVPerTokenMB is the f16 KV cache one token of context takes, read off
 	// the architecture (2 x layers x kv_heads x head_dim x 2 bytes).
 	KVPerTokenMB float64 `json:"kv_per_token_mb,omitempty"`
+	// StateMB is the recurrent state one sequence keeps whatever its length
+	// (hybrid models such as Qwen3.5: their linear-attention layers), in f32
+	// MiB. llama-server keeps one per slot and one per context checkpoint, so
+	// it is memory to count. 0 for a model with attention only.
+	StateMB float64 `json:"state_mb,omitempty"`
 	// Languages the model is good at, for speech; empty means not language-bound.
 	Languages []string `json:"languages,omitempty"`
 	// Thinks marks a reasoning model that writes a long chain of thought

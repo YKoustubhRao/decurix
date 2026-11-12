@@ -3,6 +3,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from decurix_agent import (app_skills, attachments, config, guidance, methods, org_knowledge, playbooks, progress, state,
@@ -58,6 +59,12 @@ POLL_INTERVAL_SECONDS = 2
 # for a soul that stopped responding altogether. A goal working without a
 # question is not stuck: found live (2026-10-23), 25 minutes stopped one mid-work.
 TASK_TIMEOUT_SECONDS = int(os.environ.get("THEBOT_JOB_TIMEOUT_SECONDS") or 7200) + 300
+
+# How long the job's stream may stay silent before it counts as dead. soul sends an SSE comment (": ping") every 15 s
+# while a job runs, so 90 s of nothing is a connection that died without closing (a half-open socket waited out the
+# whole task budget before). A soul without that heartbeat is silent through any long step: the follow then goes on by
+# polling (_poll_job), which follows the job to its end as before - only the live step lines stop.
+STREAM_READ_TIMEOUT_SECONDS = 90
 
 SAFETY_PREAMBLE = f"""
 Approval rules for this desktop.
@@ -218,10 +225,9 @@ def _stream_job(base, job_id):
 
     deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
 
-    # The read timeout is the whole task budget on purpose: soul sends no
-    # keep-alive frames, so a genuinely long-running step looks exactly
-    # like an idle connection from here.
-    with urllib.request.urlopen(request, timeout=TASK_TIMEOUT_SECONDS) as response:
+    # The read timeout is STREAM_READ_TIMEOUT_SECONDS: soul's heartbeat (": ping", a comment line skipped below) keeps
+    # a live stream from ever being that silent. A timeout raises (an OSError) and the caller polls instead.
+    with urllib.request.urlopen(request, timeout=STREAM_READ_TIMEOUT_SECONDS) as response:
         for raw in response:
             if time.monotonic() > deadline:
                 return None
@@ -802,8 +808,16 @@ def cancel_current():
 
 
 def _follow_job(base, job_id):
+    """Follow a job to its end: (job, None), or (None, why). Over the stream while it speaks; when it ends without the
+    job's final event, fails, or is silent for STREAM_READ_TIMEOUT_SECONDS (a dead connection, or a soul with no
+    heartbeat in a long step), by polling - which reads the job's outcome from soul itself, so nothing about the outcome
+    is lost and it is reported once, from whichever of the two got it."""
+
     try:
         job = _stream_job(base, job_id)
+    except TimeoutError as exc:  # (socket.timeout: an OSError, so before the line below)
+        log(f"TheBot job stream for {job_id} was silent for {STREAM_READ_TIMEOUT_SECONDS} s, polling instead: {exc}")
+        job = None
     except (urllib.error.URLError, OSError, ValueError) as exc:
         log(f"TheBot job stream for {job_id} failed, polling instead: {exc}")
         job = None
@@ -1138,6 +1152,63 @@ def perform_task(task, task_file):
     # desktop (the human moved on without answering it), it is dropped.
     job, error = _run_thebot(task, reply=False)
     _handle_job(job, error)
+
+
+# How long a restarted agent waits for soul to answer whether it kept a paused job (resume_waiting).
+RESUME_WAIT_SECONDS = 90
+
+
+def resume_waiting(record):
+    """
+    After a restart, wait again on the person for the task this desktop was on, when soul kept its paused job: soul
+    writes a paused job to disk and reads it back at start (cmd/soul paused.go), and GET /api/paused says whether this
+    session has one. The task is waited on again (the reply resumes the kept job, through the gate's settlement for an
+    approval, as before the restart) instead of being closed as lost. Returns True when it did.
+
+    Anything not known is left to the caller, who reports the task interrupted as before: a task the control plane
+    does not show waiting on a person, a soul that does not answer within RESUME_WAIT_SECONDS, or one that kept
+    nothing (a job that held a secret is never kept).
+    """
+
+    global _approval_asked
+    from decurix_agent import messaging
+    task_id = (record or {}).get("task_id") or ""
+    if not task_context.valid(task_id):
+        return False
+    try:
+        if task_id not in messaging.waiting_tasks():
+            return False
+    except Exception as exc:  # noqa: BLE001 - not known to be waiting: not resumed
+        log(f"Could not read whether task {task_id} waits on a person: {exc}")
+        return False
+
+    url = config.THEBOT_URL.rstrip("/") + "/api/paused?session=" + urllib.parse.quote(_session_id())
+    deadline = time.monotonic() + RESUME_WAIT_SECONDS
+    kept = None
+    while kept is None:
+        try:
+            kept = _get_json(url)
+        except urllib.error.HTTPError as exc:
+            log(f"soul cannot say whether it kept task {task_id}'s paused job ({exc.code}); not resumed")
+            return False
+        except (urllib.error.URLError, OSError, ValueError):
+            if time.monotonic() >= deadline:
+                log(f"soul did not answer whether it kept task {task_id}'s paused job; not resumed")
+                return False
+            time.sleep(POLL_INTERVAL_SECONDS)
+    if kept.get("paused") is not True:
+        return False
+
+    request = record.get("request") or ""
+    kind = "approval" if kept.get("kind") == "approval" else "query"
+    task_context.start(task_id, request=request)
+    task_context.mark_active(task_id, request)
+    state.current_task = request or task_id
+    state.last_query_kind = kind
+    _approval_asked = (kept.get("question") or "") if kind == "approval" else None
+    state.waiting_for_query = True
+    log(f"Task {task_id} still waits on the person: soul kept its paused job through the restart; waiting on the reply.")
+    return True
 
 
 def continue_after_query(query_response):

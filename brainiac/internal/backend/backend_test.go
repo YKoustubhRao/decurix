@@ -180,3 +180,36 @@ func TestAFinishedAnswerIsComplete(t *testing.T) {
 		t.Fatal("an answer with no choices was accepted")
 	}
 }
+
+// llama-server's own timings arrive with the answer, streamed or not: they
+// say how much of the prompt its cache held and how fast it read and wrote.
+func TestLlamaServerTimingsAreRead(t *testing.T) {
+	timings := `"timings":{"cache_n":900,"prompt_n":100,"prompt_ms":2000.5,"predicted_n":20,"predicted_ms":4000,"draft_n":8,"draft_n_accepted":6}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got map[string]any
+		json.NewDecoder(r.Body).Decode(&got)
+		if got["stream"] == true {
+			fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}`)
+			fmt.Fprintln(w, `data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":20},`+timings+`}`)
+			fmt.Fprintln(w, `data: [DONE]`)
+			return
+		}
+		io.WriteString(w, `{"choices":[{"message":{"content":"A"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":20},`+timings+`}`)
+	}))
+	defer srv.Close()
+	c := &OpenAI{BaseURL: srv.URL}
+	want := Timings{CacheN: 900, PromptN: 100, PromptMs: 2000.5, PredictedN: 20, PredictedMs: 4000, DraftN: 8, DraftAccepted: 6}
+	for _, stream := range []bool{false, true} {
+		req := ChatRequest{Messages: []Message{{Role: "user", Text: "x"}}}
+		if stream {
+			req.OnDelta = func(string) {}
+		}
+		res, err := c.Chat(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Timings == nil || *res.Timings != want {
+			t.Fatalf("stream %v: timings %+v, want %+v", stream, res.Timings, want)
+		}
+	}
+}

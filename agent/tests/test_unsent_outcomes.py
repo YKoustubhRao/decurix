@@ -96,7 +96,9 @@ class UnsentOutcomes(unittest.TestCase):
         self.assertEqual(self.kept(), [])
         with self.post():
             self.assertEqual(messaging.resend_unsent(), 0)
-        self.assertEqual([p["reply"] for p in self.posted], ["stale", "fresh", "stale", "fresh", "stale"])
+        # (The second outcome is never posted ahead of the kept first: its send tries the first again, still down, and
+        # it is kept behind it - test_kept_notes.)
+        self.assertEqual([p["reply"] for p in self.posted], ["stale", "stale", "stale", "fresh", "stale"])
 
     def test_still_unreachable_keeps_them_all_in_order(self):
         with self.post(("unreachable", "x"), ("unreachable", "x")):
@@ -110,10 +112,11 @@ class UnsentOutcomes(unittest.TestCase):
             self.assertEqual(messaging.resend_unsent(), 2)
         self.assertEqual([p["reply"] for p in self.posted[-2:]], ["first", "second"])
 
-    def test_what_the_control_plane_refuses_is_not_kept_and_a_question_is_not_kept(self):
+    def test_what_the_control_plane_refuses_is_not_kept_and_a_question_it_refuses_is_not_kept(self):
+        # (A question it could not be told IS kept since 2026-11-11, as an outcome is: test_kept_notes.)
         with self.post(("refused", "HTTP 400")):
             messaging.send_query("f.txt", "x", kind="final", reply="x")
-        with self.post(("unreachable", "down")):
+        with self.post(("refused", "HTTP 409"), ("refused", "HTTP 409")):
             messaging.send_query("q.txt", "Which one?", kind="query", reply="Which one?")
         self.assertEqual(self.kept(), [])
 

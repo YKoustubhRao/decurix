@@ -16,7 +16,8 @@ ACCOUNT_ID = "458293b2573c77258b244199d829105d"
 ZONE_ID = "d69b68190f1e97e9a76f7ba8d2bd71ec"
 # Below the free plan's DNS record limit for the zone, with room for the website's own records.
 MAX_NAMES = "150"
-CLAIMS_PER_IP_PER_DAY = "3"
+# An office's PCs share one address: room for several installs a day, still a bound on abuse.
+CLAIMS_PER_IP_PER_DAY = "10"
 STALE_DAYS = "90"
 
 [[d1_databases]]

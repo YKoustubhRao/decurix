@@ -39,15 +39,73 @@ func DefaultRoot() string {
 	return filepath.Join(home, ".brainiac")
 }
 
-// Open returns the store at root, creating the directory.
+// Open returns the store at root, creating the directory owner-only (0700):
+// the cache holds text read from screens and documents. An existing root is
+// tightened only when it is clearly Brainiac's (privateDirs).
 func Open(root string) (*Store, error) {
 	if root == "" {
 		root = DefaultRoot()
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	_, err := os.Stat(root)
+	fresh := errors.Is(err, os.ErrNotExist)
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{Root: root}, nil
+	s := &Store{Root: root}
+	if fresh || s.isHome() {
+		s.privateDirs()
+	}
+	return s, nil
+}
+
+// homeMarkers are files only a Brainiac home holds.
+var homeMarkers = []string{"lock.json", "plan.json", "census.json"}
+
+// isHome reports whether the root is clearly a Brainiac home: it holds one of
+// Brainiac's own files, or it is the built-in ~/.brainiac. A directory a
+// person pointed BRAINIAC_HOME at is not chmodded until Brainiac has made it
+// its own.
+func (s *Store) isHome() bool {
+	for _, m := range homeMarkers {
+		if st, err := os.Lstat(s.Path(m)); err == nil && st.Mode().IsRegular() {
+			return true
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	a, err1 := filepath.Abs(s.Root)
+	b, err2 := filepath.Abs(filepath.Join(home, ".brainiac"))
+	return err1 == nil && err2 == nil && a == b
+}
+
+// privateParts are the folders under the root that hold what requests
+// carried (perception results, traces, model logs, worker temp files).
+var privateParts = []string{"cache", "traces", "logs", "tmp"}
+
+// privateDirs takes group and other access away from the root and the
+// folders in privateParts that exist. A symlink is left alone; failures are
+// ignored (a root on a filesystem without modes).
+func (s *Store) privateDirs() {
+	tighten(s.Root, true)
+	for _, d := range privateParts {
+		tighten(s.Path(d), false)
+	}
+}
+
+// tighten clears a directory's group and other bits; follow says whether a
+// symlink to it is followed.
+func tighten(dir string, follow bool) {
+	stat := os.Lstat
+	if follow {
+		stat = os.Stat
+	}
+	st, err := stat(dir)
+	if err != nil || !st.IsDir() || st.Mode().Perm()&0o077 == 0 {
+		return
+	}
+	_ = os.Chmod(dir, st.Mode().Perm()&^0o077)
 }
 
 // Path joins parts under the root.
@@ -152,7 +210,8 @@ func (s *Store) ReadJSON(name string, v any) error {
 	return nil
 }
 
-// WriteJSON writes v as indented JSON to name under the root, atomically.
+// WriteJSON writes v as indented JSON to name under the root, atomically and
+// owner-only (0600).
 func (s *Store) WriteJSON(name string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -160,7 +219,8 @@ func (s *Store) WriteJSON(name string, v any) error {
 	}
 	path := s.Path(name)
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+	_ = os.Remove(tmp) // a leftover keeps its old mode through WriteFile
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

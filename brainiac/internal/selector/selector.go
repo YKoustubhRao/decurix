@@ -21,6 +21,8 @@ import (
 
 	"brainiac/internal/catalog"
 	"brainiac/internal/census"
+	"brainiac/internal/gguf"
+	"brainiac/internal/speed"
 	"brainiac/internal/store"
 )
 
@@ -75,7 +77,22 @@ type Policy struct {
 	// specialist must be in its field to be worth a download and a swap.
 	// Default 5.
 	DomainMargin float64
+	// PromptPrefixes is how many conversations' prompt starts the brain's
+	// server keeps in its host-memory prompt cache, so desktops that take
+	// turns each find theirs instead of reading the whole prompt again.
+	// 0 means 3; negative turns the cache off.
+	PromptPrefixes int
 }
+
+// CtxCheckpoints is how many context checkpoints llama-server keeps per slot.
+// A checkpoint is a copy of a hybrid model's recurrent state (about 20 MB for
+// Qwen3.5-2B): llama.cpp's default of 32 would take over half a gigabyte
+// nobody counted. A turn that only appends to the last prompt needs none; a
+// few cover a reply the template rewrites.
+const CtxCheckpoints = 3
+
+// MaxCacheShare is the most of a pool's budget the prompt caches may take.
+const MaxCacheShare = 0.2
 
 func (p Policy) withDefaults() Policy {
 	if len(p.Licenses) == 0 {
@@ -98,6 +115,9 @@ func (p Policy) withDefaults() Policy {
 	}
 	if p.DomainMargin <= 0 {
 		p.DomainMargin = 5
+	}
+	if p.PromptPrefixes == 0 {
+		p.PromptPrefixes = 3
 	}
 	return p
 }
@@ -137,24 +157,35 @@ type Budget struct {
 
 // Pick is one role's choice.
 type Pick struct {
-	Role      string         `json:"role"`
-	Model     string         `json:"model"`
-	Title     string         `json:"title"`
-	Source    catalog.Source `json:"source"`
-	Pool      string         `json:"pool"`
-	OnGPU     bool           `json:"on_gpu,omitempty"`
-	MemGB     float64        `json:"mem_gb"`
-	DiskGB    float64        `json:"disk_gb"`
-	Download  float64        `json:"download_gb"`
-	Installed bool           `json:"installed"`
-	Speed     float64        `json:"speed"`
-	SpeedUnit string         `json:"speed_unit"`
-	Quality   float64        `json:"quality"`
+	Role   string         `json:"role"`
+	Model  string         `json:"model"`
+	Title  string         `json:"title"`
+	Source catalog.Source `json:"source"`
+	Pool   string         `json:"pool"`
+	OnGPU  bool           `json:"on_gpu,omitempty"`
+	MemGB  float64        `json:"mem_gb"`
+	// PromptCacheMB is the host-memory prompt cache its llama-server may
+	// fill (--cache-ram), counted in MemGB. 0 turns that cache off.
+	PromptCacheMB int     `json:"prompt_cache_mb,omitempty"`
+	DiskGB        float64 `json:"disk_gb"`
+	Download      float64 `json:"download_gb"`
+	Installed     bool    `json:"installed"`
+	Speed         float64 `json:"speed"`
+	SpeedUnit     string  `json:"speed_unit"`
+	Quality       float64 `json:"quality"`
 	// Shared names the other roles the same model fills.
 	Shared []string `json:"shared,omitempty"`
 	// Swaps is set when this model cannot stay loaded beside the heavy set,
 	// so using it unloads the brain for a while.
 	Swaps bool `json:"swaps,omitempty"`
+	// PrefillTPS is prompt tokens read per second here; WarmTurnSec and
+	// ColdTurnSec are a desktop turn's seconds with its prompt start cached
+	// and read from the start (WarmTurnTokens, ColdTurnTokens). SpeedBasis
+	// says whether they were "measured" (brainiac bench) or "estimated".
+	PrefillTPS  float64 `json:"prefill_tps,omitempty"`
+	WarmTurnSec float64 `json:"warm_turn_sec,omitempty"`
+	ColdTurnSec float64 `json:"cold_turn_sec,omitempty"`
+	SpeedBasis  string  `json:"speed_basis,omitempty"`
 	// AnswerSec estimates a reasoning model's time for a hard request here.
 	AnswerSec float64  `json:"answer_sec,omitempty"`
 	Why       string   `json:"why"`
@@ -223,10 +254,15 @@ func Select(cs census.Census, cat *catalog.Catalog, st *store.Store, pol Policy)
 		Machine:        machineLine(cs),
 	}
 	s.setBudgets()
+	if st != nil {
+		s.speeds, _ = speed.Load(st.Path(speed.File)) // none measured yet: estimates
+	}
 	s.setDecode()
+	s.calibrateDecode()
 	s.chooseHeavy()
 	s.chooseLight()
 	s.chooseDomains()
+	s.sizePromptCaches()
 	s.finish()
 	return s.plan
 }
@@ -242,6 +278,10 @@ type selection struct {
 	used map[string]float64
 	// diskLeft is what downloads may still take.
 	diskLeft float64
+	// speeds are what brainiac bench measured here (nil: nothing yet).
+	speeds *speed.Table
+	// headers are the installed model files' headers read so far, by path.
+	headers map[string]*gguf.ModelInfo
 	// chosen maps a model id to the candidate picked for it, so a model
 	// filling two roles is downloaded and counted once.
 	chosen map[string]candidate
@@ -354,8 +394,15 @@ func (s *selection) evaluate(m catalog.Model, src catalog.Source) (candidate, st
 			return candidate{}, "no prebuilt llama-server for " + s.cs.Host.OS + "/" + s.cs.Host.Arch
 		}
 		c.installed = s.st != nil && s.st.HasFiles(src)
-		c.memGB = llmMem(m, src, 0.5) // Brainiac's own server keeps the KV cache at q8_0
+		// Brainiac's own server keeps the KV cache at q8_0 and one recurrent
+		// state per slot with the model; its CtxCheckpoints copies of that
+		// state live in host memory, so they count with a model on the CPU.
+		f := s.llamaFacts(m, src, c.installed)
+		c.memGB = llamaBaseGB(m, src) + (f.kvMB+f.stateMB)/1024
 		c.pool, c.onGPU = s.llamaPool(c.memGB)
+		if !c.onGPU {
+			c.memGB += f.stateMB * CtxCheckpoints / 1024
+		}
 	case catalog.RuntimeWorker:
 		if s.cs.Python == nil || !s.cs.Python.Venv {
 			return candidate{}, "no Python 3.9+ with venv for the worker"
@@ -438,6 +485,138 @@ func llmMem(m catalog.Model, src catalog.Source, kvFactor float64) float64 {
 	overhead := 0.25 + 0.02*m.ParamsB
 	kv := m.KVPerTokenMB * float64(ContextFor(m, src)) / 1024 * kvFactor
 	return round2(src.SizeGB + overhead + kv)
+}
+
+// q8KV is the size of a q8_0 KV cache relative to f16: 34 bytes per 32
+// values against 64.
+const q8KV = 34.0 / 64
+
+// memFacts are what a llama-server model keeps per sequence besides its
+// weights: the KV cache at its window (q8_0) and one recurrent state, in MiB.
+type memFacts struct {
+	kvMB, stateMB float64
+	// basis says where they come from: the catalog or the file's header.
+	basis string
+}
+
+// prefixMB is what one cached prompt start can take in llama-server's prompt
+// cache: a full window of KV plus the recurrent state and its checkpoints.
+func (f memFacts) prefixMB() float64 { return f.kvMB + f.stateMB*(1+CtxCheckpoints) }
+
+// catalogFacts are a model's memory facts as the catalog gives them.
+func catalogFacts(m catalog.Model, src catalog.Source) memFacts {
+	return memFacts{kvMB: m.KVPerTokenMB * float64(ContextFor(m, src)) * q8KV, stateMB: m.StateMB, basis: "catalog"}
+}
+
+// llamaBaseGB is a llama-server model's weights and runtime buffers.
+func llamaBaseGB(m catalog.Model, src catalog.Source) float64 {
+	if src.MemGB > 0 {
+		return src.MemGB
+	}
+	return src.SizeGB + 0.25 + 0.02*m.ParamsB
+}
+
+// llamaFacts are an installed model's facts read from its own file header
+// when the layout is one Brainiac knows how to count; otherwise, or for an
+// unknown layout (an upper bound), never less than the catalog says.
+func (s *selection) llamaFacts(m catalog.Model, src catalog.Source, installed bool) memFacts {
+	f := catalogFacts(m, src)
+	if !installed || s.st == nil || src.MemGB > 0 {
+		return f
+	}
+	path := s.st.SourceFiles(src)["model"]
+	if path == "" {
+		return f
+	}
+	if s.headers == nil {
+		s.headers = map[string]*gguf.ModelInfo{}
+	}
+	info, ok := s.headers[path]
+	if !ok {
+		info, _ = gguf.Info(path) // nil on a bad header: the catalog's facts stand
+		s.headers[path] = info
+	}
+	if info == nil {
+		return f
+	}
+	const mib = 1 << 20
+	h := memFacts{kvMB: float64(info.KVBytes(ContextFor(m, src), 34.0/32)) / mib, stateMB: float64(info.StateBytes()) / mib, basis: "file header"}
+	if !info.LayoutVerified {
+		h.kvMB, h.stateMB = math.Max(h.kvMB, f.kvMB), math.Max(h.stateMB, f.stateMB)
+	}
+	return h
+}
+
+// prefixesFor is how many prompt starts a model's server should keep: the
+// heavy models serve the desktops' long conversations, an embedding model
+// has none, and a field specialist answers one question at a time.
+func (s *selection) prefixesFor(m catalog.Model) int {
+	if s.pol.PromptPrefixes < 0 {
+		return 0
+	}
+	if len(heavyOf(m)) > 0 {
+		return s.pol.PromptPrefixes
+	}
+	if _, embed := m.Roles[catalog.RoleEmbed]; embed && len(m.Roles) == 1 {
+		return 0
+	}
+	return 1
+}
+
+// sizePromptCaches gives each chosen llama-server model a host-memory prompt
+// cache and counts it, once every role is chosen. llama.cpp's own default is
+// 8 GiB per server, more than a small machine has. Here a cache holds the
+// prompt starts its model needs and only memory nothing chosen uses: the
+// models that stay loaded together come first, so a cache never pushes the
+// OCR worker out from beside the brain. It takes at most MaxCacheShare of
+// the pool. On a GPU the cache would sit in host memory while the model is
+// counted on the GPU, so it is off there for now.
+func (s *selection) sizePromptCaches() {
+	idx := map[string][]int{} // model -> its picks
+	var order []string
+	for i, p := range s.plan.Picks {
+		if p.Source.Runtime != catalog.RuntimeLlamaCpp || p.OnGPU {
+			continue
+		}
+		if _, ok := idx[p.Model]; !ok {
+			order = append(order, p.Model)
+		}
+		idx[p.Model] = append(idx[p.Model], i)
+	}
+	// Models that stay loaded first, in plan order (the heavy set leads).
+	sort.SliceStable(order, func(i, j int) bool {
+		return !s.plan.Picks[idx[order[i]][0]].Swaps && s.plan.Picks[idx[order[j]][0]].Swaps
+	})
+	for _, id := range order {
+		first := s.plan.Picks[idx[id][0]]
+		m, ok := s.cat.Model(id)
+		b := s.budgets[first.Pool]
+		if !ok || b == nil || m.KVPerTokenMB <= 0 {
+			continue
+		}
+		n, per := s.prefixesFor(m), s.llamaFacts(m, first.Source, first.Installed).prefixMB()
+		if n <= 0 || per <= 0 {
+			continue
+		}
+		// A model that swaps others out has the pool to itself while it runs.
+		left := b.BudgetGB - s.used[first.Pool]
+		if first.Swaps {
+			left = b.BudgetGB - first.MemGB
+		}
+		n = min(n, int(math.Min(MaxCacheShare*b.BudgetGB, left)*1024/per))
+		if n <= 0 {
+			s.plan.Warnings = append(s.plan.Warnings, fmt.Sprintf("%s has no room for a prompt cache: each conversation it takes up again is read from its start", id))
+			continue
+		}
+		mb := int(math.Ceil(float64(n) * per))
+		for _, i := range idx[id] {
+			s.plan.Picks[i].PromptCacheMB = mb
+			s.plan.Picks[i].MemGB = round2(s.plan.Picks[i].MemGB + float64(mb)/1024)
+		}
+		if !first.Swaps {
+			s.used[first.Pool] += float64(mb) / 1024
+		}
+	}
 }
 
 // ContextFor is the window a model runs at: the shared Ollama always gets
@@ -563,6 +742,9 @@ func (s *selection) speedFor(c candidate, role catalog.Role) float64 {
 		return 0
 	}
 	bw := s.plan.DecodeGBps
+	if r, ok := s.measured(c); ok {
+		return r.DecodeTPS
+	}
 	if c.onGPU {
 		if g, ok := s.cs.GPUFor(c.pool); ok {
 			bw = gpuBandwidth(g) * 0.6
@@ -882,12 +1064,14 @@ func dedupe(in []Reject) []Reject {
 func (s *selection) pickFrom(c candidate, role catalog.Role, why string) Pick {
 	sp := s.speedFor(c, role)
 	disk := c.src.SizeGB
-	return Pick{
+	p := Pick{
 		Role: role.ID, Model: c.model.ID, Title: c.model.Title, Source: c.src,
 		Pool: c.pool, OnGPU: c.onGPU, MemGB: round2(c.memGB), DiskGB: round2(disk),
 		Download: round2(c.download), Installed: c.installed,
 		Speed: sp, SpeedUnit: role.SpeedUnit, Quality: c.model.Roles[role.ID], Why: why,
 	}
+	s.turnTimes(&p, c)
+	return p
 }
 
 // chooseLight picks OCR, speech, VAD and embeddings one by one. Each prefers a

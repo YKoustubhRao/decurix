@@ -128,6 +128,12 @@ def drives_screen_with_hosted_model():
     return bool(config.HOSTED_BRAIN)
 
 
+def resume_waiting(record):
+    """After a restart: wait again on the person for a task whose paused job the engine kept (thebot_harness)."""
+    from decurix_agent import thebot_harness
+    return thebot_harness.resume_waiting(record)
+
+
 def cancel_running():
     """
     End the engine's work in progress (a person stopped a long request
@@ -139,4 +145,5 @@ def cancel_running():
     return thebot_harness.cancel_current()
 
 
-__all__ = ["perform_task", "continue_after_query", "wait_for_backend", "ask_model", "ask_decided", "cancel_running"]
+__all__ = ["perform_task", "continue_after_query", "wait_for_backend", "ask_model", "ask_decided", "cancel_running",
+           "resume_waiting"]

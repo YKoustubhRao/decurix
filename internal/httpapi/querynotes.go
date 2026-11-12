@@ -76,79 +76,102 @@ func (s *Server) agentWaitingHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string][]string{"tasks": waiting})
 }
 
+// queryTextRequest is a desktop's message: a question, an approval, or how a turn ended.
+type queryTextRequest struct {
+	DesktopID string `json:"desktop_id"`
+	VMName    string `json:"vm_name"`
+	Filename  string `json:"filename"`
+	Content   string `json:"content"`
+
+	// Kind and Reply are the chat's own view of this callback: what sort
+	// of entry it is, and just the part a human wants to read, without
+	// the formatted note's headings. Sent by desktops built from a
+	// current image; absent from older ones, which the handler falls
+	// back to parsing out of Content.
+	Kind  string `json:"kind"`
+	Reply string `json:"reply"`
+
+	// Quiet asks for no Query rail entry: the callback still closes the
+	// task and answers in the chat. Sent for a result nobody needs paging
+	// about, such as a finished recording, which the desktop card lists.
+	Quiet bool `json:"quiet"`
+
+	// Interrupted marks the report a restarted agent makes about the task
+	// its previous process never finished (the desktop's X session ended
+	// and the container came back on its own). It is recorded only while
+	// that task is still open: a restart through the API closed it already
+	// and said so.
+	Interrupted bool `json:"interrupted"`
+
+	// StillWorking says the desktop is still busy after this reply: an answer to a message a planned run took
+	// mid-run (its receipt) is a reply in the chat, but the run goes on, so the turn stays open (running).
+	StillWorking bool `json:"still_working"`
+
+	// Checked says whether the desktop's final check judged a finished
+	// result (messaging.write_final_reply). Absent from older images,
+	// which leaves it unknown rather than "not checked".
+	Checked *bool `json:"checked"`
+
+	// Verdict is the final check, structured (decurix.verdict/v1, C5): stored beside the task, with checked
+	// derived from it. Absent from older images.
+	Verdict json.RawMessage `json:"verdict"`
+
+	// Skill names the taught skill that drove the turn, and its version (C5): stored on the execution (R7).
+	Skill *tasks.Skill `json:"skill"`
+
+	// Secret marks a question raised for a secret (a password or code field): the person's reply to it is kept
+	// withheld whole in every record, and still reaches the desktop as typed (X-6). Ignored on anything but a
+	// question or an approval.
+	Secret bool `json:"secret"`
+
+	// What the task records need from the end of a turn: which task it
+	// was, and what the desktop knows about the model and the spend so
+	// far. All optional, and absent from older images.
+	TaskID       string   `json:"task_id"`
+	Engine       string   `json:"engine"`
+	Model        string   `json:"model"`
+	CostUSD      *float64 `json:"cost_usd"`
+	InputTokens  *int64   `json:"input_tokens"`
+	OutputTokens *int64   `json:"output_tokens"`
+	// CachedInputTokens is the part of InputTokens the provider served
+	// from its prompt cache.
+	CachedInputTokens *int64 `json:"cached_input_tokens"`
+
+	// Gate is the approval gate's own question for the action it holds, signed by the gate (an approval only).
+	Gate *struct {
+		ID       string `json:"id"`
+		Question string `json:"question"`
+		Sig      string `json:"sig"`
+	} `json:"gate"`
+
+	// EventID is the message's own id, the same on every resend (agent messaging.send_query): applied once.
+	// Absent from older images, whose messages are always applied.
+	EventID string `json:"event_id"`
+}
+
+// queryTextResult is the answer queryTextHandler gives: a JSON body, or an error status with its reason.
+type queryTextResult struct {
+	status int
+	reason string
+	body   any
+}
+
+// write sends the answer.
+func (r queryTextResult) write(w http.ResponseWriter) {
+	if r.status != 0 && r.status != http.StatusOK {
+		jsonStatusError(w, r.status, r.reason)
+		return
+	}
+	jsonResponse(w, r.body)
+}
+
 // queryTextHandler records a query note submitted from inside a desktop.
 func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 
-	var req struct {
-		DesktopID string `json:"desktop_id"`
-		VMName    string `json:"vm_name"`
-		Filename  string `json:"filename"`
-		Content   string `json:"content"`
-
-		// Kind and Reply are the chat's own view of this callback: what sort
-		// of entry it is, and just the part a human wants to read, without
-		// the formatted note's headings. Sent by desktops built from a
-		// current image; absent from older ones, which the handler falls
-		// back to parsing out of Content.
-		Kind  string `json:"kind"`
-		Reply string `json:"reply"`
-
-		// Quiet asks for no Query rail entry: the callback still closes the
-		// task and answers in the chat. Sent for a result nobody needs paging
-		// about, such as a finished recording, which the desktop card lists.
-		Quiet bool `json:"quiet"`
-
-		// Interrupted marks the report a restarted agent makes about the task
-		// its previous process never finished (the desktop's X session ended
-		// and the container came back on its own). It is recorded only while
-		// that task is still open: a restart through the API closed it already
-		// and said so.
-		Interrupted bool `json:"interrupted"`
-
-		// StillWorking says the desktop is still busy after this reply: an answer to a message a planned run took
-		// mid-run (its receipt) is a reply in the chat, but the run goes on, so the turn stays open (running).
-		StillWorking bool `json:"still_working"`
-
-		// Checked says whether the desktop's final check judged a finished
-		// result (messaging.write_final_reply). Absent from older images,
-		// which leaves it unknown rather than "not checked".
-		Checked *bool `json:"checked"`
-
-		// Verdict is the final check, structured (decurix.verdict/v1, C5): stored beside the task, with checked
-		// derived from it. Absent from older images.
-		Verdict json.RawMessage `json:"verdict"`
-
-		// Skill names the taught skill that drove the turn, and its version (C5): stored on the execution (R7).
-		Skill *tasks.Skill `json:"skill"`
-
-		// Secret marks a question raised for a secret (a password or code field): the person's reply to it is kept
-		// withheld whole in every record, and still reaches the desktop as typed (X-6). Ignored on anything but a
-		// question or an approval.
-		Secret bool `json:"secret"`
-
-		// What the task records need from the end of a turn: which task it
-		// was, and what the desktop knows about the model and the spend so
-		// far. All optional, and absent from older images.
-		TaskID       string   `json:"task_id"`
-		Engine       string   `json:"engine"`
-		Model        string   `json:"model"`
-		CostUSD      *float64 `json:"cost_usd"`
-		InputTokens  *int64   `json:"input_tokens"`
-		OutputTokens *int64   `json:"output_tokens"`
-		// CachedInputTokens is the part of InputTokens the provider served
-		// from its prompt cache.
-		CachedInputTokens *int64 `json:"cached_input_tokens"`
-
-		// Gate is the approval gate's own question for the action it holds, signed by the gate (an approval only).
-		Gate *struct {
-			ID       string `json:"id"`
-			Question string `json:"question"`
-			Sig      string `json:"sig"`
-		} `json:"gate"`
-	}
+	var req queryTextRequest
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxQueryTextRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -178,6 +201,23 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A desktop resends a message until it is acknowledged (agent messaging.resend_unsent); one event id is applied
+	// once, and acknowledged only after it is applied (internal/delivery).
+	var out queryTextResult
+	// A refused message (its task is not open) is not remembered as applied: it was not.
+	if s.applyOnce(desktopID, req.EventID, func() bool {
+		out = s.applyQueryText(desktopID, &req)
+		return out.status == 0 || out.status == http.StatusOK
+	}) {
+		jsonResponse(w, map[string]any{"status": "received", "duplicate": true})
+		return
+	}
+	out.write(w)
+}
+
+// applyQueryText applies a desktop's message to the task records, the Queries rail and the chat, and returns the
+// answer to give.
+func (s *Server) applyQueryText(desktopID string, req *queryTextRequest) queryTextResult {
 	note := querynotes.QueryNote{
 		ID:        nextNoteID(),
 		DesktopID: req.DesktopID,
@@ -205,9 +245,9 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("querytext from %s: %v", desktopID, err)
 		}
-		if !open {
-			jsonResponse(w, map[string]string{"status": "already closed"})
-			return
+		// A task open only as an unconfirmed send (a restart cut its delivery short) is this report's to close.
+		if !open && !s.acceptUnconfirmed(desktopID, reportedTaskID(req.TaskID)) {
+			return queryTextResult{body: map[string]string{"status": "already closed"}}
 		}
 	}
 
@@ -231,7 +271,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("querytext from %s: the verdict for task %s (stored as %s): %s",
 			desktopID, named, verdict.Verdict, strings.Join(problems, "; "))
 	}
-	taskID, execID, err := s.Tasks.RecordOutcomeExec(desktopID, named, tasks.Outcome{
+	outcome := tasks.Outcome{
 		Verdict:           verdict,
 		Skill:             req.Skill,
 		Kind:              note.Kind,
@@ -245,7 +285,13 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		Checked:           req.Checked,
 		Secret:            req.Secret && (note.Kind == tasks.OutcomeQuery || note.Kind == tasks.OutcomeApproval),
 		Interrupted:       req.Interrupted,
-	})
+	}
+	taskID, execID, err := s.Tasks.RecordOutcomeExec(desktopID, named, outcome)
+	// A task its desktop answers that the records never got (a restart cut its delivery short, and the desktop could
+	// not be asked at the next start) is recorded now, then its outcome.
+	if err == nil && named != "" && taskID == "" && s.acceptUnconfirmed(desktopID, named) {
+		taskID, execID, err = s.Tasks.RecordOutcomeExec(desktopID, named, outcome)
+	}
 	if err != nil {
 		log.Printf("querytext from %s: %v", desktopID, err)
 	}
@@ -263,8 +309,8 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	// desktop's sign to let it go (messaging.resend_unsent drops a refused outcome) - review 2026-11-03, C-01/L-03.
 	if err == nil && named != "" && taskID == "" {
 		log.Printf("querytext from %s: task %s is not open, so its %s outcome was refused", desktopID, named, note.Kind)
-		jsonStatusError(w, http.StatusConflict, "That task is not open on this desktop, so this outcome was not recorded.")
-		return
+		return queryTextResult{status: http.StatusConflict,
+			reason: "That task is not open on this desktop, so this outcome was not recorded."}
 	}
 
 	if !req.Quiet && note.Kind != tasks.OutcomeDone {
@@ -293,9 +339,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		s.IdleChecker.FastPauseAfter(desktopID, 15*time.Second)
 	}
 
-	jsonResponse(w, map[string]string{
-		"status": "received",
-	})
+	return queryTextResult{body: map[string]string{"status": "received"}}
 }
 
 // outcomeKindFor maps the kind a desktop reports on its callback to the task
@@ -378,6 +422,8 @@ func (s *Server) closeQueryNoteHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.FormValue("id")
 
 	s.QueryNotes.Close(id)
+	// The card's needs-you rests on the open notes: every page fetches its cards again (events.go).
+	s.events.publish("")
 
 	jsonResponse(w, map[string]string{
 		"status": "closed",

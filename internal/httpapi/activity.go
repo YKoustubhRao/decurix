@@ -29,6 +29,8 @@ type Activity struct {
 	Request   string    `json:"request,omitempty"`
 	Step      string    `json:"step,omitempty"`
 	StartedAt time.Time `json:"started_at,omitempty"`
+	// SignalAt is when the running turn was last heard from: its latest step, or its start.
+	SignalAt time.Time `json:"signal_at,omitempty"`
 
 	// Status and Crash are the desktop's own (desktop.Desktop's), so a card
 	// rendered before its desktop crashed or was started turns the right
@@ -43,6 +45,10 @@ type Activity struct {
 	// MissingApps are the requested host apps the desktop does not have, and why; a pending one appears on the card
 	// as still being added and disappears when its retry adds it.
 	MissingApps []desktop.MissingApp `json:"missing_apps,omitempty"`
+
+	// Card is the card's one status, derived from all of the above, the open notes and the task records
+	// (cardstate.go); absent when the desktop is not in the list, which leaves the page's own rule.
+	Card *CardState `json:"card,omitempty"`
 }
 
 // activityHandler answers GET /api/desktops/activity?ids=a,b,c with each
@@ -66,6 +72,10 @@ func (s *Server) activityHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	waiting, reported := s.cardAttention()
+	live := s.liveWorkers()
+	now := time.Now()
+
 	for i, raw := range strings.Split(r.URL.Query().Get("ids"), ",") {
 		if i >= maxActivityIDs {
 			break
@@ -81,6 +91,8 @@ func (s *Server) activityHandler(w http.ResponseWriter, r *http.Request) {
 			a.Status, a.Crash = d.Status, d.Crash
 			a.CreatedAt, a.CPUs, a.MemoryMB = d.CreatedAt, d.CPUs, d.MemoryMB
 			a.MissingApps = d.MissingApps
+			card := cardStateFor(id, a, a.SignalAt, waiting, reported, live, now)
+			a.Card = &card
 		}
 		out[id] = a
 	}
@@ -94,7 +106,7 @@ func activityOf(thread conversation.Thread) Activity {
 		return Activity{}
 	}
 
-	activity := Activity{Running: true, StartedAt: thread.StartedAt}
+	activity := Activity{Running: true, StartedAt: thread.StartedAt, SignalAt: thread.StartedAt}
 
 	// The request that opened this turn is the last thing the person sent.
 	for i := len(thread.Entries) - 1; i >= 0; i-- {
@@ -114,6 +126,9 @@ func activityOf(thread conversation.Thread) Activity {
 
 	if n := len(thread.Steps); n > 0 {
 		activity.Step = thread.Steps[n-1].Text
+		if at := thread.Steps[n-1].CreatedAt; at.After(activity.SignalAt) {
+			activity.SignalAt = at
+		}
 	}
 
 	activity.Request = clipRunes(activity.Request, maxActivityRunes)

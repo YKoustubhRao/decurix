@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,7 +67,7 @@ func TestLiveServerRunsWithNoNetworkAndNoSecrets(t *testing.T) {
 	var logged []string
 	p := &LlamaProc{Bin: bin, Model: model, Ctx: 256, Threads: 1, LogPath: filepath.Join(t.TempDir(), "llama.log"),
 		Logf: func(f string, a ...any) { logged = append(logged, f) }}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute) // a cold load on a laptop CPU takes minutes
 	defer cancel()
 	if err := p.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -144,7 +145,7 @@ func TestLiveServerWithoutASocketFallsBackAndSaysSo(t *testing.T) {
 	var logged []string
 	p := &LlamaProc{Bin: old, Model: model, Ctx: 256, Threads: 1, LogPath: filepath.Join(t.TempDir(), "llama.log"), NoSandbox: true,
 		Logf: func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute) // a cold load on a laptop CPU takes minutes
 	defer cancel()
 	if err := p.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -156,6 +157,31 @@ func TestLiveServerWithoutASocketFallsBackAndSaysSo(t *testing.T) {
 	t.Logf("still open: %v", p.Open())
 	if _, err := p.Client().Chat(ctx, backend.ChatRequest{MaxTokens: 4, Messages: []backend.Message{{Role: "user", Text: "Once"}}}); err != nil {
 		t.Fatal(err)
+	}
+	// On a TCP port the server answers only with its own key, and tells no
+	// other web origin it may read the answer.
+	base := p.Client().BaseURL
+	resp, err := http.Get(base + "/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no key: status %d, want 401", resp.StatusCode)
+	}
+	req, _ := http.NewRequest(http.MethodGet, base+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+p.Client().Key)
+	req.Header.Set("Origin", "http://attacker.example")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("with key from another origin: status %d, allow-origin %q", resp.StatusCode, resp.Header.Get("Access-Control-Allow-Origin"))
+	}
+	if cmdline, err := os.ReadFile(filepathProc(p.cmd.Process.Pid, "cmdline")); err == nil && bytes.Contains(cmdline, []byte(p.Client().Key)) {
+		t.Fatal("the server's key is on its command line")
 	}
 	env, err := os.ReadFile(filepathProc(p.cmd.Process.Pid, "environ"))
 	if err != nil {
@@ -198,7 +224,7 @@ func TestLiveServerOnLoopbackUnderLandlockAlone(t *testing.T) {
 	done := make(chan struct{})
 	go func() { _ = l.cmd.Wait(); close(done) }()
 	defer func() { _ = l.cmd.Process.Kill(); <-done }()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute) // a cold load on a laptop CPU takes minutes
 	defer cancel()
 	if err := p.waitHealthy(ctx, l.client, done); err != nil {
 		t.Fatal(err)

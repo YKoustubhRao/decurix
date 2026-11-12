@@ -68,11 +68,11 @@ func (c *Cache) Put(key string, v any) {
 		return
 	}
 	p := c.path(key)
-	if os.MkdirAll(filepath.Dir(p), 0o755) != nil {
+	if os.MkdirAll(filepath.Dir(p), 0o700) != nil {
 		return
 	}
 	tmp := p + ".tmp"
-	if os.WriteFile(tmp, data, 0o644) == nil {
+	if os.WriteFile(tmp, data, 0o600) == nil {
 		_ = os.Rename(tmp, p)
 	}
 	// Walking the whole cache costs O(files); once every trimEvery writes

@@ -136,6 +136,8 @@ type thread struct {
 	stored bool
 	// used is when it was last asked for (Store.seq), for keeping the most recent in memory.
 	used uint64
+	// id is the desktop the thread is, for the store's watchers (Watch).
+	id string
 }
 
 var schema = []string{
@@ -187,6 +189,8 @@ type Store struct {
 	// waiting is the subscribers to a desktop with no chat yet: a read never makes a thread (an id any client names,
 	// on the gated listener too, must not grow this store), so they wait here and join the thread when it is made.
 	waiting map[string]map[chan struct{}]bool
+	// watchers are told the desktop of every change to any chat (Watch): what the dashboard's event stream sends.
+	watchers map[chan string]bool
 }
 
 // maxThreads bounds the threads kept in memory. Past it the least recently used one that nobody is watching and that
@@ -200,9 +204,10 @@ func NewStore(db *sql.DB) (*Store, error) {
 	}
 
 	return &Store{
-		db:      db,
-		threads: make(map[string]*thread),
-		waiting: make(map[string]map[chan struct{}]bool),
+		db:       db,
+		threads:  make(map[string]*thread),
+		waiting:  make(map[string]map[chan struct{}]bool),
+		watchers: make(map[chan string]bool),
 	}, nil
 }
 
@@ -276,6 +281,41 @@ func (s *Store) nextID() string {
 
 // touch bumps the thread's version and wakes its subscribers. The caller must
 // hold the lock.
+// touched marks a change to a thread: its subscribers re-read it, and the store's watchers are told which desktop
+// changed. The caller must hold the lock.
+func (s *Store) touched(t *thread) {
+	t.touch()
+	for watcher := range s.watchers {
+		select {
+		case watcher <- t.id:
+		default:
+			// Its buffer is full: "" says "something changed, read everything".
+			select {
+			case <-watcher:
+			default:
+			}
+			select {
+			case watcher <- "":
+			default:
+			}
+		}
+	}
+}
+
+// Watch returns a channel told the desktop of every change to any chat ("" when changes came faster than they were
+// read: read everything), and a func that stops it. Never blocks a writer.
+func (s *Store) Watch() (<-chan string, func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := make(chan string, 64)
+	s.watchers[ch] = true
+	return ch, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.watchers, ch)
+	}
+}
+
 func (t *thread) touch() {
 	t.version++
 
@@ -342,7 +382,7 @@ func (s *Store) AppendUserRequest(desktopID, taskID, content string) Entry {
 		return deleteEntries(tx, dropped)
 	})
 
-	current.touch()
+	s.touched(current)
 
 	return entry
 }
@@ -383,7 +423,7 @@ func (s *Store) AppendAgentNote(desktopID, taskID, kind, content string) Entry {
 		return deleteEntries(tx, dropped)
 	})
 
-	current.touch()
+	s.touched(current)
 
 	return entry
 }
@@ -437,7 +477,7 @@ func (s *Store) appendAgentReplyLocked(desktopID, taskID, kind, content string) 
 		return deleteEntries(tx, dropped)
 	})
 
-	current.touch()
+	s.touched(current)
 
 	return entry
 }
@@ -544,7 +584,7 @@ func (s *Store) appendStep(desktopID, taskID, text string, action *Action) Step 
 		return deleteSteps(tx, dropped)
 	})
 
-	current.touch()
+	s.touched(current)
 
 	return step
 }
@@ -575,7 +615,7 @@ func (s *Store) SetVerdict(desktopID, taskID, verdict string) {
 		return err
 	})
 
-	current.touch()
+	s.touched(current)
 }
 
 // Snapshot returns a copy of one desktop's thread, safe for a caller to hold
@@ -628,7 +668,7 @@ func (s *Store) Clear(desktopID string) {
 		return err
 	})
 
-	current.touch()
+	s.touched(current)
 }
 
 // Subscribe returns a channel that receives a wake-up whenever a desktop's
@@ -798,6 +838,7 @@ func (s *Store) load(desktopID string) *thread {
 	loaded := &thread{
 		version:     uint64(time.Now().UnixMicro()),
 		subscribers: make(map[chan struct{}]bool),
+		id:          desktopID,
 	}
 
 	var running bool

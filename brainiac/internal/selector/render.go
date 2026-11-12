@@ -38,10 +38,20 @@ func (p *Plan) Render(w io.Writer, verbose bool) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%.1f GB %s\t%s\t%.0f\t%s\n", k.Role, k.Model, k.Source.Label(), k.MemGB, where, unitText(k.Speed, k.SpeedUnit), k.Quality, dl)
 	}
 	tw.Flush()
+	cacheShown := map[string]bool{}
 	for _, k := range p.Picks {
 		line := fmt.Sprintf("  %s: %s", k.Role, k.Why)
 		if len(k.Shared) > 0 {
 			line += "; also does " + strings.Join(k.Shared, ", ")
+		}
+		if !cacheShown[k.Model] {
+			if k.WarmTurnSec > 0 {
+				line += fmt.Sprintf("; a desktop turn takes about %.0f s with its prompt start cached, %.0f s read from the start (%s)", k.WarmTurnSec, k.ColdTurnSec, k.SpeedBasis)
+			}
+			if k.PromptCacheMB > 0 {
+				line += fmt.Sprintf("; keeps up to %d MB of prompt starts in memory", k.PromptCacheMB)
+			}
+			cacheShown[k.Model] = k.WarmTurnSec > 0 || k.PromptCacheMB > 0
 		}
 		fmt.Fprintln(w, line)
 	}

@@ -3082,7 +3082,23 @@
      matters to a person: needs you (an open query), recording (a ticket),
      working (a task) - all yellow - or just running (green). Stopped on its
      own, it is crashed (red). */
-  var PILL_STATES = ["running", "paused", "stopped", "crashed", "needs-you", "recording", "working"];
+  var PILL_STATES = ["running", "paused", "stopped", "crashed", "needs-you", "recording", "working", "no-signal"];
+  // The yellow states a running desktop's pill can take on top of "running"; "no-signal" is drawn as working.
+  var BUSY_STATES = ["needs-you", "recording", "working", "no-signal"];
+
+  /* The control plane derives the pill (httpapi cardstate.go): one rule over Docker, the chat, the open notes and the
+     task records, which settle a turn the chat still calls running. Returns false when the poll carries no state
+     this page knows, which leaves the rule below (an older control plane). */
+  function paintDerivedPill(pill, state){
+    if(!state || PILL_STATES.indexOf(state.state) < 0){ return false; }
+    var busy = BUSY_STATES.indexOf(state.state) >= 0;
+    PILL_STATES.forEach(function(c){
+      pill.classList.toggle(c, c === state.state || (busy && (c === "running" || (c === "working" && state.state === "no-signal"))));
+    });
+    pill.title = state.why || "";
+    pill.querySelector("[data-status-label]").textContent = state.label || state.state;
+    return true;
+  }
 
   function paintPills(){
     document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
@@ -3093,6 +3109,7 @@
       if(overlay){ overlay.hidden = !!now.running; }
 
       card.querySelectorAll("[data-status-pill]").forEach(function(pill){
+        if(paintDerivedPill(pill, now.card)){ return; }
         // The poll carries the desktop's own status, so a card rendered
         // before its desktop crashed (or was started) follows it.
         var base = now.status || pill.dataset.baseStatus;
@@ -3150,7 +3167,10 @@
     document.querySelectorAll("[data-activity]").forEach(function(strip){
       var now = activity[strip.dataset.activity];
 
-      if(!now || !now.running){
+      // A turn the derived state does not count as work (the records closed it and nothing was heard since) is not
+      // shown as one either.
+      var settled = now && now.card && PILL_STATES.indexOf(now.card.state) >= 0 && BUSY_STATES.indexOf(now.card.state) < 0;
+      if(!now || !now.running || settled){
         strip.hidden = true;
         return;
       }
@@ -3371,11 +3391,48 @@
         renderNotes(data.notes);
         Decurix.notifyNewQueries(data.notes);
       }
+      overviewAt = Date.now();
     }finally{ overviewPolling = false; }
   }
 
+  /* The control plane says which desktops changed as they change (GET /api/events, events.go): the cards are fetched
+     then, a batch of changes at a time. The poll stays - every card stays live with the stream down - and while the
+     stream is up a tick within STREAM_FRESH_MS of the last fetch is skipped. An event is a hint: every (re)connect
+     ("hello") fetches everything, since changes made while it was down were never sent. */
+  var STREAM_FRESH_MS = 5000;
+  var overviewAt = 0;
+  var streamUp = false;
+  var eventFetch = 0;      /* the timer of the fetch an event asked for, 0 for none */
+  var eventAgain = false;  /* an event came while a fetch was in flight: fetch once more after it */
+
+  function fetchForEvent(){
+    if(eventFetch){ return; }
+    eventFetch = setTimeout(function(){
+      eventFetch = 0;
+      if(overviewPolling){ eventAgain = true; return; }
+      pollOverview().catch(function(){ /* the poll asks again */ }).then(function(){
+        if(eventAgain){ eventAgain = false; fetchForEvent(); }
+      });
+    }, 150);
+  }
+
+  function watchEvents(){
+    if(!window.EventSource){ return; }
+    var source = new EventSource("/api/events");
+    source.addEventListener("hello", function(){ streamUp = true; fetchForEvent(); });
+    source.onmessage = function(){ fetchForEvent(); };
+    /* EventSource reconnects by itself; until its next hello the poll keeps its full pace. */
+    source.onerror = function(){ streamUp = false; };
+  }
+
+  function overviewTick(){
+    if(streamUp && Date.now() - overviewAt < STREAM_FRESH_MS){ return Promise.resolve(); }
+    return pollOverview();
+  }
+
   pollOverview().catch(function(){ /* the poll asks again */ });
-  Decurix.poll(pollOverview, 2500, {hidden: 30000});
+  Decurix.poll(overviewTick, 2500, {hidden: 30000});
+  watchEvents();
 
   /* ---------------- provisioning desktop poller ---------------- */
 

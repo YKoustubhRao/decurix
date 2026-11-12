@@ -276,7 +276,8 @@ func sameTag(a, b string) bool {
 
 // buildUnits turns the lock into units, one per installed model source.
 // wk and sw are the worker and the holds on it its units share.
-func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir string, threads int, wk *worker.Worker, sw *sharedProc) (map[string]*unit, map[string]*unit) {
+// slotDir is where llama-server units save their prompt state ("" for none).
+func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir, slotDir string, threads int, wk *worker.Worker, sw *sharedProc) (map[string]*unit, map[string]*unit) {
 	units := map[string]*unit{}
 	byRole := map[string]*unit{}
 	var ol *backend.Ollama
@@ -300,8 +301,11 @@ func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir stri
 					}
 				}
 				u.ctx = ctx
+				// The plan counted this cache, these checkpoints and this
+				// placement; the server runs exactly that.
 				u.llama = &LlamaProc{Bin: lock.LlamaServer, Model: u.files["model"], MMProj: u.files["mmproj"],
-					Ctx: ctx, Threads: threads, LogPath: filepath.Join(logDir, "llama-"+p.Model+".log"), TemplateSHA: inst.TemplateSHA}
+					Ctx: ctx, Threads: threads, LogPath: filepath.Join(logDir, "llama-"+p.Model+".log"), TemplateSHA: inst.TemplateSHA,
+					CacheRAMMiB: p.PromptCacheMB, Checkpoints: selector.CtxCheckpoints, OnGPU: p.OnGPU, SlotDir: slotDir}
 			case catalog.RuntimeOllama:
 				if ol == nil {
 					ol = backend.NewOllama(ollamaURL)
@@ -318,6 +322,7 @@ func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir stri
 		}
 		if p.Role == catalog.RoleEmbed && u.llama != nil {
 			u.llama.Embedding = true
+			u.llama.SlotDir = "" // no conversation to keep
 		}
 		byRole[p.Role] = u
 	}
