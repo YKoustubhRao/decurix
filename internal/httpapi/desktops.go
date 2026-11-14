@@ -229,13 +229,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if copyHostApps {
 		selectedApps = splitList(r.FormValue("host_apps"))
 	}
-	// Which of those bring the person's own browser sign-ins: theirs to choose, on this computer's own screen, per app
-	// (desktop.SetSignInApps). Never from the phone or tunnel address, like the apps themselves.
-	signInApps := splitList(r.FormValue("signin_apps"))
-	if len(signInApps) > 0 && isGated(r) {
-		jsonStatusError(w, http.StatusForbidden, "bringing sign-ins from this computer can only be chosen on this computer, not through the phone or tunnel address")
-		return
-	}
 
 	// Copying any file the control plane can see into a desktop was removed (review 2026-11-02): it reached the
 	// control plane's own data (/data: keys, the database) and every file of the person's computer, from whoever could
@@ -279,9 +272,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	existing, listErr := s.Desktops.List(r.Context())
 	ollama.Reselect(r.Context(), listErr != nil || len(existing) > 0)
 
-	// Recorded before provisioning starts, which reads it when the apps are copied in; put back if the creation is refused.
-	priorSignIns := s.Desktops.SignInApps(name)
-	s.Desktops.SetSignInApps(name, selectedApps, signInApps)
 	prov, err := s.Desktops.BeginProvisioning(
 		name,
 		profile,
@@ -315,7 +305,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		sharedFolder,
 	)
 	if err != nil {
-		s.Desktops.ReplaceSignInApps(name, priorSignIns)
 		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
 			log.Printf("createDesktop: request canceled by client, aborting creation for %s", name)
 			return

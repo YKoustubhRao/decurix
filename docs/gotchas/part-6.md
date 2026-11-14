@@ -1130,37 +1130,90 @@ explains the one thing Windows cannot do - virtualization off in the firmware. T
   `host.docker.internal`, which this machine's hosts file maps to a stale LAN address that drops packets (~21 s a try,
   retried for 180 s). A test process now sends nowhere unless the run names a control plane, and keeps an unsent note
   at once (`SEND_RETRY_SECONDS` 0; retry tests set their own).
-- A Chrome profile copied with its sign-ins still showed WhatsApp Web as "Scan to log in" in the VM (found live
-  2026-11-12). The import had run (the Windows user variable reached the bridge once WSL restarted, though a fresh rebuild
-  deletes `%APPDATA%\decurix\.env`, which is why a machine-wide setting is fragile). What undid it: the copy carried
-  the person's open tabs, so Chrome reopened WhatsApp Web in the worker with the person's own linked-device login while
-  their own browser held it too; WhatsApp rejects a duplicate of one device and wipes its local data (that site's
-  IndexedDB went from 128 MB to 19 MB; every other site's was untouched). A login bound to one device cannot be cloned:
-  WhatsApp has to be linked from the phone (QR) once in the worker's own browser, which then keeps it. The import now
-  leaves the open tabs behind (`Sessions`, `Current/Last Session/Tabs`), and "bring my sign-ins" is a per-app choice
-  (`signin_apps`, the create form's **Bring my sign-ins**), kept by the control plane with the host session (saved in
-  `hostgui-apps.json`) and told to the bridge as `signins 1|0` before every launch, so a helper reused for another app
-  never keeps the last answer. Never accepted on the gated listener. Lesson: look at what the copy actually holds, and at
-  what the app did with it, before blaming the setting.
-- Mirror mode (a browser the person already has open, shown in the VM instead of copied): the helper was written on
-  the assumption that the desktop it watches is its own - it enumerates every window of it, closes them at shutdown and
-  terminates every process that owns one, and joins the app's input queue to carry Ctrl/Shift. Pointed at the person's
-  own desktop each would act on their programs, so mirror mode is guarded at exactly those places (see architecture.md,
-  "Mirror") and pinned by `TestMirrorModeInTheBridgeNeverTouchesThePersonsOwnPrograms`. Tried first, on purpose, on a
-  Character Map the test starts itself, never on a program with the person's files: Notepad restored the person's own
-  tabs and opened minimised, which a mirror (correctly) does not attach to. Lesson: before a tool that owns "the app's
-  desktop" is given the person's, list every call that assumes it owns it.
-- A test that stands bash in for the Windows helper is skipped on Windows, so a green run here says nothing about it:
-  `TestEveryLaunchSaysWhetherItBringsTheSignIns` expected two helper lines to be adjacent (the helper is told `viewers`
-  and `pid` between them) and failed on Linux while this host reported the package green. Run the winhost package in the
-  Go container (`docker run ... golang:1.27 go test ./internal/winhost/`) whenever it changes, and read "SKIP" as "not run".
-- The cookie database is held open by the person's running browser, so the import copied everything else and left it
-  (robocopy exit 8), and the "imported" marker then stopped every later launch from trying again. Now an import that
-  could not copy it leaves `.decurix-host-profile-cookies-pending-*`, and the next launch copies it when it is free
-  (`Copy-ProfileCookies`). Site logins kept in IndexedDB / Local Storage (WhatsApp Web) are readable while the browser
-  runs and come over at once. Two browsers holding one WhatsApp Web login fight over it ("Use here"): use it in one place.
 - In broker mode the host-app launcher's `xdotool` raise cannot work (an untrusted client has no XTEST and sees no
   other window; `xdotool getdisplaygeometry` segfaults), so every click opened another viewer, and over the page the
   browser was showing. The wrapper now opens an `--app=` page with `gui open --reuse`: a tab already showing exactly
   that address is brought forward, otherwise the page gets a new tab (replay carries `reuse` too). Lesson: in broker
   mode the window logic belongs on the screen side, which can see the windows; ask it, do not guess from the worker.
+
+## A VM's Chrome was never signed in to anything, and no way of copying the profile could have fixed it (found live 2026-11-12)
+
+- The symptom, over three builds: a copied Chrome profile opened in a VM with the person's history and new-tab shortcuts and
+  with every login gone - Google, GitHub, LinkedIn, WhatsApp. Each build fixed a real thing (the apps arrived, the open tabs
+  were left behind, the cookie file was copied once the person's Chrome was closed) and the logins stayed gone, because the
+  cause was not in how the profile was copied. Chrome 127+ encrypts cookies and account tokens "v20" (app-bound) so that only
+  Chrome running from the profile's own folder can open them. Chrome's own log said so: `chrome://signin-internals` read "Load
+  credentials failed with decrypt errors", and `token_service_table.cc: Failed to decrypt token for service AccountId-...`, for a
+  copy of the whole private profile, for a clone of the person's real files started the ordinary way, and when started by the
+  bridge; the real folder gave no error. The key fields in `Local State` were byte-identical in all of them. Lesson: when a copy
+  "arrives and does not work", ask the program itself why (its log, its internal pages) before copying differently, and test
+  the same data in a second place to learn whether it is the data or the launch.
+- So a browser is not copied: it runs in place (architecture.md, "In place"). Windows DPAPI was checked first and is not the
+  cause (a blob protected by the person's own process opens from a process started through WSL: same user, same session).
+- Things that look like the answer and are not: copying more (cookies, `Local State`), starting the browser differently (the
+  bridge and an ordinary start fail identically), WhatsApp's own device binding (real, but a separate thing: a login bound to one
+  device cannot be cloned, and the copy loaded WhatsApp from the person's open tabs and had it wiped).
+- Testing against the person's real, signed-in browser: only through the product's own path, and only after reading its
+  state without its content - the log's error lines, the format tags at the start of encrypted values (never a value), a
+  screenshot cropped to status lines. A Notepad started for a test reopens the person's own files from its saved session; use
+  a program with no state of its own (Character Map).
+- A test that stands bash in for the Windows helper is skipped on Windows, so a green run here says nothing about it. Run the
+  winhost package in the Go container (`docker run ... golang:1.27 go test ./internal/winhost/`) whenever it changes, and read
+  "SKIP" as "not run".
+
+## A browser run out of sight on a private desktop took the person's own Chrome from them (found live 2026-11-13)
+
+- The symptom: "i cant open chrome from my device". The first in-place design started the person's real Chrome profile on the helper's private
+  desktop. Chrome is one process per profile folder, and a second launch is handed to the running process - which was on the other
+  desktop, so every click on Chrome opened a window nobody could see, and the hidden Chrome stayed for 9 hours because a VM viewer was
+  still open. A thing that must run in the person's profile has to run in the person's own Chrome process: one window of it, not a second
+  Chrome (architecture.md, "In place").
+- Hiding that window: measured with a throwaway profile and a page that repaints every frame. Off the screen (-32000): Chrome stops
+  painting. On the screen at an alpha of 1/255, click-through, tool window, topmost: keeps painting, covered or not. A state
+  change takes Chrome a few seconds to notice, so read a scenario only after waiting for it (an early read gave a false "dead").
+- Starting Chrome minimised (to keep a cold start off the person's screen) makes it open every later window minimised: the person's
+  next click on Chrome opened a minimised window. One launch, `--new-window about:blank`, whether it is running or not.
+- `--no-startup-window` does not keep Chrome alive without background mode: the process is gone seconds later.
+- Anything done to another process's window (`SetWindowLong`, `ShowWindow`) is a message it must answer. The person's real profile
+  after a cold start had a UI thread busy for over a minute: the window sat on their screen, unveiled, and the helper waited on it.
+  A non-blocking move (`SWP_ASYNCWINDOWPOS`) takes it out of sight at once; the rest runs on a worker, and nothing waits unbounded.
+- A cold window's title is not yet what it was asked for: with the person's profile it showed "New Tab" for a moment, and a window
+  judged on its first title was given back on sight and never looked at again (the whole start timed out with the window right
+  there). Judge a window that may still be changing by what it still says after a while, not by the first read.
+- Chrome, asked for a window in a running copy, prints "Opening in existing browser session." on the standard output it was given:
+  the helper's, which is the line protocol with the control plane. Start it through the shell (`UseShellExecute = true`), which hands a new
+  process none of the caller's handles.
+- A modifier key in a window on the person's own desktop needs that window's input queue, which their own windows of the same browser
+  type into: it is joined for ~40 ms, only while they hold no key, and the call fails loudly when it cannot be - never "OK unmodified",
+  which turns Ctrl+A into an "a". Verified through the VM with a page that records each keydown's modifiers (`k66C--`, `k66CS-`,
+  `k66--A`).
+- Test hygiene that cost time: close a test's windows by id, never "every window titled about:blank" - that closed the VM's own window
+  once; a helper that is not stopped leaves the person's Chrome running (and the next test warm instead of cold); a viewer page
+  holds a token the control plane forgets on a redeploy, so relaunch it instead of reloading; the launcher reuses an open viewer
+  window and shows its old error; a PowerShell function named `Kill` is shadowed by the `kill` alias.
+- Popups the VM's page opens (found 2026-11-13): another top-level window of the person's own Chrome, unowned, so it was on their
+  screen and never in the VM. Only a window that appeared right after something was sent to the VM's window, while the person touched no
+  key or mouse button, is adopted (veiled, drawn with the main window, closed with it); a stamp taken after the input is handled
+  is too late, so `Serve` takes it before. A test through `Native` directly never says "an input was sent": call `NoteInput()`.
+- A browser's keyboard focus is one for all its windows. `GetGUIThreadInfo` reported a window of the person's when theirs was the one
+  in use, and the VM's keys were sent there; `KeyTarget` now takes a focus only if it `Belongs`, and the last click otherwise.
+- Two helpers (two profiles) starting together: a mark of `1` let each take the other's window. The mark is the helper's process id, a window is
+  taken over only when that process is gone, and the search for a new window is done one helper at a time (named mutex).
+- Seen once, not explained: the first helper after a control-plane redeploy ignored every click and key for ten minutes while the
+  process was alive and the window stood there; killing the helper and opening the viewer again gave a helper that worked, and took the
+  old window over. If a viewer ever freezes with its helper alive, end the helper (it is the app session's) before looking for a cause
+  elsewhere.
+- Measuring helpers: a PowerShell query whose command line says "bridge.ps1" matches itself, and looks like a helper restarting every
+  few seconds. Filter on the helper's own arguments (`-DesktopName decurix_helper`), and the query's process still shows - read start times.
+- A VM given the "wrong" Chrome (found 2026-11-13): the app list knew only shortcut files, and the profile the person worked in had none;
+  the VM got the profile whose Google sign-in had lapsed (its own window on the person's screen showed "Verify that it's you" too) and
+  YouTube was signed out. Read the browser's `Local State` profile list: one app per profile, named for its account. Before blaming the
+  window, ask UI Automation for each window's profile button (`AvatarToolbarButton`): it names the profile.
+- A borrowed window types only while the browser holds it active, and a click on it while the person is in that browser made it their
+  foreground (their keys went into the invisible window). Every earlier "typing works" had the invisible window in front without anyone
+  noticing. Lend the keyboard (tell the window it is active), hold the person's keys with a low-level hook while the browser has taken the
+  foreground, and give it back when the VM is quiet or the person acts - never on a fixed delay after the keys.
+- Testing focus: a "person's window" made by the test's own thread that is asleep cannot be given the foreground (SetForegroundWindow says
+  yes and something else ends up in front); and a background thread can join another's input only after it has a message queue
+  (`PeekMessage` first). UI Automation's places are as of the browser's last layout: a window just moved back from off the screen reported
+  its address bar at -31794,-31936 - use places relative to the window from the same answer.

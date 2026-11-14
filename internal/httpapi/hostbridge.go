@@ -101,9 +101,6 @@ func (s *Server) copyHostAppsHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Which of them bring the person's own browser sign-ins (this route is on the primary listener, this computer's own
-	// screen only): the others keep whatever was chosen for them before.
-	s.Desktops.SetSignInApps(d.ID, apps, splitList(r.FormValue("signin_apps")))
 	if err := s.Desktops.MigrateHostApps(r.Context(), d.ID, apps); err != nil {
 		jsonError(w, err)
 		return

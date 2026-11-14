@@ -605,7 +605,7 @@ Control plane → desktop communication happens over Docker bridge networks, nev
 - **What a desktop serves through the control plane is sandboxed.** `/desktop/<id>/...` (noVNC's own page) and `/agent/<id>/...` (TheBot's page) come from inside a container but would run as the control plane's origin; they now carry `Content-Security-Policy: sandbox ...`, so their scripts have an opaque origin the guard refuses. The screen a person uses is the control plane's own page with its own noVNC (`screen.go`) and is unaffected.
 - **A reply answers its own card.** `/api/desktops/send` takes `note_id`; when the desktop has asked something newer, or the note is closed, it answers 409 (`replyStillAnswers`), so a "yes" under an old card cannot approve a newer action.
 - **Per-desktop secrets.** A new desktop gets `DECURIX_AGENT_TOKEN` (HMAC of its ID under `hostgui.key`, `Manager.AgentToken`), which the control plane sends as `Authorization: Bearer` on every call to its agent (:8081, and soul :4900 through `/agent/<id>/`), and a VNC password of its own (`screenPassword`, 8 characters, VNC's limit) instead of the shared "admin". Both protect a desktop from other desktops and from web pages. The token is also kept from the worker's own programs since 2026-11-08: it is in no environment of the worker's user, and its two holders (the agent and soul) are non-dumpable ([gate-boundary.md](gate-boundary.md), "The agent token's two holders"); the screen password is the screen user's in broker mode. **The desktop's side:** `http_api.refusal` checks the token (constant-time) on every :8081 route but `GET /health`, and, with or without a token, refuses a request carrying `Origin` or `Sec-Fetch-*` (a web page in the desktop's Chrome), a Host that is a DNS name (rebinding; the control plane calls by IP or container name) and a write with a non-JSON body; a desktop without a token is otherwise served as before until it is recreated. In-container callers send it through `config.agent_auth_headers()` (the TheBot bridge's calls to soul). A reply is a reply only when its `task_id` is the waiting task's (`messaging.save_request`, docs/chat.md). The browser extension and its backend (`agent/browser-agent`, `ext_server.py`) were deleted on 2026-11-03; the image no longer installs them. Soul's browser skill was removed too (4d24556).
-- **Nothing of the person's computer is copied into a desktop at creation.** `host_paths` is refused (it reached `/data`: the keys and the database); the host-app list packs launchers only, never a browser profile, SSH keys, tokens, keyrings or dotfiles; the Windows bridge no longer seeds its private browser from the person's own profile (opting back in is the person's, per app, at their own screen - the create form's **Bring my sign-ins** (`signin_apps`, never accepted on the gated listener), or this computer's `DECURIX_IMPORT_HOST_BROWSER_PROFILE=1`). The shared folder is the one way to give a worker files.
+- **Nothing of the person's computer is copied into a desktop at creation.** `host_paths` is refused (it reached `/data`: the keys and the database); the host-app list packs launchers only, never a browser profile, SSH keys, tokens, keyrings or dotfiles; a browser is not copied either: the VM gets one window of the person's own running browser, out of their sight ("In place" under Host apps). The shared folder is the one way to give a worker files.
 
 - **Fail closed** (second round, same day). A desktop's agent (:8081) and soul (:4900) serve nothing but their health check without a token, so a desktop created before tokens must be recreated. No desktop is created when the control plane could not load its secret (`hostgui.key`): it would get no token. That includes a practice desktop (`CreatePractice` answers `ErrNoSecret`, and the run's note says why). `DEFAULT_PASSWORD` is no longer read; every desktop gets its own screen password. `fromContainer` takes an address that is not loopback, not a gateway and in no known range as a reason to ask Docker again in the background (at most every 2 s). On the primary listener that address is never a person (third round). The practice network is one of the container ranges and never one of the addresses the control plane listens on (`GatewayIPs`); its subnet cache asks again every second while it knows no range.
 - **Nothing a desktop serves runs as the dashboard.** `relayAgent` (recordings, skills) gets the same sandbox policy and `nosniff` as the proxies, and every response of both listeners says `frame-ancestors 'self'` / `X-Frame-Options: SAMEORIGIN`, so another site cannot frame an Approve button. The legacy `/desktop/<id>/vnc.html` and TheBot's own page at `/agent/<id>/` no longer work inside the sandbox; the dashboard uses neither.
@@ -661,23 +661,77 @@ A worker cannot see files that live only on the person's computer, so it had to 
 
 **The instance tag.** Each control plane has a random tag, kept in the `instance-id` file in its data folder (`sqlitedb.InstanceID`). The file is made with an exclusive create; an empty one older than 5 s is a crash's leftover and is made again. The tag was a hash of the data folder's path before 2026-11-03, but every containerised control plane has `/data`, so they shared one tag. Hops, home-copy helpers (`decurix.homefs.instance`) and host-app helpers carry it.
 
-**Mirror (a program the person already has open).** A host app is normally *started* on a private desktop of this
-computer, in a private profile: for a browser, an empty one, and a copy of the person's profile is a second device, which
-a login bound to one device (WhatsApp Web) rejects and wipes. A **mirror** entry ("Google Chrome (live on this PC)",
-`mirror_<program>`, offered for each detected browser; `internal/desktop/mirror.go`) starts nothing and copies nothing:
-the helper's `attach <program> [title words]` finds the person's own window of that program on their own desktop and
-shows and drives it the way it does any app - `PrintWindow` for the picture, posted mouse and key messages for input, so
-the person's cursor and keyboard are not taken - and the VM shows the same process, signed in as it is, with no profile
-copied. Rules that keep it from touching the person's programs: the target is `mirror:<program>` (a bare executable name,
-checked in Go and in the helper) inside the launcher's signed token like any other; `Shutdown` returns before it closes or
-terminates anything; only the mirrored window and the popups it owns are "the app's" (`Belongs`); `OK pid=0` leaves
-nothing for the reaper to end; modifiers are not carried (`WithModifiers` would set the key state of the person's own
-keyboard), so Ctrl/Alt shortcuts do not reach it yet; a mirror is never kept ready or started ahead (`Keep`, `startHostAppAhead`)
-and is not asked of the host (`Check`). It needs the program open and not minimised (a minimised window cannot be
-captured, and the viewer says the app closed), the PC awake and unlocked, and it is the person's real, signed-in session:
-the worker acts as them in it, so it is offered at their own screen only, as the apps themselves are.
+**In place (a browser given to a VM): one window of the person's own browser.** A browser is not copied and not given a profile of
+its own: its cookies and account tokens are encrypted (Chrome 127 and later, format "v20", app-bound) so that only Chrome running from
+the profile's own folder can open them. Found 2026-11-12 on Chrome 157: Chrome's log said "Failed to decrypt token" for all three
+Google accounts on a copy made from the person's real files and started the ordinary way (and by the host bridge: the same), and said
+nothing on the real folder. Every copy of a profile is therefore a signed-out browser, however it is made; the decryption key in `Local
+State` is identical in the copy and does not help. The first design ran the browser from the real folder on the helper's private
+desktop, out of sight - and took the person's own Chrome from them (found 2026-11-13): Chrome allows one process per profile folder,
+on one desktop, so every launch of theirs was handed to the hidden process and opened where they could not see it. So the VM is given
+**one window of the person's own running Chrome** (`Native.Borrow`, "A borrowed window" in bridge.ps1; `Test-RunsInPlace` and
+`Start-Resolved` decide it), and their Chrome stays theirs to open and use at any time.
 
-**Host apps.** Every host-app helper carries `-DecurixInstance <instance tag>` on its command line. The start-up sweep, the reaper and the file-release script end only this instance's helpers; untagged helpers from older builds are logged and left alone. So two control planes on one PC no longer end each other's helpers (W-04). An app is a web app only when its command or AppID is an http(s) target; no product is guessed from a name (B-20). Host session ids are `prefix-prefix-<12 hex of sha256(desktop\0slug)>`, and `winhost.Start` never joins a session running another app. A private browser profile with an old import marker is deleted once before launch unless `DECURIX_IMPORT_HOST_BROWSER_PROFILE=1`. Host apps start suspended and run only once they are assigned to the kill-on-close job.
+How it works: the helper asks the browser for a window the way any second launch does (`chrome --new-window about:blank` with the
+shortcut's own `--profile-directory`; started if it is not running - one launch either way, nothing minimised), finds it as the new
+window whose page says about:blank (`NewWindow`: every new window is veiled at once and judged by its page; one the person opened in the
+same moment is given back), and makes it invisible to the person while it stays on screen to Chrome: layered at an alpha of 1/255,
+click-through, a tool window (no taskbar button, not in Alt-Tab), topmost (`Veil`). Measured 2026-11-13, a window of an ordinary Chrome
+off the screen stops painting, and one on the screen at alpha 1/255 keeps painting, covered or not - which is why it is made
+invisible and never moved away (the one move off the screen is `VeilAsync`'s first, non-blocking step, undone by the work behind
+it). The picture is `PrintWindow`, input is posted messages (the person's cursor and keyboard are not taken), the window is marked
+with a window property so a helper that is ended without ceremony leaves a window the next helper takes over, and it is closed when
+the session ends (given back to the person, still open, if it will not close: a page asking "leave this site?").
+
+Rules, each pinned by `TestABorrowedWindowIsTheOnlyThingTouched`: every other window of the browser is the person's and is never
+touched (`Belongs`; `Shutdown` closes and terminates nothing of the browser's); the app's host session is one for every VM
+(`packContext.Shared`, `internal/desktop/inplace.go`), so VMs share the one window; it is never started ahead or kept ready; only a
+plainly started browser is borrowed (`--app` windows and web-app launchers keep a private profile); nothing of the browser's
+accessibility or background mode is changed. Keys: a modifier (Ctrl, Shift, Alt) is carried by joining the browser's input queue for
+about 40 ms (`WithModifiersShared`), waiting while the person holds a key themselves, and failing loudly if it cannot - that queue is
+also the one their own Chrome windows type into. The browser's own UI thread can be busy for a long time after a cold start with the
+person's real profile, and everything done to its window waits for it: that work is queued on its own thread per window and nothing waits
+on it unbounded.
+
+Popups and several profiles. A page can open a window of its own (a sign-in popup): another top-level window of the same browser, on
+the person's screen, with nothing in it to say whose it is. It is the VM's when it appeared within five seconds of something sent
+to the VM's window and the person had pressed no key and no mouse button for the second before (`WatchPopups`; `NoteInput` stamps the
+time, before the input is sent): nobody else could have opened it. Such a window is veiled like the first, drawn in the same picture at
+its own place and driven with it (`Belongs`: the main window, the popups, and what they own), and closed with the session. When the
+person is working at that very moment it cannot be told apart and is left alone - theirs, on their screen, as before. A browser has
+one input queue for all its windows, so the focus it reports can be inside a window of the person's: keys are sent only to a window that
+`Belongs` (`KeyTarget`). Each VM app is a helper of its own, so each profile (each shortcut's `--profile-directory`) is its own
+borrowed window of the same browser; a window's mark is its helper's process id, a window is taken over only when that helper has
+gone (`HelperAlive`), and one helper at a time looks for its new window (a named mutex), so two starting together never take each
+other's. Not carried yet: the window of a popup is placed where the browser put it, not made to fit the VM's screen.
+
+Which profile. A Chromium browser keeps several profiles in one folder, each signed in to its own accounts, and the VM's window is one
+profile's. The app list used to know only shortcut files: "Google Chrome" (no profile: the browser picks one) and the shortcut Chrome puts
+on the desktop for one profile - found 2026-11-13, the person worked in a profile that had no shortcut, so the VM was given another
+whose Google sign-in had lapsed on their own screen too, and YouTube was signed out there. So each browser's own profile list (its
+`Local State`, of the user who used it last) makes one app per profile, named for the profile and its account ("Google Chrome - Work
+(pat@example.com)"), run with `--profile-directory`; the browser's plain entry and its profile shortcuts are left out
+(`internal/desktop/browserprofiles.go`; a web app's shortcut, `--app-id`, stays). A window of one profile is taken over only by a helper of
+the same profile (`ProfileMark`, a hash of the launch's arguments). The window is found by its blank page (the one page that says the
+same in every language) and then sent to the browser's new tab page through its address bar (`OpenStartPage`: a `chrome://` address
+on the command line is dropped by the browser), so the VM opens on the person's own new tab page.
+
+The keyboard. A browser types only into a window it holds active: keys posted to an inactive window of it go nowhere (measured
+2026-11-13, another program in front: nothing arrived). The VM's window is never activated by a click or by Windows
+(`WS_EX_NOACTIVATE` - before it, a posted click made the invisible window the person's foreground whenever they were in that browser,
+and their keys went into it). For a keyboard command (`Keyboard` around `type`, `newline`, `key`, `copy`) it is lent its keyboard
+(`LendKeyboard`): told, and only it told, that it is active (`WM_NCACTIVATE`, `WM_ACTIVATE`; `WM_SETFOCUS` alone is not enough). With
+another program in front the foreground stays there and the keys arrive. With a window of the same browser in front, the browser takes
+the foreground for real when told - so that is done only once the person has paused (no key for 400 ms); while it lasts every key of the
+person's is held by a low-level keyboard hook (real keys only) and ends the lend at once, and the foreground goes back to them and their
+keys are played into their window (`EndLend`, from the watcher); otherwise it goes back once the VM has sent nothing for 1.5 s. Not on a
+timer after the keys: the browser reads them when it gets to them, and one it reads after it is no longer active is lost (of an address,
+"chr" arrived; `WaitForInputIdle` did not wait). The watcher gives the foreground back whenever the VM's window or a popup of it has it
+otherwise (a popup the page opened takes it), and after a told activation, and after the borrow, the person's own window of the browser
+is made its last active one again (`PersonLastActive`): the browser opens a link from another program in its last active window, and one
+opened after the VM's window was activated opened in it, out of sight.
+
+**Host apps.** Every host-app helper carries `-DecurixInstance <instance tag>` on its command line. The start-up sweep, the reaper and the file-release script end only this instance's helpers; untagged helpers from older builds are logged and left alone. So two control planes on one PC no longer end each other's helpers (W-04). An app is a web app only when its command or AppID is an http(s) target; no product is guessed from a name (B-20). Host session ids are `prefix-prefix-<12 hex of sha256(desktop\0slug)>`, and `winhost.Start` never joins a session running another app. A private browser profile with an old import marker (a copy an older build made, which can never be opened) is deleted before launch. Host apps start suspended and run only once they are assigned to the kill-on-close job.
 
 **Requested host apps that are not added.** `MigrateHostApps` never skips one silently: each requested app it does not add is a `desktop.MissingApp` (name, plain reason, `Pending`), kept by the Manager (`missingapps.go`), returned in the create answer, `/api/desktops/status`, `/api/desktops/activity` (the card) and `POST /api/desktops/host-apps/copy`, and written to `~/.decurix/missing-apps.json` for the desktop's agent (`identity.py` lists them; `gui open` of one is refused instead of opening a stand-in). An app the host-app check could not reach (`HostAppItem.Unverified`: the helper died or timed out) is not a verdict: it is never cached, it is asked about again when a desktop wants it, and `retryPendingApps` tries it in the background for about six minutes, copying its launcher into the running desktop when it checks out. `RestoreMissingApps` reads the files back at start.
 ## The desktop container since the review of 2026-11-03

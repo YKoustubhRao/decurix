@@ -55,10 +55,9 @@ var (
 	requestTimeout = 20 * time.Second
 	// checkHelperTries is how many helpers in a row may die without answering a single check before Check gives up.
 	checkHelperTries = 3
-	// A launch answers once the program has been started, and the first launch of a browser for a VM first brings the
-	// person's profile over into that VM's private one (bridge.ps1's Initialize-PrivateBrowserProfile) - hundreds of MB,
-	// a minute or more on a busy host. Timed out at requestTimeout, the helper was killed mid-copy, the copy never
-	// finished, and every retry (the kept app's, the person's click) met the same "stopped answering".
+	// A launch answers once the program has been started - and a browser given to a VM answers once it has a window for it, which
+	// is a minute or more when the person's own browser has to start first (bridge.ps1's Borrow). Timed out at requestTimeout,
+	// the helper was killed in the middle of it, and every retry (the kept app's, the person's click) met the same "stopped answering".
 	launchRequestTimeout = 15 * time.Minute
 	launchTimeout        = 30 * time.Second
 	// How long Keep gives one start of a kept app, profile import included.
@@ -119,8 +118,6 @@ type Manager struct {
 	stopping map[string]*Session
 	// kept are the apps kept running and ready (Keep), by session id.
 	kept map[string]*keptApp
-	// signIns are the sessions whose app brings the person's own browser sign-ins (SetSignIns), by session id.
-	signIns map[string]bool
 	// OnGiveUp, when set, is told about a kept app that is no longer tried (keepGiveUpAfter): its VM, its session id,
 	// and why, in plain words. Set it before the first Keep.
 	OnGiveUp func(desktop, id, reason string)
@@ -392,7 +389,7 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 	s.id = id
 	s.target = Target{target, args}
 	name := desktopName(id)
-	for _, line := range []string{"desktop " + name, "viewers 1", signInsLine(m.signInsOf(id))} {
+	for _, line := range []string{"desktop " + name, "viewers 1"} {
 		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
 			s.Stop()
 			if err == nil {
@@ -436,13 +433,6 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 // launchLine starts the program in helper s. If a check has already resolved it the helper is told exactly what to run;
 // if that program has since moved, or was never checked, the helper looks it up itself.
 func (m *Manager) launchLine(s *Session, target, args string) (string, error) {
-	if IsMirror(target) {
-		line, err := mirrorLine(target, args)
-		if err != nil {
-			return "", err
-		}
-		return s.DoTimeout(line, launchRequestTimeout)
-	}
 	t := Target{target, args}
 	m.mu.Lock()
 	r, known := m.resolved[t]
@@ -477,15 +467,6 @@ func (m *Manager) Check(ctx context.Context, targets []Target) (map[Target]strin
 	for _, t := range targets {
 		if !carriable(t) {
 			verdicts[t] = "invalid application"
-			continue
-		}
-		if IsMirror(t.Target) {
-			// Nothing is started, so nothing is asked of the host: a mirror runs wherever its program is open.
-			if _, err := mirrorLine(t.Target, t.Args); err != nil {
-				verdicts[t] = "invalid application"
-			} else {
-				verdicts[t] = ""
-			}
 			continue
 		}
 		ask = append(ask, t)
@@ -616,9 +597,6 @@ func (m *Manager) Stop(id string) {
 // at once instead of starting it on the host while somebody watches. A kept app nobody has looked at yet is never ended
 // for being unwatched. desktop is the VM it was copied to (ForgetDesktop).
 func (m *Manager) Keep(desktop, id, target, args string) {
-	if IsMirror(target) {
-		return // the person's own program: nothing to start ahead, and it is never started again for them
-	}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()

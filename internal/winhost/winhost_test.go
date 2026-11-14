@@ -65,7 +65,6 @@ while IFS= read -r l; do
   case "$l" in
     launchr*) if [ "` + moved + `" = 1 ]; then echo "ERR Not found on this computer: gone"; else dolaunch; fi;;
     launch*)  dolaunch;;
-    attach*)  dolaunch;;
     keyframe) echo OK; send 1 0 0 20 10 ABC;;
     "thumb 4") if [ -z "$thumbed" ]; then thumbed=1; printf 'THUMB 4 2 3
 XYZ'; else echo "THUMB same"; fi;;
@@ -170,40 +169,6 @@ func TestStartWaitsForFirstPictureAndForwardsInputVerbatim(t *testing.T) {
 		if !strings.Contains(got, w) {
 			t.Errorf("helper never received %q; got %q", w, got)
 		}
-	}
-}
-
-// before reports whether both words are in s, first before second.
-func before(s, first, second string) bool {
-	a, b := strings.Index(s, first), strings.Index(s, second)
-	return a >= 0 && b > a
-}
-
-// TestEveryLaunchSaysWhetherItBringsTheSignIns: the person's per-app choice reaches the helper before each launch - on
-// as chosen, and off for any other app, so a helper reused for another app never carries the last one's answer.
-func TestEveryLaunchSaysWhetherItBringsTheSignIns(t *testing.T) {
-	m, _ := fakeManager(t, fakeOpts{launch: "OK pid=42"})
-	m.SetSignIns("vm1-chrome", true)
-
-	if _, err := m.Start(context.Background(), "vm1-chrome", `C:\Program Files\Chrome\chrome.exe`, ""); err != nil {
-		t.Fatal(err)
-	}
-	got := strings.Join(received(t), "|")
-	if !before(got, "signins 1", "launch") {
-		t.Errorf("a chosen app must be told signins 1 before its launch; got %q", got)
-	}
-
-	m2, _ := fakeManager(t, fakeOpts{launch: "OK pid=43"})
-	if _, err := m2.Start(context.Background(), "vm1-other", `C:\Program Files\Apppp.exe`, ""); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(received(t), "|"); !before(got, "signins 0", "launch") {
-		t.Errorf("any other app must be told signins 0 before its launch; got %q", got)
-	}
-
-	m.SetSignIns("vm1-chrome", false)
-	if m.signInsOf("vm1-chrome") {
-		t.Error("an unticked app still brings its sign-ins")
 	}
 }
 
@@ -629,86 +594,222 @@ func TestScriptIsEmbedded(t *testing.T) {
 	if !strings.Contains(string(Script), "CreateDesktop") || strings.Contains(string(Script), "HttpListener") {
 		t.Fatal("bridge.ps1 must create a private desktop and must not open a network listener")
 	}
-	if !strings.Contains(string(Script), "Initialize-PrivateBrowserProfile") ||
-		!strings.Contains(string(Script), `Google\Chrome\User Data`) ||
-		!strings.Contains(string(Script), ".decurix-host-profile-imported") {
-		t.Fatal("bridge.ps1 lost the private Chrome profile setup")
-	}
-	// The person's own browser profile (cookies, saved passwords, the key they are encrypted with) is never copied
-	// into a browser a worker drives unless this computer's owner opted in (review 2026-11-02).
-	src := string(Script)
-	i := strings.Index(src, "function Initialize-PrivateBrowserProfile(")
-	head := src[i:min(len(src), i+1500)]
-	optIn := strings.Index(head, "if (-not (Test-ImportOptIn)) { return }")
-	copyAt := strings.Index(head, "robocopy")
-	if optIn < 0 || (copyAt >= 0 && copyAt < optIn) {
-		t.Fatal("bridge.ps1 must not import the host's browser profile without the explicit opt-in")
-	}
 }
 
-// TestTheBridgeTakesTheSignInChoiceFromTheControlPlaneAndFinishesCookiesLater pins what the per-app "bring my sign-ins"
-// rests on: a `signins` command that both gates read (so one helper reused for another app never keeps the last answer),
-// and a cookie database the person's running browser held locked is brought over on a later launch, not given up.
-func TestTheBridgeTakesTheSignInChoiceFromTheControlPlaneAndFinishesCookiesLater(t *testing.T) {
+// TestABrowserRunsInPlaceAndNoProfileIsCopied pins what a browser given to a VM does: it is the person's own browser, from their own
+// profile folder (on Chrome 127 and later their cookies and account tokens open only for Chrome running there - found live
+// 2026-11-12: "Failed to decrypt token" for every Google account on a copy of the real files), so nothing is copied and
+// nothing is given a profile folder of its own.
+func TestABrowserRunsInPlaceAndNoProfileIsCopied(t *testing.T) {
 	src := strings.ReplaceAll(string(Script), "\r\n", "\n")
 	for _, want := range []string{
-		`"signins" {`, "$script:SignIns = $true", "$script:SignIns = $false",
-		"function Test-ImportOptIn", "$script:SignIns -or $env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -eq '1'",
-		"if (Test-ImportOptIn) { return }",        // Remove-ImportedHostProfile keeps an opted-in copy
-		"if (-not (Test-ImportOptIn)) { return }", // Initialize-PrivateBrowserProfile copies only when opted in
-		"function Copy-ProfileCookies", ".decurix-host-profile-cookies-pending-",
+		"function Test-RunsInPlace", "function Start-Resolved", "InPlace = $true", "[Native]::Borrow(",
+		"Remove-ImportedHostProfile", // an older build's copy is removed, not launched
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("bridge.ps1 lost %q", want)
 		}
 	}
-	// The person's open tabs are left behind: brought over they reopened in the worker's browser on their own, WhatsApp Web
-	// among them with the person's own linked-device login, which WhatsApp rejected and wiped (found 2026-11-12).
-	for _, want := range []string{"'Sessions'", "'Current Session'", "'Current Tabs'", "'Last Session'", "'Last Tabs'"} {
-		if !strings.Contains(src, want) {
-			t.Errorf("the profile import no longer leaves out %s", want)
+	for _, gone := range []string{"robocopy", "Initialize-PrivateBrowserProfile", "Copy-ProfileCookies", "DECURIX_IMPORT_HOST_BROWSER_PROFILE", "signins", "SetGentle"} {
+		if strings.Contains(src, gone) {
+			t.Errorf("bridge.ps1 still has %q: a profile copied elsewhere cannot be opened, and nothing of the person's browser is run anywhere of ours", gone)
 		}
 	}
-	reads := 0
-	for _, line := range strings.Split(src, "\n") {
-		if code := strings.TrimSpace(line); !strings.HasPrefix(code, "#") && strings.Contains(code, "$env:DECURIX_IMPORT_HOST_BROWSER_PROFILE") {
-			reads++
+	// In place means no --user-data-dir of its own: Complete-Launch returns before it adds one - and changes nothing about the
+	// person's browser (its accessibility, its background mode), which is theirs.
+	i := strings.Index(src, "function Complete-Launch($p) {")
+	if i < 0 {
+		t.Fatal("Complete-Launch is gone")
+	}
+	body := src[i:]
+	inPlace, ownDir := strings.Index(body, "if (Test-RunsInPlace $p) {"), strings.Index(body, `--user-data-dir=`)
+	if inPlace < 0 || ownDir < 0 || ownDir < inPlace || !strings.Contains(body[inPlace:ownDir], "InPlace = $true") {
+		t.Fatal("a browser run in place must be returned before any --user-data-dir is added")
+	}
+	for _, flag := range []string{"force-renderer-accessibility", "disable-background-mode", "disable-component-update"} {
+		if strings.Contains(body[inPlace:ownDir], "--"+flag) {
+			t.Errorf("the person's own browser must not be started with --%s", flag)
 		}
 	}
-	if reads != 1 { // only Test-ImportOptIn reads the old machine-wide switch
-		t.Errorf("the old machine-wide switch is read on %d code lines, want only Test-ImportOptIn's", reads)
+	// A web app's --app window and the stand-in for a web launcher keep a private profile; only a plainly started browser is in place.
+	run := src[strings.Index(src, "function Test-RunsInPlace($p) {"):]
+	run = run[:strings.Index(run, "\n}\n")]
+	for _, want := range []string{"$Browsers -contains $p.Base", "$p.Launcher", "--(app|user-data-dir)"} {
+		if !strings.Contains(run, want) {
+			t.Errorf("Test-RunsInPlace lost %q", want)
+		}
+	}
+	// A browser in place is never started on this helper's private desktop: Launch is only for the other case, and the person's own
+	// Chrome is asked for a window instead.
+	start := src[strings.Index(src, "function Start-Resolved($l) {"):]
+	start = start[:strings.Index(start, "\n}\n")]
+	launch, borrow := strings.Index(start, "[Native]::Launch("), strings.Index(start, "[Native]::Borrow(")
+	if strings.Count(start, "[Native]::Launch(") != 1 || borrow < 0 || launch > borrow || !strings.Contains(start[:launch], "-not $l.InPlace") {
+		t.Error("Start-Resolved must start a browser run in place only through Borrow, and Launch only for the other case")
 	}
 }
 
-// TestMirrorModeInTheBridgeNeverTouchesThePersonsOwnPrograms pins the three places the helper would otherwise act on "the
-// app on this desktop" - which in mirror mode is the person's own: Shutdown (closes, then terminates, whatever is there),
-// the windows that count as the app's, and the key state of the app's input queue.
-func TestMirrorModeInTheBridgeNeverTouchesThePersonsOwnPrograms(t *testing.T) {
+// TestABorrowedWindowIsTheOnlyThingTouched pins what the helper does with the person's own running browser. It must act on the one
+// window made for the VM and on nothing else the person has: not on Shutdown (which closes, then terminates, whatever is on a private
+// desktop), not for the windows that count as the app's, not for the key state of the app's input queue (the person's own keyboard).
+// And the window must be one Chrome keeps painting while the person never sees it.
+func TestABorrowedWindowIsTheOnlyThingTouched(t *testing.T) {
 	src := strings.ReplaceAll(string(Script), "\r\n", "\n")
-	body := func(from string) string {
+	body := func(from string, n int) string {
 		i := strings.Index(src, from)
 		if i < 0 {
 			t.Fatalf("bridge.ps1 lost %q", from)
 		}
-		return src[i:min(len(src), i+1400)]
+		return src[i:min(len(src), i+n)]
 	}
-	// Shutdown returns before it closes or terminates anything.
-	shut := body("public static void Shutdown() {")
-	guard, closeAt, killAt := strings.Index(shut, "if (attached) return;"), strings.Index(shut, "WM_CLOSE"), strings.Index(shut, "TerminateProcess")
+	shut := body("public static void Shutdown() {", 1600)
+	guard, closeAt, killAt := strings.Index(shut, "if (attached) { if (borrowed) CloseBorrowed(); return; }"), strings.Index(shut, "WM_CLOSE"), strings.Index(shut, "TerminateProcess")
 	if guard < 0 || (closeAt >= 0 && closeAt < guard) || (killAt >= 0 && killAt < guard) {
 		t.Error("Shutdown must return before it closes or terminates anything when the app is the person's own")
 	}
-	// Only the mirrored window, and what it owns, is the app's.
-	if !strings.Contains(body("static bool Collect(IntPtr h, IntPtr l) {"), "if (attached && !Belongs(h)) return true;") {
-		t.Error("in mirror mode the person's other windows must not count as the app's")
+	if !strings.Contains(body("static bool Collect(IntPtr h, IntPtr l) {", 1400), "if (attached && !Belongs(h)) return true;") {
+		t.Error("when attached, the person's other windows must not count as the app's")
 	}
-	// No borrowing the person's own input queue for modifiers.
-	if !strings.Contains(body("static string WithModifiers("), "if (attached) { act(); return \"OK unmodified\"; }") {
-		t.Error("in mirror mode WithModifiers must not join the app's input queue")
+	if !strings.Contains(body("static bool Belongs(IntPtr h) {", 700), "if (borrowed) return false;") {
+		t.Error("when the window made for the VM is gone, the person's topmost browser window must not become the app")
 	}
-	// The program is a bare name, chosen by the control plane's signed launcher.
+	// A keystroke must not lose its modifiers silently (Ctrl+A would be an "a" typed into the page), and the person's own keyboard must
+	// not be held under their hands: the shared queue is joined only while they hold no key, and only for as long as the browser needs.
+	if !strings.Contains(body("static string WithModifiers(", 1400), "if (attached) return WithModifiersShared(target, mods, act);") {
+		t.Error("when attached, modifiers must go through WithModifiersShared")
+	}
+	shared := body("static string WithModifiersShared(", 2000)
+	if strings.Contains(shared, `"OK unmodified"`) || !strings.Contains(shared, "PersonHoldsAKey()") || !strings.Contains(shared, `result = "ERR`) {
+		t.Error("WithModifiersShared must wait for the person's own keys, and fail loudly rather than send a keystroke without its modifiers")
+	}
+	if !strings.Contains(src, "static int Hold(int ms) { return borrowed ? 40 : ms; }") || strings.Contains(src, "Thread.Sleep(80)") || strings.Contains(src, "Thread.Sleep(150)") {
+		t.Error("the modifier state must be held for Hold(...) - as short a time as the browser needs when it is the person's own")
+	}
 	if !strings.Contains(src, `^[A-Za-z0-9._-]{1,64}$`) || !strings.Contains(src, `"attach" {`) {
 		t.Error("the attach command lost its program-name check")
+	}
+
+	// The window is invisible and never off the screen: Chrome stops drawing a window that is off the screen (measured 2026-11-13),
+	// and keeps drawing one that is on it at an alpha of 1/255, covered or not.
+	veil := body("static void Veil(IntPtr h) {", 1900)
+	veil = veil[:strings.Index(veil, "\n    }\n")]
+	for _, want := range []string{"0x80000 /* WS_EX_LAYERED */", "0x20 /* WS_EX_TRANSPARENT */", "0x80 /* WS_EX_TOOLWINDOW */", "SetLayeredWindowAttributes(h, 0, 1, 2", "HWND_TOPMOST"} {
+		if !strings.Contains(veil, want) {
+			t.Errorf("Veil lost %q", want)
+		}
+	}
+	// Off the screen it is not painted: the one move there is the first, non-blocking step of VeilAsync, undone by the work queued behind it.
+	if strings.Count(src, "-32000, -32000") != 1 || strings.Count(src, "32000") != 2 {
+		t.Error("a window moved off the screen is one Chrome stops painting: the VM's window is made invisible, never moved away - but for VeilAsync's first step")
+	}
+	va := body("static void VeilAsync(IntPtr h) {", 1400)
+	if !strings.Contains(va, "-32000") || !strings.Contains(va, "0x4000 /* NOSIZE | NOZORDER | NOACTIVATE | ASYNCWINDOWPOS */") || !strings.Contains(va, "home.L, home.T") {
+		t.Error("VeilAsync must take the window out of sight without waiting for its browser, and put it back where it was")
+	}
+	// It is found as the one window that was not there before and whose page is the one asked for; a window of the person's that
+	// turned up in the same moment is given back; a leftover of a helper that died is taken over, not duplicated.
+	nw := body("static IntPtr NewWindow(", 3400)
+	nw = nw[:strings.Index(nw, "\n    }\n")]
+	if strings.Contains(nw, " Veil(h)") || strings.Contains(nw, " Unveil(h)") {
+		t.Error("NewWindow must not wait on the browser's window thread: a browser that has just started does not answer for a long time")
+	}
+	for _, want := range []string{"before.ContainsKey(h)", `StartsWith("about:blank"`, "VeilAsync(h)", "UnveilAsync(h)", "GiveBackFocus(was, newWin)", "--new-window about:blank"} {
+		if !strings.Contains(nw, want) {
+			t.Errorf("NewWindow lost %q", want)
+		}
+	}
+	if !strings.Contains(body("public static string Borrow(", 2200), "FindMarked()") || !strings.Contains(src, "SetProp(mine, WindowMark") {
+		t.Error("a window left by a helper that was ended without ceremony must be marked and taken over")
+	}
+	// The person's browser is started, when it is not running, minimised and through the shell: the shell hands the new process none
+	// of this helper's handles (its stdout is the protocol with Decurix: Chrome says "Opening in existing browser session." on it).
+	run := body("static void Run(string target", 600)
+	if !strings.Contains(run, "UseShellExecute = true") || strings.Contains(run, "UseShellExecute = false") || strings.Contains(src, "ProcessWindowStyle.Minimized") {
+		t.Error("the person's browser must be started through the shell, so it inherits no handle of the protocol")
+	}
+	// What is not closed is given back, not left invisible.
+	cb := body("static void CloseBorrowed() {", 1900)
+	if !strings.Contains(cb, "if (IsWindow(h)) UnveilAsync(h);") || !strings.Contains(cb, "if (IsWindow(q)) UnveilAsync(q);") {
+		t.Error("a window that will not close must be given back to the person")
+	}
+
+	// A popup the VM's page opened is the VM's, but only when nobody else could have opened it: something was just sent to the VM's window
+	// and the person touched no key and no mouse button for a second before. Anything else of the person's stays untouched.
+	wp := body("static void WatchPopups() {", 4200)
+	for _, want := range []string{"now - ourInputAt < 5000", "now - personActiveAt > 1000", "GetAsyncKeyState(vk) & 0x8000", "0xC00000 /* WS_CAPTION */", "otherLooking", "VeilAsync(h)"} {
+		if !strings.Contains(wp, want) {
+			t.Errorf("WatchPopups lost %q", want)
+		}
+	}
+	if !strings.Contains(src, "public static void NoteInput() { Interlocked.Increment(ref inputSeq); ourInputAt = Environment.TickCount; }") {
+		t.Error("what is sent to the VM's window is what makes a window that appears next the VM's: NoteInput must say when")
+	}
+	serve := body("public static void Serve(Action<string, string> other) {", 1400)
+	if i, j := strings.Index(serve, "ourInputAt = Environment.TickCount;"), strings.Index(serve, "Answer(verb, rest)"); i < 0 || j < 0 || i > j {
+		t.Error("the time of an input must be stamped before it is sent: a popup it opens must find it already said")
+	}
+	if !strings.Contains(body("static bool Belongs(IntPtr h) {", 700), "if (IsPopup(h)) return true;") {
+		t.Error("a popup the VM's page opened must be shown and driven with the window")
+	}
+	// Two helpers (two profiles) never take each other's window: a mark is the helper's process id, a window is taken over only when that
+	// helper has gone, and one helper looks for its new window at a time.
+	fm := body("static IntPtr FindMarked() {", 700)
+	if !strings.Contains(fm, "!HelperAlive((int)main)") || !strings.Contains(src, "SetProp(mine, WindowMark, (IntPtr)MyPid())") || !strings.Contains(src, `new System.Threading.Mutex(false, "Local\\DecurixBorrowWindow")`) {
+		t.Error("a helper must take over only a window whose helper has gone, and look for its window one helper at a time")
+	}
+	// The keyboard of a browser is one queue for all its windows: a key is never sent to a window of the person's, whatever has focus there.
+	if !strings.Contains(body("static IntPtr KeyTarget() {", 2800), "!Belongs(GetAncestor(focus, 2 /* GA_ROOT */))") {
+		t.Error("keys must not go to a window of the person's that holds the browser's focus")
+	}
+	// The VM is given the browser's new tab page, not the blank page the window is found by - and only a window made for it: one taken
+	// over from a helper that died keeps the page it had. The address bar is found by its class (the same in every language) and
+	// clicked first: keys sent to a window nothing was clicked in go nowhere.
+	// The person's keyboard is never in the VM's window. The window cannot be activated by a click or by Windows; a browser types only
+	// into a window it holds active, so the VM's keys are given that by being told (WM_ACTIVATE), never by SetForegroundWindow on it;
+	// when the browser takes the foreground anyway (the person is in it), it is given back after the keys and the person's own keys
+	// meanwhile are held (real keys only) and played into their window; and the browser's last active window is the person's again.
+	if !strings.Contains(body("static void Veil(IntPtr h) {", 1600), "0x08000000 /* WS_EX_NOACTIVATE */") {
+		t.Error("a borrowed window must never be activated by a click or by Windows")
+	}
+	for _, verb := range []string{`case "type": Keyboard(`, `case "newline": Keyboard(`, `case "key": p = rest.Split(' '); Keyboard(`, `case "copy": Keyboard(`} {
+		if !strings.Contains(src, verb) {
+			t.Errorf("keyboard verb not lent the window's keyboard: %s", verb)
+		}
+	}
+	lend := body("static void LendKeyboard(IntPtr root) {", 1800)
+	if !strings.Contains(lend, "0x0006 /* WM_ACTIVATE */") || strings.Contains(lend, "SetForegroundWindow") || !strings.Contains(lend, "holdKeys = true;") ||
+		!strings.Contains(lend, "personActiveAt < 400") {
+		t.Error("LendKeyboard must tell the window it is active, never make it the foreground, and hold the person's keys when the browser takes it")
+	}
+	if !strings.Contains(body("static void EndLend() {", 600), "GiveBackFocus(back, IntPtr.Zero)") || !strings.Contains(body("static void EndLend() {", 600), "ReplayHeldKeys()") {
+		t.Error("a lent foreground must go back to the person, and their held keys into their window")
+	}
+	// Given back when the VM has been quiet or the person acts - not on a timer after the keys, which the browser may not have read yet.
+	if !strings.Contains(body("static void WatchPopups() {", 6000), "if (!Ours(top) || theirKey || Environment.TickCount - lastKeysAt > 1500) EndLend();") {
+		t.Error("the watcher must end a lend when the person acts or the VM has been quiet")
+	}
+	if !strings.Contains(body("static void StartKeyHook() {", 1200), "(k.flags & 0x10 /* LLKHF_INJECTED */) == 0") {
+		t.Error("only the person's real keys may be held")
+	}
+	if !strings.Contains(body("static void WatchPopups() {", 6000), "GiveBackFocus(lastPersonTop, IntPtr.Zero)") {
+		t.Error("the VM's window must never keep the foreground")
+	}
+	if !strings.Contains(src, "PersonLastActive(mine); // the browser made its new window its last active one") || !strings.Contains(body("static void TakeBackActivation() {", 900), "PersonLastActive(h)") {
+		t.Error("the person's window must be the browser's last active one again, or their links open in the invisible window")
+	}
+	// Several profiles: a window left by a helper that died is taken over only by a helper of the same profile.
+	if !strings.Contains(body("static IntPtr FindMarked() {", 700), "(int)GetProp(h, ProfileMark) == profileKey") ||
+		!strings.Contains(src, "SetProp(mine, ProfileMark, (IntPtr)profileKey);") {
+		t.Error("a window of one profile must never be taken over by a helper of another")
+	}
+	if !strings.Contains(src, "if (fresh) { try { OpenStartPage(mine); } catch { } }") {
+		t.Error("a window made for the VM must be sent to the new tab page, and only that one")
+	}
+	start := body("static void OpenStartPage(IntPtr h) {", 2400) + body("static void OpenStartPageKeys(IntPtr h, IntPtr lp) {", 1400)
+	for _, want := range []string{`"OmniboxViewViews"`, "ask.Join(15000)", "LendKeyboard(h)", "WM_LBUTTONDOWN", `"chrome://newtab/"`} {
+		if !strings.Contains(start, want) {
+			t.Errorf("OpenStartPage lost %s", want)
+		}
 	}
 }
 

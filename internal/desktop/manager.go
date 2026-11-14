@@ -156,9 +156,6 @@ type Manager struct {
 	missingMu sync.Mutex
 	missing   map[string][]MissingApp
 	retrying  map[string]bool
-	// signInMu guards signIns: per desktop, the browser apps whose sign-ins the person chose to bring (signins.go).
-	signInMu sync.Mutex
-	signIns  map[string]map[string]bool
 }
 
 // proxyTargetCacheEntry stores a cached reverse-proxy URL along with its expiration.
