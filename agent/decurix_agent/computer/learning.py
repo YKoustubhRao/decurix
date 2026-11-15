@@ -2117,8 +2117,8 @@ def _renamed_draft(skill, given):
     if not rename(skill, given):
         return False
     if skill["name"] != old:
-        skills.save(skill)
-        skills.delete(old)
+        skills.save(skill, actor="person")
+        skills.delete(old, actor="person")
     return True
 
 

@@ -10,6 +10,12 @@
     "fixture": "fixture.json"
   },
   "facts": [],
+  "approves": [
+    {
+      "control": "Save user",
+      "role": "button"
+    }
+  ],
   "expected": {
     "outcome": "complete",
     "graders": [

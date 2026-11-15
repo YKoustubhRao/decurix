@@ -28,8 +28,8 @@ from decurix_agent.replay_task import OPTION_RE
 # (final_gate._retry_engine, teaching._remember) is patched where it lives, and is not re-exported.
 from decurix_agent import engine_questions, final_gate, teaching
 from decurix_agent.skill_commands import (  # noqa: F401 - re-exported
-    ANYWAY_RE, CARRY_ON_RE, LEARN_ENGINE, learn_request, NUMBER_RE, parse_learn, parse_restore, parse_skill,
-    _Refused, request_text, skill_context, SKILL_ENGINE, USE_RE,
+    ANYWAY_RE, CARRY_ON_RE, LEARN_ENGINE, learn_request, NUMBER_RE, parse_learn, parse_manage, parse_restore,
+    parse_skill, _Refused, request_text, skill_context, SKILL_ENGINE, USE_RE,
 )
 from decurix_agent.teaching import (  # noqa: F401 - re-exported
     _ask, _learn, _learn_reply,
@@ -348,6 +348,8 @@ def perform(content, task_file=None, source_files=None):
             _learn(*parse_learn(content))
         elif parse_restore(content) is not None:
             _restore_request(*parse_restore(content))
+        elif parse_manage(content) is not None:
+            _manage(*parse_manage(content))
         else:
             _run_request(*parse_skill(content), context=skill_context(content), source_files=source_files)
     except _Refused as refusal:
@@ -355,6 +357,18 @@ def perform(content, task_file=None, source_files=None):
     except Exception as exc:
         log(traceback.format_exc())
         write_final_reply(f"That stopped on an internal error: {exc}", kind="error", engine=SKILL_ENGINE)
+
+
+def _manage(verb, target):
+    """A person's "/skill <verb> <target>" about what this desktop learned: its history, a rollback, a lock, a pin or
+    setting it aside (learned.answer). No model, no screen."""
+
+    from decurix_agent import learned
+    try:
+        text = learned.answer(verb, target)
+    except (ValueError, OSError) as exc:  # (learned.Refused is a ValueError, learned.Locked an OSError)
+        raise _Refused(str(exc)) from None
+    write_final_reply(text, kind="final", engine=SKILL_ENGINE)
 
 
 def resume(reply, approval_outcome=None):
@@ -487,6 +501,10 @@ def _prepare(run):
     # Which taught skill drives this task, for its outcome (R7, C5): not a one-off mimic of a recording, which is no
     # taught skill.
     task_context.set_skill("" if run.get("one_off") else skill.get("name") or "", skill.get("version", 1))
+    if not run.get("one_off") and not run.get("use_noted"):
+        run["use_noted"] = True
+        from decurix_agent import learned
+        learned.note_use("skill", skill.get("name") or "")
 
     missing = _still_missing(run)
 
@@ -1738,7 +1756,7 @@ def _settle(run, outcome):
         return
 
     experience.commit(fresh, run["ladder"], outcome, False, asked=run["asked_ids"])
-    skills.save(fresh)
+    skills.save(fresh, actor="run")
 
 
 def _ask_stuck(run, result, preface="", unclear=0):
@@ -1910,7 +1928,7 @@ def _supervise(run, why):
     try:
         fresh = skills.load(run["skill"]["name"])
         fresh["supervised"] = why[:300]
-        skills.save(fresh)
+        skills.save(fresh, actor="learner")
         log(f"Skill {fresh['name']} is now always done under the model's eye: {why[:200]}")
     except (FileNotFoundError, OSError) as exc:
         log(f"Could not mark the skill as supervised: {exc}")
@@ -2196,7 +2214,8 @@ def _succeed(run, result, checked_by, seen="", helped=False):
                             helped=helped or bool(run["asked_ids"]) or bool(run.get("taken_over"))
                             or bool(run.get("asked_person")),
                             basis=basis)
-    skills.save(skill)
+    # A run's end (learned.RUN): on a skill a person locked, only how it went is kept.
+    skills.save(skill, actor="run")
     text += experience.advice(skill)
 
     write_final_reply(text, kind="final", engine=SKILL_ENGINE, checked=True, verdict=verdict)
@@ -3346,7 +3365,7 @@ def _record_verdict(run, ok, checked_by=None, helped=False, why="", mode=None, b
                             helped=helped, why=why, tokens=tokens, basis=basis)
     if ok:
         fresh["runs"] = fresh.get("runs", 0) + 1
-    skills.save(fresh)
+    skills.save(fresh, actor="run")
 
 
 def _correct(run, text):
@@ -3364,8 +3383,15 @@ def _correct(run, text):
     except FileNotFoundError:
         return
     fresh["corrections"] = ((fresh.get("corrections") or []) + [{"at": int(time.time()), "text": text}])[-MAX_CORRECTIONS:]
-    skills.save(fresh)
     run["skill"]["corrections"] = fresh["corrections"]
+    from decurix_agent import learned
+    try:
+        skills.save(fresh, actor="correction")
+    except learned.Locked:
+        # Locked by a person: their word holds for this run (its copy) and is not written into the skill.
+        progress.emit(f"\"{fresh.get('title') or fresh['name']}\" is locked, so I will follow that for this run only "
+                      "and leave the skill as it is.")
+        return
     # Copied to the control plane under the person who said it (R8): a recreated desktop still has it.
     messaging.post_learned("correction", fresh["name"], fresh.get("version", 1), "", text,
                            derived_from=state.reply_judgement)

@@ -127,7 +127,9 @@ func (st *operatorState) keepOutput(text string) string {
 	}
 	st.OutputSeq++
 	p := filepath.Join(dir, fmt.Sprintf("output-%d.txt", st.OutputSeq))
-	if os.WriteFile(p, []byte(text), 0o600) != nil {
+	// The file is a copy soul writes down: the job's secret values and what soul knows is secret are taken out
+	// (withholdFor), as from every other copy it keeps.
+	if os.WriteFile(p, []byte(st.withholdFor("")(text)), 0o600) != nil {
 		return ""
 	}
 	st.OutputBytes += int64(len(text))

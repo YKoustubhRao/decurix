@@ -82,6 +82,7 @@ func (s *Server) tasksPageHandler(w http.ResponseWriter, r *http.Request) {
 		Tasks:  list,
 		Filter: filter,
 		Purge:  !isGated(r),
+		Search: !isGated(r) && s.RunSearch != nil,
 	}
 
 	for _, option := range windows {

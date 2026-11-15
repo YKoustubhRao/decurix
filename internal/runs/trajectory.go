@@ -164,7 +164,9 @@ type Command struct {
 	Exit         *int   `json:"exit"`
 	Ms           int64  `json:"ms"`
 	OutputSHA256 string `json:"output_sha256"`
-	Guard        string `json:"guard"`
+	// OutputHead is the output's first 2 KB as soul's trace keeps it (withheld); the rest is only in its hash.
+	OutputHead string `json:"output_head"`
+	Guard      string `json:"guard"`
 }
 
 // Action is the on-screen action of a recording event.

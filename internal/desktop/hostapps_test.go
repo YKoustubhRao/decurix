@@ -585,6 +585,7 @@ func TestWindowsTarget(t *testing.T) {
 		{`cmd.exe /c start "" "C:\Users\me\Desktop\Chrome.lnk"`, `C:\Users\me\Desktop\Chrome.lnk`, "", true},
 		{`cmd.exe /c start explorer.exe shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`, `shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`, "", true},
 		{`cmd.exe /c start "" "C:\a.exe" --flag value`, `C:\a.exe`, "--flag value", true},
+		{`cmd.exe /c start "" "C:\chrome.exe" --profile-directory="Profile 3"`, `C:\chrome.exe`, `"--profile-directory=Profile 3"`, true},
 		{`open -a "Google Chrome"`, "", "", false},
 		{`cmd.exe /c dir`, "", "", false},
 		{``, "", "", false},

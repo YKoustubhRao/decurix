@@ -2,6 +2,8 @@ package skills
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -124,7 +126,9 @@ const compactNoteRequest = "\n\n(Before you go on: your working context is about
 	"Write the notes you need to carry on without the older part, after NOTES: - (1) what is done, and what showed it " +
 	"(the screen, a file, a message); (2) every value you are using that you read earlier, each with where it came from " +
 	"(file and cell or line, document, screen field); (3) what remains, in order; (4) open doubts, and what the person " +
-	"said. Do not run a command in this reply.)"
+	"said. Anything you believe but did not see confirmed (by a command's output, the screen, a file or the person) goes " +
+	"on a line of its own as UNVERIFIED: the claim - what it rests on; never write it as a fact. Do not run a command " +
+	"in this reply.)"
 
 // prefixEnd is where the goal's fixed part ends: the system frame, any session history and the contract with the
 // request. A checkpoint written before PrefixLen existed finds it: the first user message that holds the request.
@@ -140,13 +144,28 @@ func (st *operatorState) prefixEnd() int {
 	return min(1, len(st.Messages))
 }
 
-// messagesChars is the size of messages, a picture counted as pictureChars.
+// messagesChars is the size of messages, a picture counted at pictureCharsNow.
 func messagesChars(messages []llm.Message) int {
-	n := 0
+	n, picture := 0, pictureCharsNow()
 	for _, m := range messages {
-		n += len(m.Content) + pictureChars*len(m.Images)
+		n += len(m.Content) + picture*len(m.Images)
 	}
 	return n
+}
+
+// learnedPictureTokens is what a picture has really cost on the brain's route, learned from the provider's usage
+// (llm/imagecost.go); a variable so tests can set it.
+var learnedPictureTokens = llm.ActiveImageTokens
+
+// pictureCharsNow is what a picture counts for in the budgets: its learned price in tokens at localCharsPerToken,
+// never less than pictureChars. A floor, not a replacement: a picture priced low would let a local transcript past
+// the 8192-token window, where Ollama drops the oldest messages without a word; one priced high (a local vision
+// encoder's four thousand tokens) is what learning it is for.
+func pictureCharsNow() int {
+	if tokens, ok := learnedPictureTokens(); ok {
+		return max(pictureChars, tokens*localCharsPerToken)
+	}
+	return pictureChars
 }
 
 // transcriptChars is the size of what is re-sent each turn.
@@ -284,7 +303,7 @@ func (st *operatorState) removableChars() int {
 			n += max(0, len(st.Messages[idx].Content)-staleDigestChars)
 		}
 	}
-	n += st.oldScreenshots() * pictureChars
+	n += st.oldScreenshots() * pictureCharsNow()
 	for i := st.prefixEnd(); i < len(st.Messages)-maskKeepNewest; i++ {
 		if !stale[i] && maskable(st.Messages[i]) {
 			n += len(st.Messages[i].Content) - maskHeadChars
@@ -462,6 +481,10 @@ func (o *OperatorSkill) compact(rc RunContext, st *operatorState, why string) {
 	if len(said) > 0 {
 		b.WriteString("\nWhat the person said in this goal, word for word (it still holds):\n- " + strings.Join(said, "\n- ") + "\n")
 	}
+	if anchors := exactIdentifiers(st.Messages[prefix:cut], st.Messages[:prefix]); len(anchors) > 0 {
+		b.WriteString("\nExact strings from the shortened part, most frequent first (taken from it mechanically: a pointer for " +
+			"finding a value again, not a check that it is right):\n" + strings.Join(anchors, "  ") + "\n")
+	}
 	b.WriteString("\nEverything a command showed earlier is still known to the checks. A step marked (full output: PATH) " +
 		"can be read again with cat PATH, even if that screen has since changed. For what stands now, read the file or " +
 		"range again (office read) or look at the screen (gui observe) whenever you need exact words or figures - never " +
@@ -484,4 +507,100 @@ func (o *OperatorSkill) compact(rc RunContext, st *operatorState, why string) {
 	st.CompactedTo = transcriptChars(st)
 	rc.Logf("operator", "context shortened (%s): %d -> %d characters re-sent, %d newest messages kept word for word", why,
 		before, transcriptChars(st), len(st.Messages)-prefix-1)
+}
+
+// A compaction's progress note also lists the exact strings the shortened part held: identifiers, figures, dates,
+// paths and addresses, ranked by how often they appeared. Notes are a summary, and a summary loses exact strings first;
+// a mechanical list keeps them findable (hermes-agent measured, in its own compaction eval, that the person's words verbatim, a pointer
+// to recover the rest and such a list carry what a compacted goal recalls). The shapes are generic, never a product's
+// or a domain's: numbers of four or more digits or with decimals, dates, file paths, email addresses, URLs, and tokens
+// that mix letters and digits.
+const (
+	maxAnchorChars = 2_000 // what the list may take of the note
+	maxAnchorLen   = 200   // a longer string is not an identifier
+	minMixedLen    = 4     // a shorter letters-and-digits token is noise ("h1", "2nd")
+)
+
+var (
+	// anchorWholeRe finds the shapes that are taken whole, before the text is split into tokens: URLs, email
+	// addresses, Windows and Unix paths (two parts or more, or from ~), and dates.
+	anchorWholeRe = regexp.MustCompile(`https?://[^\s<>"'()\[\]{}]+` +
+		`|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}` +
+		`|\b[A-Za-z]:\\[^\s"'<>|*?]+` +
+		`|(?:~|\.{1,2})?(?:/[A-Za-z0-9._-]+){2,}/?|~/[A-Za-z0-9._-]+` +
+		`|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b`)
+	// anchorTokenRe splits what is left into tokens; anchorNumberRe is a token that is a number.
+	anchorTokenRe  = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_.,-]*`)
+	anchorNumberRe = regexp.MustCompile(`^\d[\d,]*(?:\.\d+)?$`)
+)
+
+// exactIdentifiers is the list of exact strings in region worth carrying past a compaction, most frequent first (ties
+// in the order first seen), leaving out what the kept prefix already shows, within maxAnchorChars.
+func exactIdentifiers(region, prefix []llm.Message) []string {
+	count := map[string]int{}
+	var order []string
+	note := func(s string) {
+		s = strings.TrimRight(s, ".,;:-_/")
+		if s == "" || len(s) > maxAnchorLen {
+			return
+		}
+		if count[s] == 0 {
+			order = append(order, s)
+		}
+		count[s]++
+	}
+	for _, m := range region {
+		rest := anchorWholeRe.ReplaceAllStringFunc(m.Content, func(s string) string {
+			note(s)
+			return " "
+		})
+		for _, tok := range anchorTokenRe.FindAllString(rest, -1) {
+			tok = strings.TrimRight(tok, ".,-_")
+			if anchorNumberRe.MatchString(tok) {
+				if strings.ContainsAny(tok, ".,") || len(tok) >= 4 {
+					note(tok)
+				}
+				continue
+			}
+			for _, part := range strings.Split(tok, ",") {
+				if part = strings.Trim(part, ".-_"); len(part) >= minMixedLen && mixesLettersAndDigits(part) {
+					note(part)
+				}
+			}
+		}
+	}
+	var fixed strings.Builder
+	for _, m := range prefix {
+		fixed.WriteString(m.Content)
+		fixed.WriteByte('\n')
+	}
+	shown := fixed.String()
+	sort.SliceStable(order, func(i, j int) bool { return count[order[i]] > count[order[j]] })
+	var out []string
+	room := maxAnchorChars
+	for _, s := range order {
+		if strings.Contains(shown, s) {
+			continue
+		}
+		if len(s)+2 > room {
+			continue
+		}
+		room -= len(s) + 2
+		out = append(out, s)
+	}
+	return out
+}
+
+// mixesLettersAndDigits reports whether s holds both a letter and a digit.
+func mixesLettersAndDigits(s string) bool {
+	letter, digit := false, false
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+			digit = true
+		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
+			letter = true
+		}
+	}
+	return letter && digit
 }

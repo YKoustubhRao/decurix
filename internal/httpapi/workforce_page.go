@@ -29,6 +29,7 @@ func (s *Server) workforcePageHandler(w http.ResponseWriter, r *http.Request) {
 		HasQueue:     s.Queue != nil && !gated,
 		HasHandoffs:  s.Handoffs != nil && !gated,
 		HasAccess:    s.access() != nil && !gated,
+		HasProposals: s.Knowledge != nil && !gated,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

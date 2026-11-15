@@ -164,8 +164,15 @@ func TestClaudeIsAskedToCacheThePrefixAndSaysWhatWasCached(t *testing.T) {
 	if !strings.Contains(mustJSON(last[len(last)-1]), `"cache_control":{"type":"ephemeral"`) {
 		t.Errorf("the last message is not marked: %s", mustJSON(last))
 	}
-	if strings.Count(mustJSON(msgs), "cache_control") != 1 {
-		t.Errorf("only the last block is marked: %s", mustJSON(msgs))
+	// A rolling three: each of the newest three messages is marked at its last block, and nothing else.
+	if strings.Count(mustJSON(msgs), "cache_control") != 3 {
+		t.Errorf("want the last block of each of the newest three messages marked: %s", mustJSON(msgs))
+	}
+	for i, m := range msgs {
+		blocks := m.(map[string]any)["content"].([]any)
+		if !strings.Contains(mustJSON(blocks[len(blocks)-1]), `"cache_control":{"type":"ephemeral"`) {
+			t.Errorf("message %d is not marked at its end: %s", i, mustJSON(blocks))
+		}
 	}
 	var out struct {
 		Usage struct {
@@ -180,6 +187,49 @@ func TestClaudeIsAskedToCacheThePrefixAndSaysWhatWasCached(t *testing.T) {
 	}
 	if out.Usage.PromptTokens != 9450 || out.Usage.Details.Cached != 9000 {
 		t.Errorf("usage = %+v, want every prompt token counted and the cached ones said", out.Usage)
+	}
+}
+
+// A one-shot call (one message, no tools) is not marked for the cache: a write nothing would read costs more than the
+// prompt. A long conversation is marked at four places at most: the system prompt and its newest three messages.
+func TestClaudeMarksNoOneShotCallAndAtMostFourBreakpoints(t *testing.T) {
+	answer := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5",
+		"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":1}}`
+	srv, got, _ := fakeMessagesAPI(t, 200, answer, nil)
+	c := NewClaude("sk-test", "", "")
+	c.BaseURL = srv.URL
+
+	oneShot := `{"messages":[{"role":"system","content":"Classify."},{"role":"user","content":"one document"}]}`
+	if status, body, _, err := c.Chat(context.Background(), []byte(oneShot)); err != nil || status != 200 {
+		t.Fatalf("Chat = %d %s %v", status, body, err)
+	}
+	if s := mustJSON(*got); strings.Contains(s, "cache_control") {
+		t.Errorf("a one-shot call was marked: %s", s)
+	}
+
+	long := `{"messages":[{"role":"system","content":"You are TheBot."},{"role":"user","content":"task"},
+	  {"role":"assistant","content":"COMMAND: a"},{"role":"user","content":"out a"},{"role":"assistant","content":"COMMAND: b"},
+	  {"role":"user","content":"out b"},{"role":"assistant","content":"COMMAND: c"},{"role":"user","content":"out c"}]}`
+	var first string
+	for i := 0; i < 2; i++ {
+		if status, body, _, err := c.Chat(context.Background(), []byte(long)); err != nil || status != 200 {
+			t.Fatalf("Chat = %d %s %v", status, body, err)
+		}
+		s := mustJSON(*got)
+		if n := strings.Count(s, "cache_control"); n != 4 {
+			t.Errorf("%d breakpoints, want 4: %s", n, s)
+		}
+		msgs := (*got)["messages"].([]any)
+		for j, m := range msgs[:len(msgs)-cacheBreakpointMessages] {
+			if strings.Contains(mustJSON(m), "cache_control") {
+				t.Errorf("message %d, older than the newest three, is marked", j)
+			}
+		}
+		if i == 0 {
+			first = s
+		} else if s != first {
+			t.Error("the same conversation was sent two different ways")
+		}
 	}
 }
 

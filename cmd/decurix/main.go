@@ -53,6 +53,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
 	"github.com/YKoustubhRao/decurix/internal/runs"
+	"github.com/YKoustubhRao/decurix/internal/runsearch"
 	"github.com/YKoustubhRao/decurix/internal/schedule"
 	"github.com/YKoustubhRao/decurix/internal/sealed"
 	"github.com/YKoustubhRao/decurix/internal/skillhub"
@@ -318,6 +319,9 @@ func main() {
 	phoneSetup := flag.Bool("phone-setup", false, "set up this phone's link (what the phone link page's command runs): decurix --phone-setup BASE TOKEN")
 	purgeSecret := flag.Bool("purge-secret", false, "purge a leaked secret, read from stdin, from the stores of the control plane at -url, then exit")
 	purgeReason := flag.String("reason", "", "with -purge-secret, why it is purged (kept with who purged it, never the value)")
+	exportTraining := flag.Bool("export-training", false, "write the checked-done runs of the control plane at -url as JSON lines to stdout, then exit")
+	exportSince := flag.String("since", "30d", "with -export-training, the runs that ended since: a date, an RFC 3339 time or a span (7d, 24h, 2w)")
+	exportFormat := flag.String("format", "decurix", "with -export-training, decurix (COMMAND:/DONE:/HELP: turns) or toolcall (<tool_call> blocks)")
 	flag.Parse()
 
 	if *showVersion {
@@ -334,6 +338,10 @@ func main() {
 	// -purge-secret is a thin client too: the running control plane does the purge (cmd/decurix/purge.go).
 	if *purgeSecret {
 		os.Exit(runPurgeSecret(*cliURL, *purgeReason, os.Stdin, os.Stdout, os.Stderr))
+	}
+	// -export-training too: the running control plane builds the records (cmd/decurix/training.go).
+	if *exportTraining {
+		os.Exit(runExportTraining(*cliURL, *exportSince, *exportFormat, os.Stdout, os.Stderr))
 	}
 
 	// -phone is the same kind of thin client, on a phone: no Docker, no
@@ -414,7 +422,14 @@ func main() {
 	tasksStore := must(tasks.NewStore(db))
 	// A task that closes is told to its desktop's approval gate, which then lets go of that task's secret values
 	// (gate_server /task-ended); never blocking the close, retried with the next delivery to that gate.
-	tasksStore.OnTaskEnded(desktops.GateTaskEnded)
+	// The search over past runs (internal/runsearch) indexes a task once its late steps are in, and its sweep backfills
+	// and follows every other change of the records.
+	runSearch := must(runsearch.New(db, tasksStore))
+	go runSearch.Run(context.Background(), time.Minute)
+	tasksStore.OnTaskEnded(func(workerID, taskID string) {
+		desktops.GateTaskEnded(workerID, taskID)
+		runSearch.TaskEnded(workerID, taskID)
+	})
 	lanAccess := lanaccess.NewStore()
 	pairedDevices := must(devices.NewStore(db))
 	lanAccess.SetDevices(pairedDevices)
@@ -503,6 +518,7 @@ func main() {
 	server.ForgetSecretsAtStart()
 	runStore := must(runs.NewStore(db, blobs))
 	server.RunStore, server.RunBundles = runStore, runStore
+	server.RunSearch = runSearch
 	// The recording's share of one run's bundle (frames, observations, program; the labels are never cut for it):
 	// DECURIX_RUN_BUNDLE_MB, read once here, for every puller below.
 	bundleLimit, bundleNote := runs.BundleLimit(os.Getenv(runs.BundleLimitEnv))

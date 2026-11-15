@@ -463,8 +463,8 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 		app.Mode = ModeHostGUI
 		if localPageFor(targets[i].Target, targets[i].Args) != "" {
 			app.Description = "A web app: opens in the VM's browser, its server runs on this computer"
-		} else if isBrowserApp(app.Name) {
-			app.Description = "Runs privately on this computer with a profile of its own; nothing of your own browser is copied"
+		} else if runsInPlace(app) {
+			app.Description = inPlaceDescription
 		} else {
 			app.Description = "Runs on this computer on a hidden desktop; you see and use it in the VM"
 		}
@@ -1165,7 +1165,9 @@ func getCategoriesForApp(cat string) string {
 	}
 }
 
-func scanWindowsStartMenu(seen map[string]bool) []HostAppItem {
+// scanWindowsStartMenu lists the programs and shortcuts in the Start menu, the user's own programs folder and the desktop. A
+// shortcut to a profile of a browser whose profiles are listed (listed: scanBrowserProfiles) is left out.
+func scanWindowsStartMenu(seen map[string]bool, listed map[string]bool) []HostAppItem {
 	var items []HostAppItem
 
 	var roots []string
@@ -1219,6 +1221,9 @@ func scanWindowsStartMenu(seen map[string]bool) []HostAppItem {
 				}
 			}
 
+			if isBrowserProfileShortcut(path, listed) {
+				return nil
+			}
 			rawName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 			cleanName := cleanAppShortcutName(rawName)
 			if cleanName == "" || isIgnoredWindowsApp(cleanName) {
@@ -1471,6 +1476,11 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 
 	// 1. If in WSL or Windows, explore Windows StartApps and Start Menu shortcuts
 	if IsWSLOrWindows() {
+		// Every profile of each Chromium browser, first: each is an app of its own, and the browser's plain entry and its profile
+		// shortcuts, which follow, are then left out (browserprofiles.go).
+		listed := map[string]bool{}
+		items = append(items, scanBrowserProfiles(seen, listed)...)
+
 		// PowerShell StartApps (Win32, UWP, Chrome/Edge PWAs)
 		startApps := queryWindowsStartApps()
 		for _, app := range startApps {
@@ -1504,7 +1514,7 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 		items = append(items, scanInstalledWindowsBrowsers(seen)...)
 
 		// Windows Start Menu (.lnk shortcuts including Chrome Apps & Edge Apps)
-		menuApps := scanWindowsStartMenu(seen)
+		menuApps := scanWindowsStartMenu(seen, listed)
 		items = append(items, menuApps...)
 	}
 
@@ -1561,7 +1571,8 @@ func shellWords(cmd string) string {
 }
 
 // windowsTarget extracts what a "cmd.exe /c start ..." host command runs: the program, shortcut or shell: address, and
-// its arguments.
+// its arguments. An argument with a space in it stays one argument: it is quoted again (--profile-directory="Profile 3" is
+// "--profile-directory=Profile 3", which the program reads as the same).
 func windowsTarget(hostCmd string) (target, args string, ok bool) {
 	w := splitWords(hostCmd)
 	if len(w) < 4 || !strings.EqualFold(w[0], "cmd.exe") || w[1] != "/c" || !strings.EqualFold(w[2], "start") {
@@ -1577,12 +1588,21 @@ func windowsTarget(hostCmd string) (target, args string, ok bool) {
 	if len(rest) == 0 {
 		return "", "", false
 	}
-	return rest[0], strings.Join(rest[1:], " "), true
+	argv := make([]string, 0, len(rest)-1)
+	for _, a := range rest[1:] {
+		if a == "" || strings.ContainsAny(a, " \t") {
+			a = `"` + a + `"`
+		}
+		argv = append(argv, a)
+	}
+	return rest[0], strings.Join(argv, " "), true
 }
 
 // packContext is what a launcher needs to know about the desktop it is being written into.
 type packContext struct {
 	DesktopID string
+	// Shared: the app runs in place (inplace.go), so its host session is the same for every desktop.
+	Shared bool
 	// Secret signs the launch token (winhost.Token); empty leaves the launcher unsigned, which the control plane refuses.
 	Secret []byte
 }
@@ -1598,8 +1618,12 @@ func HostSessionSlug(id string) string {
 	return id
 }
 
-// sessionID names the host session for an app on this desktop, so two desktops never share one app.
+// sessionID names the host session for an app on this desktop, so two desktops never share one app - except an app that runs
+// in place, which is one session for all of them.
 func (pc packContext) sessionID(slug string) string {
+	if pc.Shared {
+		return hostSessionID("", slug) // not this desktop's: the same session for all of them (inplace.go)
+	}
 	return hostSessionID(pc.DesktopID, slug)
 }
 
@@ -1918,12 +1942,18 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			// Kept ready on the host as any Windows app is: that is what starts the page's server, ahead of a click.
 			startHostAppAhead(pc.DesktopID, pc.sessionID(slug), target, args)
 		} else {
+			// A browser runs in place, from the person's own profile, as one session every VM joins (inplace.go).
+			pc.Shared = runsInPlace(app)
 			wrapperScript = "#!/usr/bin/env bash\n" + hostFallback(pc, slug, app)
 			// This is the exact launcher a host_gui app's icon runs the first time someone opens it - start it now
 			// instead of waiting for that click, under the same session id the launcher itself will ask for, so
-			// Start finds it already running and joins it at once (see winhost.Manager.Start).
+			// Start finds it already running and joins it at once (see winhost.Manager.Start). Not for a browser run in
+			// place: started ahead it would hold the person's profile from the moment a VM is made, and their own
+			// Chrome could not be opened.
 			if target, args, ok := windowsTarget(app.HostCmd); ok {
-				startHostAppAhead(pc.DesktopID, pc.sessionID(slug), target, args)
+				if !pc.Shared {
+					startHostAppAhead(pc.DesktopID, pc.sessionID(slug), target, args)
+				}
 				startup = hostGUIStartupEntries()
 			}
 		}

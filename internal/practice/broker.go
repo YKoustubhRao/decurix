@@ -60,6 +60,11 @@ type CaseUsage struct {
 	// Served is the model each answer says served it (its "model" field), in the order first seen: a deployment's
 	// name can stay while the model behind it is upgraded.
 	Served []string `json:"served"`
+	// Failed is how many of Calls the provider answered with an error status (a 429, a 5xx): no turn of the model.
+	// Unreached is how many calls never reached the provider at all (not in Calls). An eval reads them to tell a case
+	// the provider spoiled from one the worker failed (docs/evals.md, "Bookkeeping").
+	Failed    int `json:"failed"`
+	Unreached int `json:"unreached"`
 }
 
 // ObservationBuffer is how many end-of-turn reports one case keeps waiting: every report of the case is passed on,
@@ -361,12 +366,16 @@ func (b *Broker) llm(w http.ResponseWriter, r *http.Request) {
 		res.Status, res.Body, res.Retry, err = b.LLM.Chat(r.Context(), provider, body)
 	}
 	if err != nil {
+		b.providerFailed(run, false)
 		http.Error(w, "the hosted model could not be reached", http.StatusBadGateway)
 		return
 	}
 	status, answer, retry := res.Status, res.Body, res.Retry
 	usage := llm.ParseUsage(answer)
 	b.count(run, usage, res.Deployment, servedBy(res.Status, answer))
+	if status < 200 || status > 299 {
+		b.providerFailed(run, true)
+	}
 	b.record(r, run, provider, body, res, usage, started)
 	for name, values := range retry {
 		for _, v := range values {
@@ -421,6 +430,21 @@ func (b *Broker) count(run *brokerRun, u llm.Usage, deployment, served string) {
 	if run.caseMax > 0 && c.Input+c.Output >= run.caseMax && !run.caseClosed && run.caseOver != nil {
 		run.caseClosed = true
 		close(run.caseOver)
+	}
+}
+
+// providerFailed counts one call of the current case the provider did not answer with a turn: answered with an error
+// status (already in Calls), or never reached.
+func (b *Broker) providerFailed(run *brokerRun, answered bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if run.obs == nil {
+		return
+	}
+	if answered {
+		run.caseUsage.Failed++
+	} else {
+		run.caseUsage.Unreached++
 	}
 }
 

@@ -136,6 +136,48 @@ def available():
 
 UNCHECKED = "unchecked"
 
+# soul's operator ends a report with this block when an independent review left points open (thebot
+# internal/skills/knowledge.go, openPointsNote); test_review_open pins the two sides together. The line saying no review
+# could be made is said in the same block but is no point the review raised.
+REVIEW_OPEN_MARK = "Still open after an independent review of the work - please check:"
+REVIEW_NOT_MADE = "An independent review of this work could not be made"
+CLAIM_CHARS = 4000
+
+
+def review_left_open(report):
+    """The points an independent review left open, as soul's operator listed them at the end of report; [] when none."""
+    report = report or ""
+    at = report.rfind(REVIEW_OPEN_MARK)
+    if at < 0:
+        return []
+    points = []
+    for line in report[at + len(REVIEW_OPEN_MARK):].splitlines():
+        line = line.strip()
+        if not line:
+            if points:
+                break
+            continue
+        if not line.startswith("- "):
+            break
+        point = line[2:].strip()
+        if point and not point.startswith(REVIEW_NOT_MADE):
+            points.append(point)
+    return points
+
+
+def claim_for_judge(claim):
+    """The worker's report as the judge reads it: cut at CLAIM_CHARS, keeping the block of points a review left open,
+    which ends the report. Found live (2026-11-15, a GSTR-1 run): a long report was cut before that block, and the
+    judge said done on a return a review had flagged and that was saved, never filed."""
+    claim = (claim or "(nothing)").strip()  # as the prompt has always had it: a blank report reads as blank
+    if len(claim) <= CLAIM_CHARS:
+        return claim
+    at = claim.rfind(REVIEW_OPEN_MARK)
+    if at < 0:
+        return claim[:CLAIM_CHARS]
+    block = claim[at:][:CLAIM_CHARS // 2]
+    return claim[:CLAIM_CHARS - len(block)].rstrip() + "\n[...]\n\n" + block
+
 
 def outcome(verdict=None, problems=(), not_made=(), error=None):
     """
@@ -626,7 +668,7 @@ def judge_content(evidence):
         lines.append("The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "
                      "the picture's small print disagree, this is right; a report that says a text was changed is "
                      "backed only if this shows it):\n" + ev["screen_text"])
-    lines.append("What the worker reports: " + (ev["claim"] or "(nothing)").strip()[:4000])
+    lines.append("What the worker reports: " + claim_for_judge(ev["claim"]))
     if ev["produced"]:
         lines.append("The files the worker wrote during this task, as they read NOW (the result itself - the report "
                      "must agree with them):\n" + ev["produced"])

@@ -3,6 +3,7 @@ package llm
 import (
 	"errors"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"strconv"
@@ -22,8 +23,22 @@ const maxRateLimitRetries = 60
 // maxFallbackDelay caps the wait when the provider gives no hint.
 const maxFallbackDelay = 30 * time.Second
 
+// maxRetryAfter caps the wait a provider's own hint (Retry-After and its millisecond forms) may ask for: a hint of
+// minutes is waited out a minute at a time, each try counted, rather than as one long wait (Hermes
+// agent/retry_utils.py caps it the same way). A hint used to be ignored above 240 s, and the fallback used instead.
+const maxRetryAfter = 60 * time.Second
+
+// jitter spreads a fallback wait d over [d/2, d], so desktops refused by one provider at the same moment do not all
+// ask again at the same moment (a variable so tests can pin it).
+var jitter = func(d time.Duration) time.Duration {
+	if d <= 1 {
+		return d
+	}
+	return d/2 + rand.N(d/2+1)
+}
+
 // maxServerErrorRetries bounds how often one call is sent again after the provider itself failed (500, 502, 503,
-// 504). Found by the GUI benchmark: a single "HTTP 500: Internal server error" from a hosted model, and a gateway's
+// 504, 529). Found by the GUI benchmark: a single "HTTP 500: Internal server error" from a hosted model, and a gateway's
 // "upstream connect error" a few minutes later, each ended a task half done - a find-and-replace with its dialog
 // open - as "a step failed in a way retrying cannot fix". A chat call changes nothing anywhere, so asking again is
 // safe; a provider that is really down still fails, three tries and about fifteen seconds later.
@@ -47,10 +62,15 @@ func neverConnected(err error) bool {
 	return false
 }
 
+// transientServerError reports whether status is the provider's own passing failure: 500, 502, 503, 504, or 529 (too
+// busy to take the call). Any other 4xx but 429 refuses the request itself and is never asked again.
 func transientServerError(status int) bool {
 	return status == http.StatusInternalServerError || status == http.StatusBadGateway ||
-		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout || status == statusOverloaded
 }
+
+// statusOverloaded is the status a provider answers when it is too busy to take the call (not an IANA code).
+const statusOverloaded = 529
 
 // rateLimitedRequest retries a rejected chat request within its existing deadline: a 429 as long as the deadline
 // allows, the provider's own failure a few times. No successful call or uncertain network failure is repeated.
@@ -112,21 +132,30 @@ func rateLimitedRequest(client *http.Client, req *http.Request) (*http.Response,
 	}
 }
 
-// retryDelay honors the provider's millisecond, second or HTTP-date retry hint.
+// retryDelay honors the provider's millisecond, second or HTTP-date retry hint, capped at maxRetryAfter; with no
+// usable hint it backs off from 2 s, doubling, capped at maxFallbackDelay and jittered.
 func retryDelay(header http.Header, now time.Time, attempt int) time.Duration {
 	for _, key := range []string{"Retry-After-Ms", "X-Ms-Retry-After-Ms"} {
-		if ms, err := strconv.ParseFloat(header.Get(key), 64); err == nil && ms >= 0 && ms <= 240000 {
-			return time.Duration(ms * float64(time.Millisecond))
+		if ms, err := strconv.ParseFloat(header.Get(key), 64); err == nil && ms >= 0 {
+			return hinted(ms * float64(time.Millisecond))
 		}
 	}
 	value := strings.TrimSpace(header.Get("Retry-After"))
-	if seconds, err := strconv.ParseFloat(value, 64); err == nil && seconds >= 0 && seconds <= 240 {
-		return time.Duration(seconds * float64(time.Second))
+	if seconds, err := strconv.ParseFloat(value, 64); err == nil && seconds >= 0 {
+		return hinted(seconds * float64(time.Second))
 	}
 	if when, err := http.ParseTime(value); err == nil {
 		if delay := when.Sub(now); delay >= 0 {
-			return delay
+			return min(delay, maxRetryAfter)
 		}
 	}
-	return min(time.Second*time.Duration(2<<min(attempt, 5)), maxFallbackDelay)
+	return jitter(min(time.Second*time.Duration(2<<min(attempt, 5)), maxFallbackDelay))
+}
+
+// hinted is a hint of ns nanoseconds as a wait, capped at maxRetryAfter (an absurd or infinite hint included).
+func hinted(ns float64) time.Duration {
+	if ns >= float64(maxRetryAfter) {
+		return maxRetryAfter
+	}
+	return time.Duration(ns)
 }

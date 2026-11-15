@@ -168,7 +168,7 @@ class WhoDoesItOnceItIsTrusted(unittest.TestCase):
                 patch.object(skill_task.verify, "available", return_value=True), \
                 patch.object(skill_task, "_by_model", side_effect=lambda r, **kw: handed.append(dict(r))), \
                 patch.object(skill_task.skills, "load", return_value=dict(skill)), \
-                patch.object(skill_task.skills, "save", side_effect=saved.append), \
+                patch.object(skill_task.skills, "save", side_effect=lambda s, **_: saved.append(s)), \
                 patch.object(skill_task.progress, "emit"), patch.object(skill_task, "_pause") as paused:
             skill_task._finish(run, {"outcome": "completed_unverified", "text": "Replayed: all 15 steps ran."})
 

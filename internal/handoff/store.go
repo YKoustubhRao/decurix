@@ -49,6 +49,16 @@ type Result struct {
 	Evidence      []string `json:"evidence"`
 	Files         []string `json:"files"`
 	OpenQuestions []string `json:"open_questions"`
+	// Data is the result object the receiver's report ended with (ResultMarker), set when the handoff carries an
+	// output schema: on a done, only one that matched it; on an interrupted receiver, its last one as it was.
+	Data json.RawMessage `json:"data,omitempty"`
+	// SchemaErrors says how the last result object failed the output schema ([] when it held or there is none).
+	SchemaErrors []string `json:"schema_errors"`
+	// Interrupted is a receiver that stopped part way (its desktop restarted or stopped, or it ran out of time):
+	// Report and Data are the last it had, never a result.
+	Interrupted bool `json:"interrupted"`
+	// Tasks are the receiving tasks in order: the work, then the one retry turn that re-sent the contract, if any.
+	Tasks []string `json:"tasks"`
 }
 
 // Handoff is one piece of work (or one question) handed from a worker to another.
@@ -75,6 +85,10 @@ type Handoff struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	// DispatchedAt is when the receiving task was submitted (zero while queued).
 	DispatchedAt time.Time `json:"dispatched_at"`
+	// OutputSchema is the contract the result is held to (schema.go), as the sender gave it; empty for none.
+	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+	// SchemaRetries is how many retry turns re-sent the contract (at most one).
+	SchemaRetries int `json:"schema_retries"`
 }
 
 // MarshalJSON shows a handoff being sent as queued: "sending" is this package's claim on the row, not a state a
@@ -120,10 +134,13 @@ var migrations = []string{
 	`CREATE INDEX handoffs_task ON handoffs (task_id)`,
 	`CREATE INDEX handoffs_from ON handoffs (from_worker, created_ns)`,
 	`CREATE INDEX handoffs_to ON handoffs (to_worker, created_ns)`,
+	// A delegated result's contract (schema.go) and how many retry turns re-sent it (at most one).
+	`ALTER TABLE handoffs ADD COLUMN output_schema TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE handoffs ADD COLUMN schema_retries INTEGER NOT NULL DEFAULT 0`,
 }
 
 const columns = `id, kind, from_worker, from_task, to_worker, to_role, to_skill, request, inputs, files, expected,
-	depth, status, reason, task_id, result, created_ns, updated_ns, dispatched_ns`
+	depth, status, reason, task_id, result, created_ns, updated_ns, dispatched_ns, output_schema, schema_retries`
 
 // Store keeps handoffs in SQLite.
 type Store struct {
@@ -143,13 +160,16 @@ func NewStore(db *sql.DB) (*Store, error) {
 // scan reads one handoff row.
 func scan(row sqlitedb.Scanner) (Handoff, error) {
 	var h Handoff
-	var inputs, files, result string
+	var inputs, files, result, schema string
 	var created, updated, dispatched int64
 
 	if err := row.Scan(&h.ID, &h.Kind, &h.FromWorker, &h.FromTask, &h.ToWorker, &h.ToRole, &h.ToSkill,
 		&h.Request, &inputs, &files, &h.Expected, &h.Depth, &h.Status, &h.Reason, &h.TaskID, &result,
-		&created, &updated, &dispatched); err != nil {
+		&created, &updated, &dispatched, &schema, &h.SchemaRetries); err != nil {
 		return Handoff{}, err
+	}
+	if schema != "" {
+		h.OutputSchema = json.RawMessage(schema)
 	}
 
 	// A column that does not parse reads as empty: the row is still shown.
@@ -170,7 +190,7 @@ func scan(row sqlitedb.Scanner) (Handoff, error) {
 
 // normalResult makes a result's lists non-nil, so JSON shows [] not null.
 func normalResult(r Result) Result {
-	for _, list := range []*[]string{&r.Evidence, &r.Files, &r.OpenQuestions} {
+	for _, list := range []*[]string{&r.Evidence, &r.Files, &r.OpenQuestions, &r.SchemaErrors, &r.Tasks} {
 		if *list == nil {
 			*list = []string{}
 		}
@@ -199,10 +219,11 @@ func (s *Store) Create(h Handoff) (Handoff, error) {
 	files, _ := json.Marshal(h.Files)
 	result, _ := json.Marshal(h.Result)
 
-	if _, err := s.db.Exec(`INSERT INTO handoffs (`+columns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if _, err := s.db.Exec(`INSERT INTO handoffs (`+columns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		h.ID, h.Kind, h.FromWorker, h.FromTask, h.ToWorker, h.ToRole, h.ToSkill, h.Request, string(inputs),
 		string(files), h.Expected, h.Depth, h.Status, h.Reason, h.TaskID, string(result),
-		sqlitedb.ToNS(h.CreatedAt), sqlitedb.ToNS(h.UpdatedAt), sqlitedb.ToNS(h.DispatchedAt)); err != nil {
+		sqlitedb.ToNS(h.CreatedAt), sqlitedb.ToNS(h.UpdatedAt), sqlitedb.ToNS(h.DispatchedAt), string(h.OutputSchema),
+		h.SchemaRetries); err != nil {
 		return Handoff{}, fmt.Errorf("handoff: create: %w", err)
 	}
 
@@ -273,6 +294,26 @@ func (s *Store) Claim(id string) (bool, error) {
 	return n == 1, nil
 }
 
+// ClaimRetry takes a running handoff's one retry turn for the one collect that will send it, and reports whether it
+// did: false when another collect took it first, or the turn was spent.
+func (s *Store) ClaimRetry(id string) (bool, error) {
+	res, err := s.db.Exec(`UPDATE handoffs SET schema_retries = 1, updated_ns = ? WHERE id = ? AND status = ? AND schema_retries = 0`,
+		sqlitedb.ToNS(s.now()), id, StatusRunning)
+	if err != nil {
+		return false, fmt.Errorf("handoff: claim retry: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ReleaseRetry gives back a retry turn ClaimRetry took that could not be sent yet (its worker was busy).
+func (s *Store) ReleaseRetry(id string) error {
+	if _, err := s.db.Exec(`UPDATE handoffs SET schema_retries = 0 WHERE id = ? AND status = ?`, id, StatusRunning); err != nil {
+		return fmt.Errorf("handoff: release retry: %w", err)
+	}
+	return nil
+}
+
 // Save writes back a handoff's changing fields (where it went, its status,
 // reason, task and result), stamping UpdatedAt. Only an open row is written:
 // a final handoff never changes again, and false says the row was final.
@@ -282,9 +323,9 @@ func (s *Store) Save(h Handoff) (Handoff, bool, error) {
 	result, _ := json.Marshal(h.Result)
 
 	res, err := s.db.Exec(`UPDATE handoffs SET to_worker = ?, status = ?, reason = ?, task_id = ?, result = ?,
-		updated_ns = ?, dispatched_ns = ? WHERE id = ? AND status IN (?, ?, ?)`,
+		updated_ns = ?, dispatched_ns = ?, schema_retries = ? WHERE id = ? AND status IN (?, ?, ?)`,
 		h.ToWorker, h.Status, h.Reason, h.TaskID, string(result), sqlitedb.ToNS(h.UpdatedAt),
-		sqlitedb.ToNS(h.DispatchedAt), h.ID, StatusQueued, StatusSending, StatusRunning)
+		sqlitedb.ToNS(h.DispatchedAt), h.SchemaRetries, h.ID, StatusQueued, StatusSending, StatusRunning)
 	if err != nil {
 		return Handoff{}, false, fmt.Errorf("handoff: save: %w", err)
 	}

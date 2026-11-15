@@ -485,7 +485,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[0] == "skills":
                 if parts[2] == "delete":
                     skills.load(parts[1])
-                    skills.delete(parts[1])
+                    skills.delete(parts[1], actor="person")
                     return self._json(200, {"status": "deleted"})
 
                 if parts[2] == "run":

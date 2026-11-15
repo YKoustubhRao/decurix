@@ -132,7 +132,13 @@ type PracticeSpec struct {
 	// SoulDecisions turns on every decision soul words and reads in place of Python (plan rule 3, phase 2:
 	// SoulDecisionSwitches) on this desktop: only an eval arm sets it (+soul), to measure them before they default on.
 	SoulDecisions bool
+	// Switches are an eval ablation arm's NAME=value settings of switches the agent already reads (eval.Mechanisms):
+	// each name DECURIX_ and capitals, each value digits only; anything else is dropped (practiceSwitch).
+	Switches []string
 }
+
+// practiceSwitch is what an ablation switch may look like: an agent setting by name, a number for its value.
+var practiceSwitch = regexp.MustCompile(`^DECURIX_[A-Z0-9_]{1,60}=[0-9]{1,9}$`)
 
 // SoulDecisionSwitches are the agent's switches for the decisions moved into soul (plan rule 3, phase 2), each off by
 // default until an eval with it on shows no regression (plan rule 1): the final check's judge, the escalation ladder's
@@ -499,6 +505,11 @@ func practiceEnvironment(inherited []string, spec PracticeSpec, vncPassword stri
 	if spec.SoulDecisions {
 		for _, name := range SoulDecisionSwitches {
 			out = append(out, name+"=1")
+		}
+	}
+	for _, kv := range spec.Switches {
+		if name, _, _ := strings.Cut(kv, "="); practiceSwitch.MatchString(kv) && !practiceSecretKey.MatchString(name) {
+			out = append(out, kv)
 		}
 	}
 	return out

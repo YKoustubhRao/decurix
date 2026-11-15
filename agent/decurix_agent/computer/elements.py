@@ -12,7 +12,7 @@ from decurix_agent.computer.errors import ComputerError
 # drew it:
 #
 #   ref     short handle an engine types back ("e12"), stable across
-#           observations for as long as the element's path is unchanged
+#           observations for as long as it is the same control (assign_refs)
 #   role    normalised role ("button", "textbox", "checkbox", ...)
 #   name    accessible name - the label a person would read
 #   value   current contents of a field, if any
@@ -107,29 +107,122 @@ def describe(element):
 # Refs
 # ============================================================
 
-def assign_refs(elements, previous):
+_SUFFIX = re.compile(r"\[\d+\]$")
+
+
+def _base(path):
+    """A path without the [2], [3]... that dedupe_paths adds: what it is, not which of its kind."""
+
+    return _SUFFIX.sub("", path or "")
+
+
+def _document(element, urls):
+    """The document an element is in, for a page's element (its tab and the address the tab shows); None for an app's,
+    whose path already begins with its app and window."""
+
+    if element.get("source") != "cdp":
+        return None
+    group = element.get("group") or ""
+    return (group, (urls or {}).get(group, ""))
+
+
+def _node(element, urls):
+    """The page's own node an element is (its tab, address and DOM node), or None when it has none to tell."""
+
+    backend = (element.get("handle") or {}).get("backend_id")
+    doc = _document(element, urls)
+    if doc is None or backend is None or isinstance(backend, bool):
+        return None
+    return doc + (backend,)
+
+
+def _urls(observation_or_groups):
+    groups = observation_or_groups.get("groups") if isinstance(observation_or_groups, dict) else observation_or_groups
+    return {g.get("id"): g.get("url") or "" for g in groups or [] if isinstance(g, dict)}
+
+
+def assign_refs(elements, previous, groups=None):
     """
-    Give each element a ref, reusing the previous observation's ref for any
-    element at the same path.
+    Give each element a ref, reusing the previous observation's ref only for the same control: one look's ref holds in
+    the next only where that look shows the same thing under it. `groups` are this look's windows and tabs (their
+    addresses).
 
     Numbering elements 1..N afresh on every observation would renumber
     everything after a single row is inserted, and an engine that had just
-    read "e12 button Save" would click something else. Keyed by path, a ref
-    means the same element for as long as that element is still there.
+    read "e12 button Save" would click something else. So a ref follows its control - and only its control:
+    - in a page, the same DOM node in the same tab at the same address; another address is another document, whose
+      controls get refs of their own;
+    - elsewhere (or a node drawn anew), the same path in the same document, with the same role and name, and - where
+      the path is one of several alike ("[2]") - only while there are as many of them as before: when one goes, the
+      next takes its place in the numbering, and the ref would silently name another control;
+    - never a control whose role or name changed under it (a button that read "Edit" and reads "Save").
+    A ref that was not carried is gone (core._gone), and the engine is told to look again (find, _same_named).
     """
 
-    by_path = {}
     next_ref = 1
+    urls_now = _urls(groups or [])
+    by_node, by_path, nodes_now = {}, {}, set()
+    count_then, count_now = {}, {}
 
     if previous:
         next_ref = previous.get("next_ref", 1)
+        urls_then = _urls(previous)
         for old in previous.get("elements", []):
-            by_path.setdefault(old["path"], old["ref"])
+            if not old.get("ref"):
+                continue
+            node = _node(old, urls_then)
+            if node is not None:
+                by_node.setdefault(node, old)
+            doc = _document(old, urls_then)
+            by_path.setdefault((doc, old.get("path")), (old, node))
+            key = (doc, _base(old.get("path")))
+            count_then[key] = count_then.get(key, 0) + 1
+
+    rows_then, rows_now = {}, {}
+    if previous:
+        for old in previous.get("elements", []):
+            if old.get("row"):
+                rows_then.setdefault(_document(old, urls_then), set()).add(old["row"])
+    for element in elements:
+        node = _node(element, urls_now)
+        if node is not None:
+            nodes_now.add(node)
+        key = (_document(element, urls_now), _base(element.get("path")))
+        count_now[key] = count_now.get(key, 0) + 1
+        if element.get("row"):
+            rows_now.setdefault(key[0], set()).add(element["row"])
+    # The documents a numbered row went from (cdp._number_rows): the rows after it are numbered anew.
+    rows_lost = {doc for doc, rows in rows_then.items() if not rows <= rows_now.get(doc, set())}
+
+    def same(old, element):
+        # Roles as observed (normalised once already), compared as they are: normalised again, static "text" and an
+        # editable "textbox" were the same role, and a label could take a field's ref (see _same_named).
+        return ((old.get("role") or "") == (element.get("role") or "")
+                and (old.get("name") or "") == (element.get("name") or ""))
 
     used = set()
 
     for element in elements:
-        ref = by_path.get(element["path"])
+        ref = None
+        node = _node(element, urls_now)
+        doc = _document(element, urls_now)
+        old = by_node.get(node) if node is not None else None
+        if old is not None:
+            ref = old["ref"] if same(old, element) else None
+        else:
+            held = by_path.get((doc, element.get("path")))
+            if held is not None:
+                old, old_node = held
+                key = (doc, _base(element.get("path")))
+                redrawn = old_node is not None or node is not None
+                if same(old, element) and count_then.get(key) == count_now.get(key) \
+                        and (old_node is None or old_node not in nodes_now) \
+                        and not (redrawn and ((old.get("value") or "") != (element.get("value") or "")
+                                              or (element.get("row") and doc in rows_lost))):
+                    # A node that is still on the page elsewhere keeps its own ref (its old path is not this one's).
+                    # A page's control drawn anew is the same one only holding the same value, and a numbered row's
+                    # only while no row went: rows renumber, and "row 2" would be the next line's.
+                    ref = old["ref"]
 
         if ref is None or ref in used:
             ref = f"e{next_ref}"
@@ -589,7 +682,14 @@ def where_seen(element, url=""):
     """What a gone ref is re-bound by (_same_named): its role and name, and the window and document it was in."""
 
     return {"role": element.get("role") or "", "name": element.get("name") or "", "group": element.get("group") or "",
-            "window_title": element.get("window_title") or "", "url": url or ""}
+            "window_title": element.get("window_title") or "", "url": url or "",
+            "within": _within(element.get("path"))}
+
+
+def _within(path):
+    """What a control sits in, by its path: every container before its own segment (its form, its table row)."""
+
+    return _base(path).rpartition(" > ")[0]
 
 
 def _same_named(elements, ref, gone=None):
@@ -604,11 +704,20 @@ def _same_named(elements, ref, gone=None):
     prior = ((gone or {}).get("refs") or {}).get(ref)
     if not prior or not prior.get("name") or not (prior.get("group") or prior.get("window_title")):
         return None
-    role = normalize_role(prior.get("role"))
+    # Roles as observed, already normalised once - compared as they are. normalize_role is not idempotent: a page's
+    # static text is kept as "text", and "text" again is AT-SPI's editable field ("textbox"). Normalised twice, a gone
+    # textbox was re-bound to the label left beside it and typed into (found live, 2026-11-15).
+    role = prior.get("role") or ""
     urls = (gone or {}).get("urls") or {}
     same = [e for e in elements
-            if normalize_role(e.get("role")) == role and (e.get("name") or "") == prior["name"]
+            if (e.get("role") or "") == role and (e.get("name") or "") == prior["name"]
             and (e.get("group") or "") == (prior.get("group") or "")
             and (e.get("window_title") or "") == (prior.get("window_title") or "")
             and (not prior.get("url") or urls.get(e.get("group") or "") == prior["url"])]
-    return same[0] if len(same) == 1 else None
+    if len(same) != 1:
+        return None
+    # ...and in the same container (its form, its row): the one "Delete" left on a list after its row went is the next
+    # row's, not the gone ref's.
+    if "within" in prior and _within(same[0].get("path")) != prior["within"]:
+        return None
+    return same[0]

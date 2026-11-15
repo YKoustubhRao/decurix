@@ -63,4 +63,4 @@ def install_catalog_skill(name, target_name=None):
     if entry.get("optimization"):
         skill["optimization"] = entry["optimization"]
 
-    return skills.save(skill)
+    return skills.save(skill, actor="install")  # (a person's install from the catalog page)

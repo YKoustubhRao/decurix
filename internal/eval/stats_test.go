@@ -60,10 +60,12 @@ func TestSummariseOverFixtureRows(t *testing.T) {
 		t.Fatalf("table: %+v", tab)
 	}
 	two := tab.Rows[1].Arms["default"]
-	if two.N != 5 || two.Pass != 3 || two.FalseDone != 2 || two.QRequired != 1 || two.TokensMedian != 306000 {
+	// fast+expert lost repeat 2 of "two" (its model changed), so the same case run is left out of default too
+	// (paired): runs are never excluded from one arm only.
+	if two.N != 4 || two.Paired != 1 || two.Pass != 3 || two.FalseDone != 1 || two.QRequired != 1 || two.TokensMedian != 306000 {
 		t.Fatalf("default/two: %+v", two)
 	}
-	if lo, _ := Wilson(3, 5, Z95); two.PassLo != lo {
+	if lo, _ := Wilson(3, 4, Z95); two.PassLo != lo {
 		t.Fatalf("pass lower bound: %v", two.PassLo)
 	}
 	one := tab.Rows[0].Arms["default"]

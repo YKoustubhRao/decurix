@@ -119,7 +119,7 @@ def _update_skill(run, change):
     try:
         fresh = skills.load(run["skill"]["name"])
         change(fresh)
-        skills.save(fresh)
+        skills.save(fresh, actor="branch")
     except Exception as exc:  # noqa: BLE001 - kept on the run's copy, saved by its success
         log(f"Repairs: the saved skill was not updated: {exc}")
     return out

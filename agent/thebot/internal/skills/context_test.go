@@ -294,3 +294,112 @@ func TestATranscriptIsOnlyAppendedToUntilAPassTakesEnoughOff(t *testing.T) {
 		t.Error("due again right after a pass")
 	}
 }
+
+// capturingNotes answers like notesProvider and keeps the messages it was asked with.
+type capturingNotes struct{ asked [][]llm.Message }
+
+func (p *capturingNotes) Name() string                         { return "notes" }
+func (p *capturingNotes) IsReachable(ctx context.Context) bool { return true }
+func (p *capturingNotes) Chat(_ context.Context, _ string, m []llm.Message, _ llm.Options) (llm.Result, error) {
+	p.asked = append(p.asked, append([]llm.Message(nil), m...))
+	return llm.Result{Text: "NOTES: saved the first page.\nUNVERIFIED: the second page is the last - the scroll bar ended there"}, nil
+}
+
+// The request for notes asks for uncertain claims as UNVERIFIED lines, in the newest message only: the cached frame
+// and the request are the same bytes before, during and after a compaction.
+func TestTheNotesRequestAsksForUnverifiedClaimsOutsideTheFrame(t *testing.T) {
+	st := longGoal(30)
+	frame, request := st.Messages[0].Content, st.Messages[1].Content
+	provider := &capturingNotes{}
+	(&OperatorSkill{}).compact(RunContext{Ctx: context.Background(), Provider: provider, OnLog: func(string) {}}, st, "test")
+	if len(provider.asked) != 1 {
+		t.Fatalf("notes asked %d times", len(provider.asked))
+	}
+	asked := provider.asked[0]
+	if asked[0].Content != frame || asked[1].Content != request || st.Messages[0].Content != frame || st.Messages[1].Content != request {
+		t.Fatal("the prefix changed")
+	}
+	if last := asked[len(asked)-1].Content; !strings.Contains(last, "UNVERIFIED: the claim - what it rests on") {
+		t.Errorf("the notes request does not ask for UNVERIFIED lines: %q", last)
+	}
+	if strings.Contains(frame, "UNVERIFIED") {
+		t.Error("the instruction went into the frame")
+	}
+	if !strings.Contains(st.Messages[2].Content, "UNVERIFIED: the second page is the last") {
+		t.Error("the notes' UNVERIFIED line was not kept")
+	}
+}
+
+func TestTheProgressNoteListsExactIdentifiersMostFrequentFirst(t *testing.T) {
+	output := func(s string) llm.Message {
+		return llm.Message{Role: "user", Content: "Command execution result:\n" + s}
+	}
+	region := []llm.Message{
+		{Role: "assistant", Content: "COMMAND:\noffice read /home/worker/Documents/ledger.xlsx"},
+		output("INV-2026-0042 total 1,250.00 due 2026-11-12, mail ops@example.com, see https://example.com/a?b=1"),
+		output("INV-2026-0042 again; 1,250.00 again; saved to C:\\Users\\worker\\book.xlsx on 12/11/2026"),
+		output("INV-2026-0042 a third time; account 4471; small numbers 12 and 345 and words h1 abc; SEP-2026 is in the request"),
+		output("a line of a listing 3.75"),
+	}
+	prefix := []llm.Message{{Role: "system", Content: "frame"}, {Role: "user", Content: "file SEP-2026"}}
+	got := exactIdentifiers(region, prefix)
+	joined := strings.Join(got, " | ")
+	if len(got) == 0 || got[0] != "INV-2026-0042" || got[1] != "1,250.00" {
+		t.Fatalf("not ranked by frequency: %s", joined)
+	}
+	for _, want := range []string{"/home/worker/Documents/ledger.xlsx", `C:\Users\worker\book.xlsx`, "ops@example.com",
+		"https://example.com/a?b=1", "2026-11-12", "12/11/2026", "4471", "3.75"} {
+		if !strings.Contains(" | "+joined+" | ", " | "+want+" | ") {
+			t.Errorf("lacks %q: %s", want, joined)
+		}
+	}
+	for _, noise := range []string{"12", "345", "h1", "abc", "SEP-2026", "again"} {
+		for _, s := range got {
+			if s == noise {
+				t.Errorf("kept %q, which is not an identifier or is in the prefix: %s", noise, joined)
+			}
+		}
+	}
+	if again := strings.Join(exactIdentifiers(region, prefix), " | "); again != joined {
+		t.Error("the same region gave a different list")
+	}
+
+	var many strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&many, "REF%05d ", i)
+	}
+	capped := exactIdentifiers([]llm.Message{output(many.String())}, prefix)
+	if n := len(strings.Join(capped, "  ")); n > maxAnchorChars || len(capped) < 100 {
+		t.Errorf("list of %d strings, %d characters: want it capped near %d", len(capped), n, maxAnchorChars)
+	}
+}
+
+// A compaction's note carries the list, and only from the part it shortened.
+func TestACompactionNoteCarriesTheIdentifierList(t *testing.T) {
+	st := longGoal(30)
+	st.Messages[3].Content = "Command execution result:\n\nexit_code: 0\n\noutput:\nposted voucher JV-0981 for 18,400.50"
+	(&OperatorSkill{}).compact(RunContext{Ctx: context.Background(), Provider: &notesProvider{}, OnLog: func(string) {}}, st, "test")
+	note := st.Messages[2].Content
+	if !strings.Contains(note, "Exact strings from the shortened part") || !strings.Contains(note, "JV-0981") ||
+		!strings.Contains(note, "18,400.50") {
+		t.Errorf("the note lacks the identifier list: %s", note)
+	}
+}
+
+// A picture counts at its learned price when that is higher than the flat one, never lower: a picture priced low
+// would let a local transcript past its window.
+func TestAPicturesLearnedPriceRaisesItsCountNeverLowersIt(t *testing.T) {
+	saved := learnedPictureTokens
+	defer func() { learnedPictureTokens = saved }()
+	shot := []llm.Message{{Role: "user", Content: "", Images: [][]byte{{1}}}}
+	for _, c := range []struct {
+		tokens int
+		known  bool
+		want   int
+	}{{0, false, pictureChars}, {2000, true, 2000 * localCharsPerToken}, {100, true, pictureChars}} {
+		learnedPictureTokens = func() (int, bool) { return c.tokens, c.known }
+		if got := messagesChars(shot); got != c.want {
+			t.Errorf("learned %d (%v): a picture counts %d, want %d", c.tokens, c.known, got, c.want)
+		}
+	}
+}

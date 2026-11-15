@@ -2,6 +2,7 @@ package handoff
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -57,6 +58,9 @@ type TaskOutcome struct {
 	Evidence []string
 	// OpenQuestions are the receiver's questions to a person not answered yet.
 	OpenQuestions []string
+	// Partial is the last steps the latest attempt reported, oldest first: what a receiver that stopped part way had
+	// done, for a result marked interrupted.
+	Partial []string
 }
 
 // Tasks is what this package needs from internal/tasks.Store: the outcome of
@@ -180,6 +184,8 @@ type DelegateRequest struct {
 	Inputs     map[string]string
 	Files      []string
 	Expected   string
+	// OutputSchema is the contract the result is held to (schema.go); empty for none.
+	OutputSchema json.RawMessage
 }
 
 // AskRequest is a question a worker puts to another worker taught a skill.
@@ -248,6 +254,14 @@ func (s *Service) Delegate(ctx context.Context, req DelegateRequest) (Handoff, e
 	}
 	if len(h.Files) > 0 && s.Reader == nil {
 		return Handoff{}, refuse("this control plane cannot carry files between workers")
+	}
+	schema, err := ParseSchema(req.OutputSchema)
+	if err != nil {
+		return Handoff{}, err
+	}
+	if schema != nil {
+		compact, _ := json.Marshal(schema)
+		h.OutputSchema = compact
 	}
 
 	if req.ToWorker != "" {
@@ -613,27 +627,48 @@ func (s *Service) collect(ctx context.Context, h Handoff) Handoff {
 		return h
 	}
 
-	r := Result{Report: out.Report, OpenQuestions: out.OpenQuestions}
+	r := Result{Report: out.Report, OpenQuestions: out.OpenQuestions, Tasks: h.Result.Tasks}
+	if len(r.Tasks) == 0 || r.Tasks[len(r.Tasks)-1] != h.TaskID {
+		r.Tasks = append(append([]string{}, r.Tasks...), h.TaskID)
+	}
+	interrupted := false
 
 	switch out.Status {
 	case tasks.StatusDone:
 		r.Evidence = out.Evidence
-		if out.Checked != nil && *out.Checked {
+		switch {
+		case out.Checked == nil || !*out.Checked:
+			h.Status = StatusNotDone
+			h.Reason = "worker " + h.ToWorker + " reported back, but its final check did not confirm the result - treat it as not done"
+		case len(h.OutputSchema) > 0:
+			// The receiver's gate confirmed the work; the result must still be the shape the sender asked for.
+			if retried, done := s.checkContract(ctx, &h, &r, out.Report); !done {
+				if retried {
+					return s.save(h)
+				}
+				break
+			}
+			r.Verified = true
+			r.Files = s.returnFiles(ctx, h)
+			h.Status, h.Reason = StatusDone, "worker "+h.ToWorker+"'s final check confirmed it, and its result matches the contract"
+		case strings.TrimSpace(out.Report) == "":
+			// An empty result is a failure, whatever a check said of it.
+			h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+" reported nothing - treat it as not done"
+		default:
 			r.Verified = true
 			// Only a verified result hands files back, and only those saved in the handoff's out folder.
 			r.Files = s.returnFiles(ctx, h)
 			h.Status, h.Reason = StatusDone, "worker "+h.ToWorker+"'s final check confirmed it"
-		} else {
-			h.Status = StatusNotDone
-			h.Reason = "worker " + h.ToWorker + " reported back, but its final check did not confirm the result - treat it as not done"
 		}
 	case tasks.StatusError:
 		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+" reported that it could not do it"
 	case tasks.StatusAbandoned:
-		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+"'s task was abandoned"
+		interrupted = true
+		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+"'s task was stopped part way (interrupted); what it had is its last partial result, not a result"
 	case tasks.StatusQuery:
 		// "query" is an end: the receiver's desktop stopped while it waited on a person (tasks.CloseOpen).
-		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+"'s task ended while waiting on a person"
+		interrupted = true
+		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+"'s task ended while waiting on a person (interrupted)"
 	case tasks.StatusWaiting:
 		h.Reason = "worker " + h.ToWorker + " asked a person and is waiting for the answer"
 	default:
@@ -642,13 +677,108 @@ func (s *Service) collect(ctx context.Context, h Handoff) Handoff {
 
 	if h.Open() && h.Kind == KindAsk && now.Sub(h.DispatchedAt) > orDefault(s.AskTimeout, defaultAskTimeout) {
 		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+" did not answer in time - ask a person instead"
+		interrupted = true
 	}
 	if limit := orDefault(s.DelegateTimeout, defaultDelegateTimeout); h.Open() && h.Kind == KindDelegate && now.Sub(h.DispatchedAt) > limit {
 		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+" did not finish within "+limit.String()+" - do it here or ask a person"
+		interrupted = true
+	}
+	if interrupted {
+		partial(&r, out, len(h.OutputSchema) > 0)
 	}
 
 	h.Result = r
 	return s.save(h)
+}
+
+// partial marks a result interrupted and keeps the receiver's last partial result: its report, or the last steps it
+// reported when it wrote none, and the last result object it wrote when a contract asked for one (as it was, never
+// counted as the result). Nothing in it is verified.
+func partial(r *Result, out TaskOutcome, contract bool) {
+	r.Interrupted, r.Verified, r.Files = true, false, []string{}
+	if strings.TrimSpace(r.Report) == "" && len(out.Partial) > 0 {
+		r.Report = "(stopped part way; its last steps:)\n" + strings.Join(out.Partial, "\n")
+	}
+	if contract {
+		if data, ok := ExtractResult(r.Report); ok {
+			r.Data = data
+		}
+	}
+}
+
+// checkContract holds a verified report to the handoff's output schema. done is true when its result object matches
+// (r.Data set). Otherwise the errors go in r.SchemaErrors and, the first time, one retry turn re-sends the contract to
+// the same worker (retried true: h now waits on that turn, or on the worker being free for it); after the retry, the
+// handoff is not done.
+func (s *Service) checkContract(ctx context.Context, h *Handoff, r *Result, report string) (retried, done bool) {
+	schema, err := ParseSchema(h.OutputSchema)
+	if err != nil || schema == nil {
+		h.Status, h.Reason = StatusFailed, "the stored output schema could not be read"
+		return false, false
+	}
+	data, found := ExtractResult(report)
+	errs := []string{"the report does not end with " + ResultMarker + " and a JSON object"}
+	if found {
+		errs = schema.Validate(data)
+	}
+	if len(errs) == 0 {
+		r.Data = data
+		return false, true
+	}
+	r.SchemaErrors = errs
+	if h.SchemaRetries > 0 {
+		h.Status = StatusNotDone
+		h.Reason = "worker " + h.ToWorker + "'s result did not match the contract after one retry (" + strings.Join(errs, "; ") +
+			") - treat it as not done"
+		return false, false
+	}
+	claimed, err := s.Store.ClaimRetry(h.ID)
+	if err != nil || !claimed {
+		if err != nil {
+			log.Printf("handoff %s: %v", h.ID, err)
+			h.Result = *r
+			return true, false
+		}
+		// Another collect holds the turn and is sending it: leave the row as it is, with the turn counted.
+		h.SchemaRetries = 1
+		h.Result = *r
+		return true, false
+	}
+	h.SchemaRetries = 1
+	content := retryRequest(*h, errs)
+	var taskID string
+	func() {
+		// As in dispatch: the lock is let go while the turn is sent, the retry claimed first so no other collect sends it.
+		s.mu.Unlock()
+		defer s.mu.Lock()
+		taskID, err = s.Submit.SubmitHandoff(ctx, h.ToWorker, content, "", nil, tasks.Origin{Kind: tasks.OriginHandoff, Ref: h.ID})
+	}()
+	var busy busyError
+	switch {
+	case errors.As(err, &busy):
+		_ = s.Store.ReleaseRetry(h.ID)
+		h.SchemaRetries = 0
+		h.Reason = "worker " + h.ToWorker + "'s result did not match the contract; waiting for it to be free to send the contract again"
+	case err != nil:
+		log.Printf("handoff %s: re-sending the contract to %s: %v", h.ID, h.ToWorker, err)
+		h.Status = StatusNotDone
+		h.Reason = "worker " + h.ToWorker + "'s result did not match the contract, and the contract could not be sent again - treat it as not done"
+		return false, false
+	default:
+		h.TaskID, h.DispatchedAt = taskID, s.clock()
+		r.Tasks = append(r.Tasks, taskID)
+		h.Reason = "worker " + h.ToWorker + "'s result did not match the contract; it was sent the contract again (one retry)"
+	}
+	h.Result = *r
+	return true, false
+}
+
+// retryRequest is the one retry turn: the contract again, with what was wrong.
+func retryRequest(h Handoff, errs []string) string {
+	return fmt.Sprintf("Worker %s handed you work (handoff %s) and your final check confirmed it, but the result you "+
+		"reported did not match the contract it asked for: %s.\n\nDo not do the work again. Report the result of that "+
+		"work once more, from what you saw doing it (check the screen or the files again if you must).\n\n%s",
+		h.FromWorker, h.ID, strings.Join(errs, "; "), contractText(h.OutputSchema))
 }
 
 // returnFiles copies the files the receiver saved in the handoff's out folder (OutDir) back to the sending worker and
@@ -754,5 +884,8 @@ func composeRequest(h Handoff, files []File) string {
 		"once your final check confirms the work.", OutDir(h.ID))
 	b.WriteString("\n\nIn your report, say what you did, what you saw that shows it is done, the full paths of any " +
 		"files you made, and plainly any part you could not do.")
+	if len(h.OutputSchema) > 0 {
+		b.WriteString("\n\n" + contractText(h.OutputSchema))
+	}
 	return b.String()
 }

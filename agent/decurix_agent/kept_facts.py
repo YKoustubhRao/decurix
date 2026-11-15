@@ -45,7 +45,8 @@ fine and common answer.
 Keep also where the sources a later task will need are: each web address or folder the task read from, with what is \
 kept there (whose messages, which documents) - exactly as it appears in the request or what was read. At most \
 {MAX_PLACES}.
-Never a password, PIN, code or key, whoever wrote it.
+Never a password, PIN, code or key, whoever wrote it. Never a way of working that failed, a claim that a tool, app \
+or command does not work, or a failure of this machine or its connection: those are this run's, not the world's.
 Reply with JSON only: {{"client": "the client the REQUEST is for, exactly as the request names them; empty when it \
 names none", "facts": [{{"about": "the record or party it concerns, as the source names them", "quote": "the source's \
 exact words", "where": "the source (file, page, chat, sender) and its date when it shows one"}}], "places": \

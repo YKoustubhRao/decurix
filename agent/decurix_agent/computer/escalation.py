@@ -468,12 +468,16 @@ class Ladder:
         """
 
         purpose = PURPOSE + kind
+        # The screen's text and OCR it carries never hold a secret that passed through (privacy.withhold_registered);
+        # the decision is still read against the evidence as it was.
+        from decurix_agent.computer import privacy
+        shown_prompt, shown_evidence = privacy.withhold_registered(prompt), privacy.withhold_registered(evidence)
         if self.ask_decided is not None:
-            text, decision = self.ask_decided(SYSTEMS[kind], prompt, evidence, purpose=purpose)
+            text, decision = self.ask_decided(SYSTEMS[kind], shown_prompt, shown_evidence, purpose=purpose)
             if decision is not None:
                 return from_soul(kind, decision, evidence)
         else:
-            text = self.ask_model(SYSTEMS[kind], prompt, purpose=purpose)
+            text = self.ask_model(SYSTEMS[kind], shown_prompt, purpose=purpose)
         return DECIDE[kind](text, evidence)
 
     def _ground_evidence(self, step, observation, ranked):

@@ -45,6 +45,31 @@ class ArmTest(unittest.TestCase):
                 run.parse_arm(bad)
 
 
+class AblationArmTest(unittest.TestCase):
+    def test_an_arm_may_switch_one_mechanism_off(self):
+        a = run.parse_arm("default+expert-playbooks")
+        self.assertEqual((a["name"], a["model"], a["expert"], a["off"]), ("default+expert-playbooks", "default", True, "playbooks"))
+        a = run.parse_arm("fast-spot-judge@eb15981")
+        self.assertEqual((a["off"], a["agent_tree_rev"]), ("spot-judge", "eb15981"))
+        # Whether the mechanism has a switch is the control plane's to say (it refuses replay, naming the ones it can).
+        self.assertEqual(run.parse_arm("default+expert-replay")["off"], "replay")
+        self.assertNotIn("off", run.parse_arm("default+expert"))
+        for bad in ("default-", "default-Playbooks", "oracle-playbooks"):
+            with self.assertRaises(run.Usage):
+                run.parse_arm(bad)
+
+
+class CurveErroredTest(unittest.TestCase):
+    def test_an_errored_run_counts_in_pass_but_not_in_tokens(self):
+        rows = [{"observed": "complete", "passed": True, "tokens_in": 100, "tokens_out": 0, "calls": 2},
+                {"observed": "complete", "passed": True, "tokens_in": 300, "tokens_out": 0, "calls": 4},
+                {"observed": "budget", "passed": False, "tokens_in": 9000000, "tokens_out": 0, "calls": 90},
+                {"observed": "complete", "passed": True, "invalid": True, "tokens_in": 1, "calls": 1}]
+        c = run.curve_cell(rows)
+        self.assertEqual((c["n"], c["pass"], c["errored"], c["left_out"]), (3, 2, 1, 1))
+        self.assertEqual((c["tokens_in"], c["calls"]), (200, 3))
+
+
 class SuiteTarTest(unittest.TestCase):
     def test_the_suite_tar_holds_the_suite_and_its_mocks(self):
         body = run.suite_tar(EVALS / "suites" / "core-v1")

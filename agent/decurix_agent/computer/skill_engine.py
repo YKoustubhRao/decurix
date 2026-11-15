@@ -266,6 +266,8 @@ def _run(skill, params=None, start=1, source_files=None):
                                    f"--from {at} (with the same --param values)")
 
     program, expanded = skills.expand(skill, values)
+    from decurix_agent import learned
+    learned.note_use("skill", skill["name"])
     result = replay.run(program, params=expanded, start=start,
                         ladder=escalation.Ladder(ask_model=None, goal=skill.get("title") or "", total=len(program["steps"])))
 

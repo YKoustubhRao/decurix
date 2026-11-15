@@ -1135,3 +1135,155 @@ explains the one thing Windows cannot do - virtualization off in the firmware. T
   browser was showing. The wrapper now opens an `--app=` page with `gui open --reuse`: a tab already showing exactly
   that address is brought forward, otherwise the page gets a new tab (replay carries `reuse` too). Lesson: in broker
   mode the window logic belongs on the screen side, which can see the windows; ask it, do not guess from the worker.
+
+## A VM's Chrome was never signed in to anything, and no way of copying the profile could have fixed it (found live 2026-11-12)
+
+- The symptom, over three builds: a copied Chrome profile opened in a VM with the person's history and new-tab shortcuts and
+  with every login gone - Google, GitHub, LinkedIn, WhatsApp. Each build fixed a real thing (the apps arrived, the open tabs
+  were left behind, the cookie file was copied once the person's Chrome was closed) and the logins stayed gone, because the
+  cause was not in how the profile was copied. Chrome 127+ encrypts cookies and account tokens "v20" (app-bound) so that only
+  Chrome running from the profile's own folder can open them. Chrome's own log said so: `chrome://signin-internals` read "Load
+  credentials failed with decrypt errors", and `token_service_table.cc: Failed to decrypt token for service AccountId-...`, for a
+  copy of the whole private profile, for a clone of the person's real files started the ordinary way, and when started by the
+  bridge; the real folder gave no error. The key fields in `Local State` were byte-identical in all of them. Lesson: when a copy
+  "arrives and does not work", ask the program itself why (its log, its internal pages) before copying differently, and test
+  the same data in a second place to learn whether it is the data or the launch.
+- So a browser is not copied: it runs in place (architecture.md, "In place"). Windows DPAPI was checked first and is not the
+  cause (a blob protected by the person's own process opens from a process started through WSL: same user, same session).
+- Things that look like the answer and are not: copying more (cookies, `Local State`), starting the browser differently (the
+  bridge and an ordinary start fail identically), WhatsApp's own device binding (real, but a separate thing: a login bound to one
+  device cannot be cloned, and the copy loaded WhatsApp from the person's open tabs and had it wiped).
+- Testing against the person's real, signed-in browser: only through the product's own path, and only after reading its
+  state without its content - the log's error lines, the format tags at the start of encrypted values (never a value), a
+  screenshot cropped to status lines. A Notepad started for a test reopens the person's own files from its saved session; use
+  a program with no state of its own (Character Map).
+- A test that stands bash in for the Windows helper is skipped on Windows, so a green run here says nothing about it. Run the
+  winhost package in the Go container (`docker run ... golang:1.27 go test ./internal/winhost/`) whenever it changes, and read
+  "SKIP" as "not run".
+
+## A browser run out of sight on a private desktop took the person's own Chrome from them (found live 2026-11-13)
+
+- The symptom: "i cant open chrome from my device". The first in-place design started the person's real Chrome profile on the helper's private
+  desktop. Chrome is one process per profile folder, and a second launch is handed to the running process - which was on the other
+  desktop, so every click on Chrome opened a window nobody could see, and the hidden Chrome stayed for 9 hours because a VM viewer was
+  still open. A thing that must run in the person's profile has to run in the person's own Chrome process: one window of it, not a second
+  Chrome (architecture.md, "In place").
+- Hiding that window: measured with a throwaway profile and a page that repaints every frame. Off the screen (-32000): Chrome stops
+  painting. On the screen at an alpha of 1/255, click-through, tool window, topmost: keeps painting, covered or not. A state
+  change takes Chrome a few seconds to notice, so read a scenario only after waiting for it (an early read gave a false "dead").
+- Starting Chrome minimised (to keep a cold start off the person's screen) makes it open every later window minimised: the person's
+  next click on Chrome opened a minimised window. One launch, `--new-window about:blank`, whether it is running or not.
+- `--no-startup-window` does not keep Chrome alive without background mode: the process is gone seconds later.
+- Anything done to another process's window (`SetWindowLong`, `ShowWindow`) is a message it must answer. The person's real profile
+  after a cold start had a UI thread busy for over a minute: the window sat on their screen, unveiled, and the helper waited on it.
+  A non-blocking move (`SWP_ASYNCWINDOWPOS`) takes it out of sight at once; the rest runs on a worker, and nothing waits unbounded.
+- A cold window's title is not yet what it was asked for: with the person's profile it showed "New Tab" for a moment, and a window
+  judged on its first title was given back on sight and never looked at again (the whole start timed out with the window right
+  there). Judge a window that may still be changing by what it still says after a while, not by the first read.
+- Chrome, asked for a window in a running copy, prints "Opening in existing browser session." on the standard output it was given:
+  the helper's, which is the line protocol with the control plane. Start it through the shell (`UseShellExecute = true`), which hands a new
+  process none of the caller's handles.
+- A modifier key in a window on the person's own desktop needs that window's input queue, which their own windows of the same browser
+  type into: it is joined for ~40 ms, only while they hold no key, and the call fails loudly when it cannot be - never "OK unmodified",
+  which turns Ctrl+A into an "a". Verified through the VM with a page that records each keydown's modifiers (`k66C--`, `k66CS-`,
+  `k66--A`).
+- Test hygiene that cost time: close a test's windows by id, never "every window titled about:blank" - that closed the VM's own window
+  once; a helper that is not stopped leaves the person's Chrome running (and the next test warm instead of cold); a viewer page
+  holds a token the control plane forgets on a redeploy, so relaunch it instead of reloading; the launcher reuses an open viewer
+  window and shows its old error; a PowerShell function named `Kill` is shadowed by the `kill` alias.
+- Popups the VM's page opens (found 2026-11-13): another top-level window of the person's own Chrome, unowned, so it was on their
+  screen and never in the VM. Only a window that appeared right after something was sent to the VM's window, while the person touched no
+  key or mouse button, is adopted (veiled, drawn with the main window, closed with it); a stamp taken after the input is handled
+  is too late, so `Serve` takes it before. A test through `Native` directly never says "an input was sent": call `NoteInput()`.
+- A browser's keyboard focus is one for all its windows. `GetGUIThreadInfo` reported a window of the person's when theirs was the one
+  in use, and the VM's keys were sent there; `KeyTarget` now takes a focus only if it `Belongs`, and the last click otherwise.
+- Two helpers (two profiles) starting together: a mark of `1` let each take the other's window. The mark is the helper's process id, a window is
+  taken over only when that process is gone, and the search for a new window is done one helper at a time (named mutex).
+- Seen once, not explained: the first helper after a control-plane redeploy ignored every click and key for ten minutes while the
+  process was alive and the window stood there; killing the helper and opening the viewer again gave a helper that worked, and took the
+  old window over. If a viewer ever freezes with its helper alive, end the helper (it is the app session's) before looking for a cause
+  elsewhere.
+- Measuring helpers: a PowerShell query whose command line says "bridge.ps1" matches itself, and looks like a helper restarting every
+  few seconds. Filter on the helper's own arguments (`-DesktopName decurix_helper`), and the query's process still shows - read start times.
+- A VM given the "wrong" Chrome (found 2026-11-13): the app list knew only shortcut files, and the profile the person worked in had none;
+  the VM got the profile whose Google sign-in had lapsed (its own window on the person's screen showed "Verify that it's you" too) and
+  YouTube was signed out. Read the browser's `Local State` profile list: one app per profile, named for its account. Before blaming the
+  window, ask UI Automation for each window's profile button (`AvatarToolbarButton`): it names the profile.
+- A borrowed window types only while the browser holds it active, and a click on it while the person is in that browser made it their
+  foreground (their keys went into the invisible window). Every earlier "typing works" had the invisible window in front without anyone
+  noticing. Lend the keyboard (tell the window it is active), hold the person's keys with a low-level hook while the browser has taken the
+  foreground, and give it back when the VM is quiet or the person acts - never on a fixed delay after the keys.
+- Testing focus: a "person's window" made by the test's own thread that is asleep cannot be given the foreground (SetForegroundWindow says
+  yes and something else ends up in front); and a background thread can join another's input only after it has a message queue
+  (`PeekMessage` first). UI Automation's places are as of the browser's last layout: a window just moved back from off the screen reported
+  its address bar at -31794,-31936 - use places relative to the window from the same answer.
+- A pipe's exit code is its last program's: soul ran `bash -c` with no `pipefail`, so `failing_check | tail -5` exited 0
+  and the terminal skill marked the step `Verified` without seeing the check pass, and the operator accepted a bare DONE
+  after it (found reading the code against hermes-agent, 2026-11-12). Now bash writes `PIPESTATUS` through a `BASH_ENV`
+  EXIT trap (`hostshell.TrackPipeStatus`) and the hidden failure is the result. Two traps on the way: `eval "$line"`
+  followed by `PIPESTATUS` reports only eval's own status, and text appended to the line is swallowed by an unclosed
+  here-document. Lesson: an exit code is evidence only for the program the shell reports it for.
+- A schedule's occurrence was sent twice after a crash between the send and MarkRun (the delivery record settled the send,
+  the schedule never heard), and a run whose desktop could not start was consumed - a monthly request lost until next month
+  (found reading the code against hermes-agent's cron, 2026-11-15). Each occurrence now has a ledger row written before the
+  send and settled in the same transaction as the advance; a crash-left row is settled from the task records, and a run that
+  never reached the desktop is retried 5/15/30 minutes later. Lesson: "advance even on failure" and "retry" are both wrong
+  alone; the occurrence needs its own record.
+- The schema-step guard (`migrations_test.go`) reads the literal `[]string` a `sqlitedb.Migrate` call names. A slice built with
+  `append(schema, more...)` hides its steps from it ("recorded but its Migrate call is gone"). Add new steps to the literal.
+- Seven agents edited one tree through Git Bash heredocs and three files came out broken: a regex lost a backslash and panicked
+  at package init (no test in the package could run), a Python `"\n"` became a raw newline (SyntaxError in every importer).
+  Write Go and Python with the Edit/Write tools; after parallel edits, build and import every touched package before
+  reading any test result.
+- An A/B arm the worker can tell apart is biased even by an index: eval desktops were named `<run>-a1`/`-a2`, visible in the
+  hostname, `DESKTOP_ID` and the mock host. Every arm now runs on one id (`<run>-w`), one after another.
+- Locking a skill must not drop its run verdicts: a locked skill that kept failing would have stayed trusted. A run's write to a
+  locked artefact keeps only how the run went.
+- An FTS5 external-content index holds copies of record text; a secret purge must rewrite it through its update trigger, not
+  only the source tables.
+- Element refs kept by path alone let a control that had gone ("[2]" of two alike) or a renumbered row hand its ref to another
+  control. A ref now holds only for the same control (same node, or same path, role, name and count of alike).
+- A fact a provider teaches at run time (a refused field, an image's price) must be keyed by provider, model and endpoint; one
+  process-wide flag outlived a change of brain.
+- `docker compose up --build` from a checkout (Linux, Mac, CLAUDE.md's "just the control plane") failed at `go generate .`
+  since CODE_MAP.md became generated (2026-11-07): the generator runs `git ls-files`, and .git is not in the build context
+  (found live 2026-11-15). The control-plane image runs only the packer (`go run embed_gen.go`); the apps were never hit,
+  because they compile on the host. Lesson: a generator added to `go generate .` runs wherever that line runs.
+- Every eval oracle step that `curl`s the case's mock failed with "Could not resolve host: practice-mock" since each run's
+  mock got its own name (2026-11-09): MOCK_ROUTE still named the bare alias. Found 2026-11-15 by an oracle calibration
+  that passed 3 of 6; the oracle now gets the run's mock name. Lesson: calibrate (oracle arm) after any change to how a
+  case's environment is named, before reading any model arm.
+- `normalize_role` is not idempotent: a page's static text is kept as "text", and "text" normalised again is AT-SPI's
+  editable field, "textbox". Comparing two observed roles through it re-bound a gone textbox's ref to the label beside it,
+  and `gui type` sent the keys to the focused button (found live 2026-11-15). Compare observed roles as stored; a page's
+  static text is never typed into (selecting.NOT_A_FIELD).
+- "Run exactly this shell command once and tell me whether it succeeded: ls x | tail -1" had soul's terminal skill take
+  "exactly this shell command once" as the command (found live 2026-11-15; bash said "command not found"). A command
+  named after a colon, behind a "run ... command|script" phrase, is what follows the colon.
+- A post-task model call with a small budget gets nothing from a reasoning brain: the review pass asked for 1,200 tokens
+  and Kimi-K2.6 spent them thinking (found live 2026-11-15). Every call that parses an answer repeats llm_client's rule:
+  cut off at the limit is no answer - once more, with room.
+- A WSL distro other than the app's own (Ubuntu here) reboots when no `wsl.exe` holds it: the control plane was restarted
+  mid-eval and a practice desktop "could not be created" (2026-11-15). Hold one `wsl -d <distro> -- sleep infinity` open
+  for a live session; its containers with a restart policy come back on every boot (a crash-looping one with them).
+- bench/security/boundary.sh writes the gate key with `tar ... etc | docker cp - container:/`, and the tar's `etc` entry
+  carries the uid of whoever runs it: run as a normal user it made the container's /etc that user's ("FAIL /etc"). Run it
+  as root, as its docs say.
+- A report the final gate writes itself must go out `gated=True` (or `checked=True`): `write_final_reply` sends any
+  other through the gate again. The "NOT checked: N record(s) ... not read back" report (final_gate, 788187d0) had
+  neither, so it was judged done again, landed in the same branch, and was written again - 63 judge calls until the
+  eval's 15 minutes ran out, with the record correctly saved (found live 2026-11-15, core-v2). A report meant to be
+  checked again (a re-check after a person's answer) is capped by its own counter.
+- Two texts compared after each was cut must be cut and trimmed by one function: `records.readback` keeps a save's
+  change normalized and cut at 300 characters; `saved_unread` normalized it again, which drops a trailing space the
+  cut left, while the event's side kept it - so a record declared and read back whole was called "not read back"
+  (found live 2026-11-15; `records._save_key`).
+- A failed step's retry must not move an operator step to a narrower skill. The failure-reasoning model wrote the retry
+  as a shell line that read a page by its URL; `atomizer.Classify` called that web (the URL), and the whole command line
+  was sent to DuckDuckGo and Bing (found live 2026-11-15, core-v2, ticket-filter-then-edit). The operator has the shell,
+  the screen and the web; `scheduler.retryKind` keeps its retry the operator's.
+- Points an independent review left open are no checked done, and they must reach the judge. soul's operator carries
+  them at the END of its report ("Still open after an independent review ..."); the judge's prompt cut the report at
+  4000 characters, so a long GSTR-1 report lost them, and the judge said done on a return that was saved, never filed,
+  with a receiver never validated (found live 2026-11-15, office-gstr1-books og-1, a false done). `verify.claim_for_judge`
+  keeps the block when it cuts; `final_gate` sends a judged done that carries open points out NOT checked, gated.

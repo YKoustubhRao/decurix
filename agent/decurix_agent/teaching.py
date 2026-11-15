@@ -151,7 +151,7 @@ def _ask(skill, preface="", question=None):
     question = question or learning.next_question(skill)
     state.paused_skill = {"mode": "learn", "skill": skill, "question": question}
 
-    skills.save(skill)
+    skills.save(skill, actor="person")
     ask_for_query(f"{preface} {question['text']}".strip(), kind="query", engine=LEARN_ENGINE)
 
 
@@ -166,7 +166,7 @@ def _learn_reply(paused, reply):
     offered = question["kind"] in ("study", "goal") and re.search(
         r"\b(stop|cancel|abort|quit)\b", question.get("text") or "", re.I)
     if ABANDON_RE.match(reply or "") and len((reply or "").split()) <= 2 and not offered:
-        skills.save(skill)
+        skills.save(skill, actor="person")
         messaging.write_stopped(
             f"Stopped. What you have told me about \"{skill['title']}\" is kept - send `/learn {skill['sources'][0]}` "
             "to carry on where we left off.", engine=LEARN_ENGINE, send=write_final_reply)
@@ -208,20 +208,20 @@ def _learn_reply(paused, reply):
     decision = result["decision"]
 
     if decision == "save":
-        skills.save(skill)
+        skills.save(skill, actor="person")
         if skill["name"] != drafted_as:
-            skills.delete(drafted_as)
+            skills.delete(drafted_as, actor="person")
         # The skill is already durable and ready to run. Sending its optional
         # summary to the control plane must never leave the teaching UI in
         # "Processing" behind a slow or unreachable memory endpoint.
         _remember_async(skill)
         write_final_reply(_learned_text(skill), kind="final", engine=LEARN_ENGINE)
     elif decision == "discard":
-        skills.delete(skill["name"])
+        skills.delete(skill["name"], actor="person")
         write_final_reply(f"Threw away what I had learned about \"{skill['title']}\". The recording is untouched.",
                           kind="final", engine=LEARN_ENGINE)
     elif decision == "hold":
-        skills.save(skill)
+        skills.save(skill, actor="person")
         write_final_reply(f"I could not tell whether to save \"{skill['title']}\", so I left it unfinished. "
                           f"Send `/learn {skill['sources'][0]}` to answer that last question.",
                           kind="final", engine=LEARN_ENGINE)

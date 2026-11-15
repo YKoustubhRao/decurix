@@ -6,7 +6,7 @@ import sys
 import time
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, broker, cdp, core, door, privacy, replay, shown, skill_engine, skills
+from decurix_agent.computer import approval, broker, cdp, control, core, door, outcome, privacy, replay, shown, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -53,6 +53,12 @@ SCREEN_COMMANDS = {
     "observe", "click", "double-click", "right-click", "type", "key", "scroll",
     "select", "open", "upload", "drag", "verify", "replay", "do", "front",
 }
+
+
+# The commands that run in the worker's turn of the screen (control.py): every one that looks at or acts on it.
+TURN_COMMANDS = SCREEN_COMMANDS | {"read", "ask"}
+# The epoch the running command was admitted under (main), for its screenshot (save_screenshot).
+_turn = []
 
 
 # A page with fewer elements than this is taken to be still drawing itself, and looked at again.
@@ -220,6 +226,13 @@ def save_screenshot(argv):
 
     path = os.environ.get("DECURIX_GUI_SCREENSHOT", "").strip()
     if not path or not argv or argv[0] not in SCREEN_COMMANDS:
+        return
+    # Never a picture of a person's turn: not while they hold the screen, nor when they took it during the command.
+    try:
+        ours = control.still(_turn[0]) if _turn else control.state()["holder"] == control.WORKER
+    except Exception:  # noqa: BLE001 - not known to be the worker's turn: no picture
+        ours = False
+    if not ours:
         return
 
     try:
@@ -662,7 +675,13 @@ def build_parser():
     listed.add_argument("words", nargs="*")
 
     recalled = sub.add_parser("recall", add_help=False)
-    recalled.add_argument("words", nargs="+")
+    recalled.add_argument("words", nargs="*")
+    # --runs searches this worker's own past runs (run_search.py) instead of its memory.
+    recalled.add_argument("--runs", action="store_true")
+    recalled.add_argument("--task", default="")
+    recalled.add_argument("--around", type=int, default=None)
+    recalled.add_argument("--window", type=int, default=None)
+    recalled.add_argument("--since", default="")
 
     described = sub.add_parser("skill", add_help=False)
     described.add_argument("name")
@@ -778,6 +797,19 @@ def _print_act(result):
         print(el.render(observation, budget=text_budget() - 500, only_group=observation["groups"][0]["title"]))
 
 
+def _looked():
+    """
+    An engine's look at the screen (observe, read, verify) that is about to be shown to it: only while the turn it was
+    admitted in still holds (control.py: a look a person's turn overlapped is discarded), and then it answers every
+    action the engine was told to look again after (outcome.looked), and the window in front is where keys aimed at no
+    control go now (core._note_front).
+    """
+
+    control.admit()  # inside the command's turn: the same epoch, or ControlChanged / PersonHasControl
+    outcome.looked()
+    core._note_front()
+
+
 def read_text(args):
     """
     `gui read TARGET`: the whole text a field or document holds, line by line.
@@ -864,6 +896,7 @@ def run(argv):
 
     if command == "observe":
         observation, loading = settled_look(core.observe())
+        _looked()
         core.report_observation(observation)
         budget = text_budget() * 3 if args.window else text_budget()
         shown = el.render(observation, budget=budget, coords=args.coords, only_group=args.window)
@@ -890,7 +923,9 @@ def run(argv):
         return EXIT_OK
 
     if command == "read":
-        print(read_text(args))
+        text = read_text(args)
+        _looked()
+        print(text)
         return EXIT_OK
 
     if command == "open":
@@ -926,6 +961,9 @@ def run(argv):
         if found is None:
             raise ComputerError(f"no guide for {wanted!r}; gui guide lists them")
         print(app_skills.render([found]))
+        if found.get("learned"):
+            from decurix_agent import learned
+            learned.note_view("app_guide", found["name"])
         return EXIT_OK
 
     if command == "front":
@@ -934,6 +972,7 @@ def run(argv):
 
     if command == "verify":
         result = core.verify(expect_text=args.text, role=args.role, name=args.name)
+        _looked()
         print(result["text"])
         door.note_check(result["text"])
         return EXIT_VERIFY_FAILED if result["ok"] is False else EXIT_OK
@@ -1021,6 +1060,17 @@ def run(argv):
         return EXIT_OK
 
     if command == "recall":
+        if args.runs or args.task:
+            from decurix_agent import run_search
+
+            try:
+                print(run_search.main(" ".join(args.words), task=args.task, around=args.around, window=args.window,
+                                      since=args.since))
+            except run_search.SearchError as exc:
+                raise ComputerError(f"past runs could not be searched: {exc}") from None
+            return EXIT_OK
+        if not args.words:
+            raise ComputerError("give words to recall: gui recall WORDS (or gui recall --runs WORDS for past runs)")
         from decurix_agent import memory_context
 
         print(memory_context.search(" ".join(args.words)) or "Nothing in this worker's memory has those words.")
@@ -1039,6 +1089,8 @@ def run(argv):
 
         if command == "skill":
             print(skill_engine.render_text(skill, budget=text_budget()))
+            from decurix_agent import learned
+            learned.note_view("skill", skill["name"])  # (read out in full: counted, never costs the command)
             return EXIT_OK
 
         from decurix_agent import guidance
@@ -1057,7 +1109,7 @@ def run(argv):
             if words:
                 raise ComputerError(f"{command} takes a target or --see \"what to look for\", not both")
             # The pre-save checks stand however the control is found (core._commit_check).
-            result = core.act(command.replace("-", "_"), see=args.see,
+            result = core.act(command.replace("-", "_"), see=args.see, look_first=True,
                               check_form=_check_form(command, args))
             _print_act(result)
             return EXIT_NEEDS_APPROVAL if result["status"] == "needs_approval" else EXIT_OK
@@ -1072,7 +1124,8 @@ def run(argv):
             raise ComputerError(f"{command} what? Give a ref like e12 (run gui observe first).")
         door.refuse(command.replace("-", "_"), ref=target.get("ref"))
         # named: a press on a control that has a name is made by its ref, not by where it is (core.act).
-        result = core.act(command.replace("-", "_"), named=True, check_form=_check_form(command, args), **target)
+        result = core.act(command.replace("-", "_"), named=True, check_form=_check_form(command, args), look_first=True,
+                          **target)
 
     elif command == "type":
         words = _strip_descriptor(list(args.words))
@@ -1111,18 +1164,18 @@ def run(argv):
                 "the text in parts and press the key between them with gui key (a page break in a word processor "
                 "is gui key ctrl+Return).")
         door.refuse("type", ref=target.get("ref"), text=text)
-        result = core.act("type", text=text, append=args.append, replace_all=args.replace_all, keys_from_task=True,
+        result = core.act("type", text=text, append=args.append, replace_all=args.replace_all, keys_from_task=True, look_first=True,
                           check_form=True, **target)
 
     elif command == "key":
         target = _target(args.on, args) if args.on else {}
         door.refuse("key", ref=target.get("ref"), keys=args.keys)
-        result = core.act("key", keys=args.keys, keys_from_task=True, check_form=True, **target)
+        result = core.act("key", keys=args.keys, keys_from_task=True, check_form=True, look_first=True, **target)
 
     elif command == "scroll":
         words, direction, amount = scroll_words(args.words)
         target = _target(words[0] if words else None, args)
-        result = core.act("scroll", direction=direction, amount=amount, **target)
+        result = core.act("scroll", direction=direction, amount=amount, look_first=True, **target)
 
     elif command == "select":
         words = _strip_descriptor(list(args.words))
@@ -1135,7 +1188,7 @@ def run(argv):
         else:
             raise ComputerError('select needs a dropdown and an option: gui select e5 "High"')
         ids = [i.strip() for i in (getattr(args, "ids", None) or []) if i and i.strip()]
-        result = core.act("select", option=option, ids=ids, **target)
+        result = core.act("select", option=option, ids=ids, look_first=True, **target)
 
     elif command == "drag":
         words = list(args.words)
@@ -1145,7 +1198,7 @@ def run(argv):
         target = _target(" ".join(words) if words else None, args)
         if not target:
             raise ComputerError("drag what? gui drag e12 640,360, or gui drag 100,200 640,360")
-        result = core.act("drag", end=drop, **target)
+        result = core.act("drag", end=drop, look_first=True, **target)
 
     elif command == "upload":
         words = _strip_descriptor(list(args.words))
@@ -1155,7 +1208,7 @@ def run(argv):
             target, files = _target(None, args), words
         else:
             target, files = _target(words[0], args), words[1:]
-        result = core.act("upload", files=files, **target)
+        result = core.act("upload", files=files, look_first=True, **target)
 
     else:
         print(USAGE)
@@ -1253,6 +1306,10 @@ class _Kept:
         self.out, self.kept = out, []
 
     def write(self, text):
+        # What the worker is shown never holds a secret that passed through (privacy.withhold_registered): the screen's
+        # text and OCR, a page's (CDP) or an app's (AT-SPI) read, a recording or a skill shown.
+        if isinstance(text, str):
+            text = privacy.withhold_registered(text)
         self.kept.append(text)
         return self.out.write(text)
 
@@ -1264,9 +1321,17 @@ def main(argv=None):
     logging_utils.log_to_file(logging_utils.log_file("decurix-gui.log"))
     argv = sys.argv[1:] if argv is None else argv
     kept = sys.stdout = _Kept(sys.stdout)
+    epoch = None
+    _turn.clear()
 
     try:
-        code = run(argv)
+        # A command that looks at or acts on the screen runs in the worker's turn, and only then (control.py): refused
+        # while a person holds the screen, and nothing of it shown if they take it before it ends.
+        if argv and COMMAND_ALIASES.get(str(argv[0]).lower(), argv[0]) in TURN_COMMANDS:
+            epoch = control.admit()
+            _turn.append(epoch)
+        with control.scope(epoch):
+            code = run(argv)
     except ComputerError as exc:
         print(f"gui: {exc}{_moved_note(str(exc))}")
         code = EXIT_ERROR

@@ -173,6 +173,500 @@ public class Native {
         return Marshal.StringToHGlobalUni(string.Join("\0", vars) + "\0\0");
     }
 
+    // ---- Mirror mode. The app is not started here, and nothing here ever ends it: it is one the person already has open on
+    // their own desktop, and its window is shown and driven from the VM as it is - the same process, signed in as it is,
+    // with nothing copied. Everything below that would otherwise act on "the app on this desktop" is limited to that one
+    // window and the popups it owns, and Shutdown, which on a private desktop closes and terminates whatever is there, does
+    // nothing at all (it would be the person's own programs). Keyboard modifiers are not carried either (WithModifiers):
+    // that borrows the app's input queue, which here is the person's own keyboard.
+    static bool attached;
+    static string attachExe = "", attachTitle = "";
+    static IntPtr attachMain;
+    [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint tid);
+
+    // The name of the program a process runs, lower case and without .exe; "" when it cannot be read.
+    static string ImageBase(int pid) {
+        IntPtr proc = OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid);
+        if (proc == IntPtr.Zero) return "";
+        try {
+            var name = new StringBuilder(1024); int size = name.Capacity;
+            if (!QueryFullProcessImageName(proc, 0, name, ref size)) return "";
+            return System.IO.Path.GetFileNameWithoutExtension(name.ToString()).ToLowerInvariant();
+        } finally { CloseHandle(proc); }
+    }
+
+    // The window to mirror: the topmost visible, not minimised, unowned top-level window of the program, whose title holds
+    // the words asked for (any, when none were).
+    static IntPtr FindMain() {
+        IntPtr found = IntPtr.Zero;
+        EnumProc each = (h, l) => {
+            if (!IsWindowVisible(h) || IsIconic(h) || GetWindow(h, 4 /* GW_OWNER */) != IntPtr.Zero) return true;
+            int pid; GetWindowThreadProcessId(h, out pid);
+            if (ImageBase(pid) != attachExe) return true;
+            var title = new StringBuilder(512); GetWindowText(h, title, 512);
+            if (title.Length == 0) return true;
+            if (attachTitle.Length > 0 && title.ToString().IndexOf(attachTitle, StringComparison.OrdinalIgnoreCase) < 0) return true;
+            found = h;
+            return false;
+        };
+        EnumDesktopWindows(desktop, each, IntPtr.Zero);
+        return found;
+    }
+
+    // Whether a window is the mirrored one or a popup (a menu, a drop-down, a dialog) it owns. True for anything on a
+    // private desktop, where there is nothing else.
+    static bool Belongs(IntPtr h) {
+        if (!attached) return true;
+        if (IsPopup(h)) return true; // a window the VM's page opened (see WatchPopups)
+        if (attachMain == IntPtr.Zero || !IsWindow(attachMain)) {
+            if (borrowed) return false; // the window made for the VM is gone; every other one is the person's
+            attachMain = FindMain();
+        }
+        if (attachMain == IntPtr.Zero) return false;
+        if (h == attachMain) return true;
+        IntPtr owner = GetWindow(h, 4 /* GW_OWNER */);
+        for (int i = 0; i < 4 && owner != IntPtr.Zero; i++) {
+            if (owner == attachMain || IsPopup(owner)) return true;
+            owner = GetWindow(owner, 4);
+        }
+        return false;
+    }
+
+    // Mirrors the window of program exe (a bare name such as chrome) that the person has open on their own desktop.
+    public static string Attach(string exe, string title) {
+        if (exe == null || !System.Text.RegularExpressions.Regex.IsMatch(exe, @"^[A-Za-z0-9._-]{1,64}$")) return "ERR not a program name";
+        if (desktop != IntPtr.Zero || attached) return "ERR this helper already has an app";
+        attachExe = exe.ToLowerInvariant();
+        if (attachExe.EndsWith(".exe")) attachExe = attachExe.Substring(0, attachExe.Length - 4);
+        attachTitle = title == null ? "" : title.Trim();
+        desktop = GetThreadDesktop(GetCurrentThreadId()); // this helper's own: the person's
+        if (desktop == IntPtr.Zero) return "ERR no desktop";
+        attached = true;
+        attachMain = FindMain();
+        if (attachMain == IntPtr.Zero) {
+            attached = false; desktop = IntPtr.Zero;
+            return "ERR " + attachExe + " has no window open on this computer right now. Open it, and do not minimise it, then try again.";
+        }
+        return "OK pid=0"; // no process of ours: nothing for the control plane to end
+    }
+
+    // ---- A borrowed window. A browser the person uses is ONE process per profile folder (Chrome allows no other), on their own
+    // desktop, and cannot also run on a private desktop of ours: their own Chrome would then hand every window it opens to the
+    // process on the hidden desktop, out of their sight (found live 2026-11-13: "I can't open Chrome from my device"). So the VM
+    // is given one window of that very process: asked for the way any second launch asks (--new-window), found as the one window
+    // that was not there before, and made invisible to the person - fully transparent, click-through, off the taskbar and
+    // Alt-Tab, and above everything so nothing can cover it. That is also what keeps Chrome painting it: it stops drawing a
+    // window that is off the screen or covered by another (measured 2026-11-13: off the screen stops, an alpha of 1/255 on screen
+    // does not, covered or not). The window carries a window property, so a helper that is ended without ceremony leaves no
+    // window nobody can find: the next one takes it over. Every other window of the browser is the person's and is never touched
+    // (Belongs); the one window made here is closed when the session ends, and given back to the person if it will not close.
+    const string WindowMark = "DecurixWorkerWindow";
+    // Which profile a window is of (each VM app is its own profile: a shortcut's --profile-directory): a window left by a helper
+    // that died is taken over only by a helper of the same profile. A hash of the launch's arguments, never 0.
+    const string ProfileMark = "DecurixWorkerProfile";
+    static int profileKey;
+    static int ProfileKey(string args) {
+        uint h = 2166136261;
+        foreach (char c in (args ?? "").Trim().ToLowerInvariant()) { h ^= c; h *= 16777619; }
+        return (int)(h | 1);
+    }
+    static bool borrowed;
+    static readonly Dictionary<IntPtr, int> originalStyle = new Dictionary<IntPtr, int>();
+    [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h, int index, int value);
+    [DllImport("user32.dll")] static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool SetProp(IntPtr h, string name, IntPtr data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetProp(IntPtr h, string name);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr RemoveProp(IntPtr h, string name);
+
+    // The visible, unowned top-level windows of the program that are browser windows: not a bubble or a tooltip - unless anySize,
+    // one has to be a window's size, or minimised (a browser started minimised opens its next window minimised too).
+    static List<IntPtr> BrowserWindows(bool anySize) {
+        var list = new List<IntPtr>();
+        EnumProc each = (h, l) => {
+            if (!IsWindowVisible(h) || GetWindow(h, 4 /* GW_OWNER */) != IntPtr.Zero) return true;
+            var cls = new StringBuilder(80); GetClassName(h, cls, 80);
+            if (cls.ToString() != "Chrome_WidgetWin_1") return true;
+            if (!anySize) { RECT r; GetWindowRect(h, out r); if ((r.R - r.L < 300 || r.B - r.T < 200) && !IsIconic(h)) return true; }
+            int pid; GetWindowThreadProcessId(h, out pid);
+            if (ImageBase(pid) == attachExe) list.Add(h);
+            return true;
+        };
+        EnumDesktopWindows(desktop, each, IntPtr.Zero);
+        return list;
+    }
+
+    static string TitleOf(IntPtr h) { var t = new StringBuilder(256); GetWindowText(h, t, 256); return t.ToString(); }
+
+    // Whether the helper with this process id is still running. A mark is its process id: a window marked by one that has gone is the next
+    // helper's to take over, and one marked by one that has not is another VM's (another profile's) and is never touched.
+    static bool HelperAlive(int pid) {
+        try {
+            using (var q = System.Diagnostics.Process.GetProcessById(pid)) {
+                if (q.HasExited) return false;
+                using (var me = System.Diagnostics.Process.GetCurrentProcess()) return q.ProcessName.Equals(me.ProcessName, StringComparison.OrdinalIgnoreCase);
+            }
+        } catch { return false; }
+    }
+    static int MyPid() { using (var me = System.Diagnostics.Process.GetCurrentProcess()) return me.Id; }
+
+    // The window a helper of this profile that was ended without ceremony left behind, if there is one (another profile's is left for a
+    // helper of its own); and any popup a dead helper had adopted goes back to the person.
+    static IntPtr FindMarked() {
+        IntPtr found = IntPtr.Zero;
+        foreach (IntPtr h in BrowserWindows(true)) {
+            IntPtr main = GetProp(h, WindowMark);
+            if (found == IntPtr.Zero && main != IntPtr.Zero && !HelperAlive((int)main) && (int)GetProp(h, ProfileMark) == profileKey) found = h;
+            IntPtr pop = GetProp(h, PopupMark);
+            if (pop != IntPtr.Zero && !HelperAlive((int)pop)) UnveilAsync(h);
+        }
+        return found;
+    }
+
+    // ---- Popups. A page can open a window of its own (a sign-in popup is one): it is another top-level window of the same browser, on the
+    // person's own screen, and nothing in it says whose it is. It is the VM's when it appeared just after something was sent to the VM's
+    // window and the person had touched no key and no mouse button for a second before: then nobody else could have opened it. Such a
+    // window is veiled like the first one, shown with it and driven with it, and closed with it. When the person is working at the same
+    // moment it is not told apart and is left as it is - the person's own window, on their own screen, which is what it was before.
+    const string PopupMark = "DecurixWorkerPopup";
+    static readonly Dictionary<IntPtr, bool> popups = new Dictionary<IntPtr, bool>();
+    static int ourInputAt, personActiveAt;
+    static IntPtr lastPersonTop;            // the person's own last foreground window, whatever program it is
+    static System.Threading.Mutex borrowGate;
+    static bool IsPopup(IntPtr h) { lock (popups) return popups.ContainsKey(h); }
+    static List<IntPtr> LivePopups() {
+        var list = new List<IntPtr>();
+        lock (popups) {
+            foreach (IntPtr h in new List<IntPtr>(popups.Keys)) { if (IsWindow(h)) list.Add(h); else popups.Remove(h); }
+        }
+        return list;
+    }
+
+    static void WatchPopups() {
+        var known = new Dictionary<IntPtr, bool>();
+        var firstSeen = new Dictionary<IntPtr, int>();
+        var ours = new Dictionary<IntPtr, bool>();
+        foreach (IntPtr h in BrowserWindows(true)) known[h] = true;
+        IntPtr fore = IntPtr.Zero;
+        while (borrowed && !stopCapture) {
+            System.Threading.Thread.Sleep(20);
+            try {
+                for (int vk = 1; vk < 255; vk++) if ((GetAsyncKeyState(vk) & 0x8000) != 0) { personActiveAt = Environment.TickCount; break; }
+                IntPtr top = GetForegroundWindow();
+                var current = BrowserWindows(true);
+                // A helper that is looking for its window is not to see that window taken for a popup.
+                bool otherLooking = false;
+                try { if (borrowGate != null) { if (borrowGate.WaitOne(0)) borrowGate.ReleaseMutex(); else otherLooking = true; } } catch { }
+                foreach (IntPtr h in current) {
+                    if (known.ContainsKey(h) || h == attachMain) continue;
+                    int now = Environment.TickCount;
+                    if (otherLooking) { known[h] = true; continue; }
+                    if (!firstSeen.ContainsKey(h)) { firstSeen[h] = now; ours[h] = now - ourInputAt < 5000 && now - personActiveAt > 1000; }
+                    if (!ours[h]) { known[h] = true; continue; }
+                    RECT r; GetWindowRect(h, out r);
+                    bool windowish = (GetWindowLong(h, -16 /* GWL_STYLE */) & 0xC00000 /* WS_CAPTION */) == 0xC00000 && r.R - r.L >= 200 && r.B - r.T >= 120
+                                     && GetProp(h, WindowMark) == IntPtr.Zero;
+                    if (windowish) {
+                        known[h] = true;
+                        lock (popups) popups[h] = true;
+                        SetProp(h, PopupMark, (IntPtr)MyPid());
+                        VeilAsync(h);
+                        IntPtr back = fore, opened = h;
+                        new System.Threading.Thread(() => { try { GiveBackFocus(back, opened); } catch { } }) { IsBackground = true }.Start();
+                    } else if (now - firstSeen[h] > 1500) known[h] = true;
+                }
+                // The person's own foreground - never the VM's window, nor a window it is about to adopt (a popup is in front before it is judged).
+                bool pending = top != IntPtr.Zero && ours.ContainsKey(top) && ours[top] && !known.ContainsKey(top);
+                if (top != IntPtr.Zero && !Ours(top) && !pending) {
+                    int tp, mp; GetWindowThreadProcessId(top, out tp); GetWindowThreadProcessId(attachMain, out mp);
+                    if (tp == mp) personWindow = top;
+                    lastPersonTop = top;
+                } else if (Ours(top) && lendBack == IntPtr.Zero && !holdKeys && lastPersonTop != IntPtr.Zero && IsWindow(lastPersonTop)) {
+                    // The VM's window became the foreground with no keystroke lent (the browser activated it, or a popup it opened): the person's
+                    // keyboard is never left in a window they cannot see.
+                    GiveBackFocus(lastPersonTop, IntPtr.Zero);
+                }
+                if (toldActive != IntPtr.Zero && Environment.TickCount - lastKeysAt > 2000 && lendBack == IntPtr.Zero) TakeBackActivation();
+                if (lendBack != IntPtr.Zero && Monitor.TryEnter(lendLock)) {
+                    try {
+                        bool theirKey; lock (heldKeys) theirKey = heldKeys.Count > 0;
+                        if (!Ours(top) || theirKey || Environment.TickCount - lastKeysAt > 1500) EndLend();
+                    } finally { Monitor.Exit(lendLock); }
+                }
+                // What the person last had in front, other than the browser's own windows, is what the keyboard is given back to.
+                if (top != IntPtr.Zero && !known.ContainsKey(top) && !IsPopup(top) && top != attachMain) fore = top;
+                LivePopups();
+            } catch { }
+        }
+    }
+
+    // Makes a window invisible to the person while it stays on screen to the browser: layered at an alpha of 1/255, click-through,
+    // a tool window (no taskbar button, not in Alt-Tab), topmost, and restored if something minimised it. Cheap to repeat.
+    static void Veil(IntPtr h) {
+        if (h == IntPtr.Zero || !IsWindow(h)) return;
+        if (IsIconic(h)) ShowWindow(h, 4 /* SW_SHOWNOACTIVATE */); // a window of the person that is minimised is restored, without taking the keyboard
+        int ex = GetWindowLong(h, -20 /* GWL_EXSTYLE */);
+        // WS_EX_NOACTIVATE: a click the VM sends is not the browser's cue to take the person's foreground for it (measured 2026-11-13: with
+        // the person in that browser, a posted click made the invisible window the foreground one, and their keys went into it), nor does
+        // Windows give it the foreground when the person's own window closes. Its keyboard is lent to it instead (LendKeyboard).
+        int want = ex | 0x80000 /* WS_EX_LAYERED */ | 0x20 /* WS_EX_TRANSPARENT */ | 0x80 /* WS_EX_TOOLWINDOW */ | 0x08000000 /* WS_EX_NOACTIVATE */;
+        bool changed = want != ex;
+        if (changed) { lock (originalStyle) originalStyle[h] = ex; SetWindowLong(h, -20, want); }
+        SetLayeredWindowAttributes(h, 0, 1, 2 /* LWA_ALPHA */);
+        // The taskbar learns that a window became a tool window only when it is shown again.
+        if (changed) { ShowWindow(h, 0 /* SW_HIDE */); ShowWindow(h, 8 /* SW_SHOWNA */); }
+        SetWindowPos(h, (IntPtr)(-1) /* HWND_TOPMOST */, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 /* NOSIZE | NOMOVE | NOACTIVATE */);
+    }
+
+    // Gives a window back to the person as an ordinary one of theirs.
+    static void Unveil(IntPtr h) {
+        if (h == IntPtr.Zero || !IsWindow(h)) return;
+        RemoveProp(h, WindowMark); RemoveProp(h, ProfileMark); RemoveProp(h, PopupMark);
+        lock (popups) popups.Remove(h);
+        SetLayeredWindowAttributes(h, 0, 255, 2);
+        int was; // what the window had before it was veiled; a window taken over from a dead helper has lost that, and gets back the plain style
+        bool kept; lock (originalStyle) kept = originalStyle.TryGetValue(h, out was);
+        SetWindowLong(h, -20, kept ? was : GetWindowLong(h, -20) & ~(0x80000 | 0x20 | 0x80 | 0x08000000));
+        SetWindowPos(h, (IntPtr)(-2) /* HWND_NOTOPMOST */, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
+        ShowWindow(h, 0); ShowWindow(h, 8);
+    }
+
+    // Everything done to a window of another process (a style, a show state, a position) is a message sent to it and waits for its
+    // thread to answer, and a browser that has just started - with the person's own profile and extensions, on a busy computer - does
+    // not answer for a long time (found live 2026-11-13: a window sat visible and unveiled for over a minute while this thread
+    // waited on it). So that work is queued on a thread of its own per window, one after another, and nothing waits on it unbounded.
+    static readonly Dictionary<IntPtr, System.Threading.Thread> windowWork = new Dictionary<IntPtr, System.Threading.Thread>();
+    static readonly Dictionary<IntPtr, RECT> homeOf = new Dictionary<IntPtr, RECT>();
+    static void QueueWork(IntPtr h, Action work) {
+        lock (windowWork) {
+            System.Threading.Thread before; windowWork.TryGetValue(h, out before);
+            var th = new System.Threading.Thread(() => {
+                if (before != null) before.Join();
+                try { work(); } catch { }
+            }) { IsBackground = true };
+            windowWork[h] = th;
+            th.Start();
+        }
+    }
+    // Waits for the work queued for a window, for at most ms; whether it is all done.
+    static bool WorkDone(IntPtr h, int ms) {
+        System.Threading.Thread th;
+        lock (windowWork) { if (!windowWork.TryGetValue(h, out th)) return true; }
+        return th.Join(ms);
+    }
+
+    // Veils a window that has just appeared, and is not to be seen by the person for a moment longer than it takes. The first thing
+    // - a move off the screen, asked for without waiting (SWP_ASYNCWINDOWPOS) - takes it out of their sight at once, whatever its
+    // thread is doing. Off the screen a browser stops painting, so that is only until the work queued behind it, which waits for the
+    // browser as long as it must, makes the window invisible where it is and puts it back.
+    static void VeilAsync(IntPtr h) {
+        RECT home; GetWindowRect(h, out home);
+        bool minimised = IsIconic(h);
+        lock (windowWork) homeOf[h] = home;
+        if (!minimised) SetWindowPos(h, IntPtr.Zero, -32000, -32000, 0, 0, 0x0001 | 0x0004 | 0x0010 | 0x4000 /* NOSIZE | NOZORDER | NOACTIVATE | ASYNCWINDOWPOS */);
+        QueueWork(h, () => {
+            Veil(h);
+            if (!minimised) SetWindowPos(h, (IntPtr)(-1) /* HWND_TOPMOST */, home.L, home.T, 0, 0, 0x0001 | 0x0010);
+        });
+    }
+
+    // Gives a window of the person's back to them, where it was, once its browser can be told.
+    static void UnveilAsync(IntPtr h) {
+        RECT home; bool known; lock (windowWork) known = homeOf.TryGetValue(h, out home);
+        QueueWork(h, () => {
+            Unveil(h);
+            if (known) SetWindowPos(h, (IntPtr)(-2) /* HWND_NOTOPMOST */, home.L, home.T, 0, 0, 0x0001 | 0x0010);
+        });
+    }
+
+    // A window opened for the VM takes the keyboard from whatever the person was typing in; hands it back. Windows lets only the
+    // foreground thread do that, so this thread joins the input of the one that has it for the moment.
+    static void GiveBackFocus(IntPtr was, IntPtr ours) {
+        if (was == IntPtr.Zero || was == ours || !IsWindow(was)) return;
+        IntPtr now = GetForegroundWindow();
+        if (now == was) return;
+        // A thread joins another's input only if it has a message queue of its own, and a worker thread has none until it asks for one
+        // (measured 2026-11-13: from the watcher thread the foreground stayed on the VM's popup).
+        MSG none; PeekMessage(out none, IntPtr.Zero, 0, 0, 0 /* PM_NOREMOVE */);
+        int pid; uint holder = GetWindowThreadProcessId(now, out pid);
+        uint me = GetCurrentThreadId();
+        bool joined = holder != 0 && holder != me && AttachThreadInput(me, holder, true);
+        SetForegroundWindow(was);
+        if (joined) AttachThreadInput(me, holder, false);
+    }
+
+    // Started through the shell, which hands the new process none of this one's handles: this helper's standard input and output are
+    // the line protocol with Decurix, and Chrome, asked to open a window in a running copy, says so on whatever it was given.
+    static void Run(string target, string args, string workDir) {
+        var psi = new System.Diagnostics.ProcessStartInfo(target, args);
+        psi.UseShellExecute = true;
+        if (!string.IsNullOrEmpty(workDir)) psi.WorkingDirectory = workDir;
+        var p = System.Diagnostics.Process.Start(psi);
+        if (p != null) p.Dispose();
+    }
+
+    // Asks the browser for a window of its own - one launch, whether it is running (the request is handed to the running process) or
+    // not (it starts, and its first window is this one) - and finds it: the new window whose page says about:blank. Every new window is
+    // veiled at once, so that none shows to the person for longer than it takes to look, and is judged by its page: the one asked for
+    // is kept, and any other (one the person opened in the same moment, one a browser restores when it starts) is given back.
+    // Nothing is started minimised: a browser opens its later windows the way its last one was, and the person's own would open
+    // minimised too (found live 2026-11-13).
+    static IntPtr NewWindow(string target, string args, string workDir, IntPtr was) {
+        var before = new Dictionary<IntPtr, bool>();
+        foreach (IntPtr h in BrowserWindows(true)) before[h] = true;
+        Run(target, (args + " --new-window about:blank").Trim(), workDir);
+        var seen = new Dictionary<IntPtr, int>();
+        var rejected = new Dictionary<IntPtr, bool>();
+        IntPtr ours = IntPtr.Zero;
+        // The person's own browser, started cold with all its extensions on a busy computer, took over half a minute to show its first
+        // window (found live 2026-11-13: it gave up at 30 s, and the window came a moment later).
+        int end = Environment.TickCount + 120000;
+        while (Environment.TickCount < end && ours == IntPtr.Zero) {
+            foreach (IntPtr h in BrowserWindows(false)) {
+                if (before.ContainsKey(h) || rejected.ContainsKey(h) || seen.ContainsKey(h)) continue;
+                seen[h] = Environment.TickCount;
+                VeilAsync(h);
+                IntPtr newWin = h;
+                new System.Threading.Thread(() => { try { GiveBackFocus(was, newWin); } catch { } }) { IsBackground = true }.Start();
+            }
+            foreach (IntPtr h in new List<IntPtr>(seen.Keys)) {
+                if (!IsWindow(h)) { seen.Remove(h); continue; }
+                string title = TitleOf(h);
+                if (title.StartsWith("about:blank", StringComparison.OrdinalIgnoreCase)) { ours = h; break; }
+                // A window that has not got to its page yet says nothing, only the browser's name, or "New Tab" (found live 2026-11-13: the
+                // person's own profile shows that for a moment before about:blank, and the window was given back on sight, for good).
+                // One that goes on saying anything else is a page of the person's.
+                bool transient = title.Length == 0 || title.IndexOf(" - ", StringComparison.Ordinal) < 0 || title.StartsWith("New Tab", StringComparison.OrdinalIgnoreCase);
+                int age = Environment.TickCount - seen[h];
+                if ((!transient && age > 2500) || age > 15000) { rejected[h] = true; seen.Remove(h); UnveilAsync(h); }
+            }
+            if (ours == IntPtr.Zero) System.Threading.Thread.Sleep(4);
+        }
+        foreach (IntPtr h in seen.Keys) if (h != ours) UnveilAsync(h);
+        return ours;
+    }
+
+    // Keeps the window invisible: a browser, or the person, can change what was set (Win+D minimises every window).
+    static void KeepVeiled() {
+        while (borrowed && !stopCapture) {
+            System.Threading.Thread.Sleep(700);
+            try { Veil(attachMain); foreach (IntPtr h in LivePopups()) Veil(h); } catch { }
+        }
+    }
+
+    // Shows and drives one window of the browser the person uses (starting it, when it is not running), under their own profile and
+    // signed in as they are. exe is a bare program name such as chrome.
+    public static string Borrow(string exe, string target, string args, string workDir) {
+        if (exe == null || !System.Text.RegularExpressions.Regex.IsMatch(exe, @"^[A-Za-z0-9._-]{1,64}$")) return "ERR not a program name";
+        if (desktop != IntPtr.Zero || attached) return "ERR this helper already has an app";
+        attachExe = exe.ToLowerInvariant();
+        if (attachExe.EndsWith(".exe")) attachExe = attachExe.Substring(0, attachExe.Length - 4);
+        attachTitle = "";
+        desktop = GetThreadDesktop(GetCurrentThreadId()); // this helper's own: the person's
+        if (desktop == IntPtr.Zero) return "ERR no desktop";
+        attached = true; borrowed = true;
+        IntPtr was = GetForegroundWindow();
+        IntPtr mine = IntPtr.Zero; string why = ""; bool fresh = false;
+        ourInputAt = Environment.TickCount - 100000;
+        profileKey = ProfileKey(args);
+        // Two helpers (two profiles) starting together must not take each other's about:blank window for their own: one looks at a time.
+        if (borrowGate == null) borrowGate = new System.Threading.Mutex(false, "Local\\DecurixBorrowWindow");
+        bool gated = false;
+        try {
+            try { gated = borrowGate.WaitOne(130000); } catch (System.Threading.AbandonedMutexException) { gated = true; }
+            mine = FindMarked();
+            if (mine == IntPtr.Zero) { mine = NewWindow(target, args, workDir, was); fresh = mine != IntPtr.Zero; }
+        } catch (Exception e) { why = " (" + e.Message + ")"; }
+        finally { if (gated) { try { borrowGate.ReleaseMutex(); } catch { } } }
+        if (mine == IntPtr.Zero) {
+            attached = false; borrowed = false; desktop = IntPtr.Zero;
+            return "ERR The VM could not get a window of your " + attachExe + "." + why + " Try again in a moment.";
+        }
+        attachMain = mine;
+        SetProp(mine, WindowMark, (IntPtr)MyPid()); SetProp(mine, ProfileMark, (IntPtr)profileKey);
+        bool queued; lock (windowWork) queued = windowWork.ContainsKey(mine);
+        if (!queued) QueueWork(mine, () => Veil(mine)); // a window taken over from a helper that died is veiled where it is
+        WorkDone(mine, 60000); // the browser answers when it is ready; the VM is not told its window is there before that
+        var keep = new System.Threading.Thread(KeepVeiled) { IsBackground = true };
+        keep.Start();
+        if (fresh) { try { OpenStartPage(mine); } catch { } }
+        // A browser activates the window it opens: the person's foreground goes back to them (measured 2026-11-13: it stayed on the invisible
+        // window, and their keys went into it). From here on the watcher keeps it so.
+        if (was != IntPtr.Zero && !Ours(was) && IsWindow(was)) {
+            lastPersonTop = was;
+            if (Ours(GetForegroundWindow())) GiveBackFocus(was, IntPtr.Zero);
+        }
+        if (toldActive == IntPtr.Zero && !Ours(GetForegroundWindow())) PersonLastActive(mine); // the browser made its new window its last active one
+        new System.Threading.Thread(WatchPopups) { IsBackground = true }.Start();
+        return "OK pid=0"; // no process of ours: nothing for the control plane to end
+    }
+
+    // The window is asked for on a blank page because that is the one page that says the same in every language and is never one of
+    // the person's, so it is how the window is told apart (NewWindow). What the VM is given is the browser's own new tab page - what
+    // a window of the person's opens on, with their shortcuts and their account - reached the way a person reaches it: a click in the
+    // address bar (found by its class, the same in every language), the address, Enter, all sent to this window only. A chrome://
+    // address cannot be asked for on the command line (measured 2026-11-13: a window asked for with about:blank and chrome://newtab/
+    // had the one tab), and keys sent to a window that was never clicked go nowhere - a browser's window has no focused control until
+    // then (measured: Ctrl+L did nothing). Not getting there fails nothing: the page stays blank.
+    static void OpenStartPage(IntPtr h) {
+        var bar = System.Windows.Rect.Empty; var frame = System.Windows.Rect.Empty;
+        var ask = new System.Threading.Thread(() => {
+            try {
+                var root = System.Windows.Automation.AutomationElement.FromHandle(h);
+                var el = root.FindFirst(System.Windows.Automation.TreeScope.Descendants, new System.Windows.Automation.PropertyCondition(
+                    System.Windows.Automation.AutomationElement.ClassNameProperty, "OmniboxViewViews"));
+                if (el != null) { bar = el.Current.BoundingRectangle; frame = root.Current.BoundingRectangle; }
+            } catch { }
+        }) { IsBackground = true };
+        ask.Start();
+        if (!ask.Join(15000) || bar.IsEmpty || frame.IsEmpty || bar.Width < 20) return; // a browser busy starting answers late; never waited on unbounded
+        // Where the bar is in the window, applied to where the window is: a browser reports places as of when it last laid itself out, and the
+        // window was out of sight a moment ago (measured: the bar said -31794,-31936 with the window back at 25,25).
+        RECT win; GetWindowRect(h, out win);
+        var at = new POINT(); at.X = win.L + (int)(bar.X - frame.X + Math.Min(bar.Width / 2, 200)); at.Y = win.T + (int)(bar.Y - frame.Y + bar.Height / 2);
+        IntPtr lp = ClientLParam(h, at);
+        try { LendKeyboard(h); OpenStartPageKeys(h, lp); } finally { KeysDone(); }
+        for (int i = 0; i < 50 && TitleOf(h).StartsWith("about:blank", StringComparison.OrdinalIgnoreCase); i++) System.Threading.Thread.Sleep(100);
+    }
+    static void OpenStartPageKeys(IntPtr h, IntPtr lp) {
+        PostMessage(h, WM_MOUSEMOVE, IntPtr.Zero, lp);
+        PostMessage(h, WM_LBUTTONDOWN, (IntPtr)1, lp);
+        PostMessage(h, WM_LBUTTONUP, IntPtr.Zero, lp);
+        System.Threading.Thread.Sleep(250);
+        // What the address bar says is selected, so the address typed replaces it: a click selects it all only when the bar did not have the
+        // keyboard already, and a window whose keyboard is lent to it has (measured: "about:blank" and the address typed came out mixed).
+        WithModifiersShared(h, "c", () => {
+            PostMessage(h, WM_KEYDOWN, (IntPtr)0x41 /* A */, (IntPtr)1);
+            PostMessage(h, WM_KEYUP, (IntPtr)0x41, (IntPtr)unchecked((int)0xC0000001));
+            System.Threading.Thread.Sleep(Hold(150));
+        });
+        foreach (char c in "chrome://newtab/") PostMessage(h, WM_CHAR, (IntPtr)c, (IntPtr)1);
+        PostMessage(h, WM_KEYDOWN, (IntPtr)13, (IntPtr)1);
+        PostMessage(h, WM_CHAR, (IntPtr)13, (IntPtr)1);
+        PostMessage(h, WM_KEYUP, (IntPtr)13, (IntPtr)unchecked((int)0xC0000001));
+    }
+
+    // Ends the session's window: asked to close, the way a person would; given back to them, still open, if it will not (a
+    // page asking "leave this site?" is waiting on an answer nobody can see).
+    static void CloseBorrowed() {
+        lock (lendLock) { if (lendBack != IntPtr.Zero || holdKeys) EndLend(); }
+        borrowed = false;
+        // The popups the VM's page opened go first, asked to close the way a person would, and are given back to the person if one will not.
+        var ps = LivePopups();
+        foreach (IntPtr q in ps) { WorkDone(q, 5000); PostMessage(q, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero); }
+        for (int i = 0; i < 20; i++) { bool any = false; foreach (IntPtr q in ps) if (IsWindow(q)) any = true; if (!any) break; System.Threading.Thread.Sleep(100); }
+        foreach (IntPtr q in ps) if (IsWindow(q)) UnveilAsync(q);
+        IntPtr h = attachMain;
+        if (h == IntPtr.Zero || !IsWindow(h)) return;
+        WorkDone(h, 20000);
+        PostMessage(h, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero);
+        for (int i = 0; i < 30 && IsWindow(h); i++) System.Threading.Thread.Sleep(100);
+        if (IsWindow(h)) UnveilAsync(h);
+    }
+
     public static string Launch(string desktopName, string exe, string args, string workDir) {
         desktop = CreateDesktop(desktopName, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
         if (desktop == IntPtr.Zero) return "ERR CreateDesktop failed (" + Marshal.GetLastWin32Error() + ")";
@@ -321,6 +815,8 @@ public class Native {
         while ((line = stdin.ReadLine()) != null) {
             int cut = line.IndexOfAny(new[] { ' ', '\t' });
             string verb = cut < 0 ? line : line.Substring(0, cut), rest = cut < 0 ? "" : line.Substring(cut + 1);
+            // Stamped before the input is sent, not after: a window it opens must find it already said.
+            if (verb == "down" || verb == "up" || verb == "wheel" || verb == "type" || verb == "newline" || verb == "key" || verb == "copy" || verb == "choose" || verb == "press") ourInputAt = Environment.TickCount;
             try {
                 if (!Answer(verb, rest)) other(verb, rest);
             } catch (Exception e) {
@@ -350,11 +846,11 @@ public class Native {
         switch (verb) {
             case "move": case "down": case "up": Reply(Pointer(verb, rest, true)); return true;
             case "wheel": p = rest.Split(' '); Reply(Wheel(Int(p[0]), Int(p[1]), Int(p[2]))); return true;
-            case "type": foreach (char c in rest) TypeChar(c); Reply("OK"); return true;
-            case "newline": TypeNewline(); Reply("OK"); return true;
+            case "type": Keyboard(() => { foreach (char c in rest) TypeChar(c); return "OK"; }); return true;
+            case "newline": Keyboard(() => { TypeNewline(); return "OK"; }); return true;
             case "keyed": KeyedText = rest.Trim() == "1"; Reply("OK"); return true;
-            case "key": p = rest.Split(' '); Reply(Key(Int(p[0]), p.Length > 1 ? p[1] : "")); return true;
-            case "copy": Reply(Copy(Int(rest))); return true;
+            case "key": p = rest.Split(' '); Keyboard(() => Key(Int(p[0]), p.Length > 1 ? p[1] : "")); return true;
+            case "copy": Keyboard(() => Copy(Int(rest))); return true;
             case "viewers": SetViewers(rest.Trim().Length == 0 ? 0 : Int(rest)); Reply("OK"); return true;
             case "keyframe": KeyFrame(); Reply("OK"); return true;
             case "thumb": Thumb(Int(rest)); return true;
@@ -437,6 +933,8 @@ public class Native {
     public static void Shutdown() {
         stopCapture = true; wake.Set();
         if (capThread != null && capThread.IsAlive) capThread.Join(1000);
+        // The app is the person's own and stays exactly as it is, apart from the one window made for the VM, which is closed.
+        if (attached) { if (borrowed) CloseBorrowed(); return; }
         if (desktop != IntPtr.Zero) {
             foreach (var w in AppWindows()) PostMessage(w.H, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero);
             for (int i = 0; i < 25 && AppWindows().Count > 0; i++) System.Threading.Thread.Sleep(100);
@@ -454,6 +952,7 @@ public class Native {
 
     // "running", or the code the launched process exited with (0xC0000142 means it could not start on this desktop).
     public static string Status() {
+        if (attached) return attachMain != IntPtr.Zero && IsWindow(attachMain) ? "running" : "exited 0x0";
         uint code;
         if (launched == IntPtr.Zero || !GetExitCodeProcess(launched, out code)) return "unknown";
         return code == 259 ? "running" : "exited 0x" + code.ToString("X");
@@ -481,6 +980,7 @@ public class Native {
         if (DwmGetWindowAttribute(h, 14 /* DWMWA_CLOAKED */, out cloaked, 4) == 0 && cloaked != 0) return true;
         RECT r; GetWindowRect(h, out r);
         if (r.R - r.L < 8 || r.B - r.T < 8) return true;
+        if (attached && !Belongs(h)) return true; // mirror mode: the person's other windows are not the app's
         // What the window actually shows: Windows adds an invisible resize border that captures as black.
         RECT v; if (DwmGetWindowAttribute(h, 9 /* DWMWA_EXTENDED_FRAME_BOUNDS */, out v, Marshal.SizeOf(typeof(RECT))) != 0 || v.R <= v.L || v.B <= v.T) v = r;
         ((List<Win>)GCHandle.FromIntPtr(l).Target).Add(new Win { H = h, R = r, V = v, Sc = Scale(h) });
@@ -837,7 +1337,7 @@ public class Native {
     static readonly System.Collections.Concurrent.BlockingCollection<Action> uiaWork = new System.Collections.Concurrent.BlockingCollection<Action>();
     const int MaxNodes = 900;
 
-    public static void NoteInput() { Interlocked.Increment(ref inputSeq); }
+    public static void NoteInput() { Interlocked.Increment(ref inputSeq); ourInputAt = Environment.TickCount; }
 
     // "TREE <fresh 0|1> <base64 of the JSON>".
     public static string Tree() {
@@ -1502,6 +2002,7 @@ public class Native {
 
     // Window and drawing calls used above.
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
     [DllImport("user32.dll")] static extern uint GetClassLong(IntPtr h, int index);
@@ -1551,6 +2052,8 @@ public class Native {
     // Returns "OK", or "OK unmodified" if Windows would not let a thread join the app's queue.
     static string WithModifiers(IntPtr target, string mods, Action act) {
         if (string.IsNullOrEmpty(mods)) { act(); return "OK"; }
+        // A window on the person's own desktop: its input queue is theirs too (see WithModifiersShared).
+        if (attached) return WithModifiersShared(target, mods, act);
         string result = "OK";
         var th = new System.Threading.Thread(() => {
             int pid; uint appThread = GetWindowThreadProcessId(target, out pid);
@@ -1565,6 +2068,185 @@ public class Native {
                 SetKeyboardState(keys);
                 act();
                 SetKeyboardState(saved);
+            } finally { AttachThreadInput(me, appThread, false); }
+        });
+        th.Start(); th.Join();
+        return result;
+    }
+
+    // How long a keystroke's modifier state is held: as long as the app takes to read what was posted - on a private desktop, which
+    // nobody else uses, with room to spare; in the person's own browser, as short as it can be.
+    static int Hold(int ms) { return borrowed ? 40 : ms; }
+
+    // ---- The keyboard of a borrowed window. A browser types into a window only while it holds the browser's activation: keys posted to
+    // a window of it that is not active go nowhere (measured 2026-11-13 on a throwaway Chrome, another program in front: a click and
+    // "p1" left the address bar empty). The window is never made the person's foreground for that - it is told, and only it is told,
+    // that it is active (WM_NCACTIVATE, WM_ACTIVATE): with another program in front the foreground stays there and the text arrives
+    // ("a2"); WM_SETFOCUS alone, or with WM_NCACTIVATE, is not enough. When the person's own foreground is a window of that same
+    // browser, the browser answers that by taking the foreground for real (Windows lets the foreground program do so) - so it is lent:
+    // only once the person has paused (no key for 400 ms), and given back when the VM has sent nothing for 1.5 s or the person acts -
+    // a key of theirs is held by a keyboard hook, ends the lend at once and is played into their own window; a click of theirs takes
+    // the foreground itself. Not on a timer after the VM's keys: the browser reads them when it gets to them, and a key it reads after it
+    // is no longer active is lost (measured 2026-11-13: of an address, "chr" arrived; WaitForInputIdle did not wait). The told activation is taken
+    // back two seconds after the VM's last key, and the person's last window of the browser is made its last active one again, or a
+    // link the person opens from another program would open in the invisible window (the browser opens it in its last active one).
+    static IntPtr lendBack;             // the person's foreground while the VM's window holds it for a keystroke; Zero otherwise
+    static IntPtr toldActive;           // the window that was told it is active, the foreground left where it was; Zero when none
+    static int lastKeysAt;
+    static IntPtr personWindow;         // the person's own last foreground window of the browser (WatchPopups)
+    static volatile bool holdKeys;
+    static readonly List<KBDLLHOOKSTRUCT> heldKeys = new List<KBDLLHOOKSTRUCT>();
+
+    static IntPtr SendQuick(IntPtr h, uint msg, IntPtr w, IntPtr l) {
+        IntPtr r; SendMessageTimeout(h, msg, w, l, 0x2 /* SMTO_ABORTIFHUNG */, 1000, out r); return r;
+    }
+    static bool Ours(IntPtr h) { return h != IntPtr.Zero && (h == attachMain || IsPopup(h)); }
+
+    static readonly object lendLock = new object();
+
+    // Runs a keyboard command and replies; when the window is the person's own browser's, its keyboard is lent to it for the time it takes.
+    static void Keyboard(Func<string> act) {
+        if (!borrowed) { Reply(act()); return; }
+        IntPtr root = GetAncestor(KeyTarget(), 2 /* GA_ROOT */);
+        if (!Belongs(root)) root = attachMain;
+        string said;
+        lock (lendLock) { try { LendKeyboard(root); said = act(); } finally { KeysDone(); } }
+        Reply(said);
+    }
+
+    static void LendKeyboard(IntPtr root) {
+        lastKeysAt = Environment.TickCount;
+        if (root == IntPtr.Zero || !IsWindow(root)) return;
+        IntPtr fg = GetForegroundWindow();
+        if (fg == root || toldActive == root) return;
+        if (toldActive != IntPtr.Zero) TakeBackActivation();
+        int pid; GetWindowThreadProcessId(root, out pid);
+        int fpid = 0; if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fpid);
+        if (fpid == pid) {
+            // The browser will take the foreground: not while the person is typing, and their keys are held while it has it.
+            for (int waited = 0; waited < 3000 && (Environment.TickCount - personActiveAt < 400 || PersonHoldsAKey()); waited += 20) Thread.Sleep(20);
+            StartKeyHook();
+            holdKeys = true;
+        }
+        SendQuick(root, 0x0086 /* WM_NCACTIVATE */, (IntPtr)1, IntPtr.Zero);
+        SendQuick(root, 0x0006 /* WM_ACTIVATE */, (IntPtr)1 /* WA_ACTIVE */, IntPtr.Zero);
+        IntPtr now = GetForegroundWindow();
+        if (now != fg) lendBack = fg != IntPtr.Zero && !Ours(fg) ? fg : lastPersonTop; // taken for real: given back after the keys
+        else { holdKeys = false; toldActive = root; }
+    }
+
+    static void KeysDone() { lastKeysAt = Environment.TickCount; }
+
+    // Ends a lent foreground (WatchPopups, CloseBorrowed): back to the person's window if the VM's still has it, then their held keys.
+    static void EndLend() {
+        IntPtr back = lendBack; lendBack = IntPtr.Zero;
+        if (back != IntPtr.Zero && IsWindow(back) && Ours(GetForegroundWindow())) GiveBackFocus(back, IntPtr.Zero);
+        holdKeys = false;
+        ReplayHeldKeys();
+    }
+
+    // Takes back an activation the VM's window was told of, and makes the person's own last window of the browser its last active one.
+    static void TakeBackActivation() {
+        IntPtr h = toldActive; toldActive = IntPtr.Zero;
+        if (h == IntPtr.Zero || !IsWindow(h) || GetForegroundWindow() == h) return;
+        SendQuick(h, 0x0006, IntPtr.Zero /* WA_INACTIVE */, IntPtr.Zero);
+        SendQuick(h, 0x0086, IntPtr.Zero, IntPtr.Zero);
+        PersonLastActive(h);
+    }
+
+    // Makes the person's own last window of the browser (the browser of window h) the one it last activated, as it was before the VM's
+    // window was: a link opened from another program goes to the last active window (measured 2026-11-13: one opened after the VM's window
+    // was activated opened in it, out of the person's sight; after this, in theirs). Told, not shown: the foreground does not move.
+    static void PersonLastActive(IntPtr h) {
+        IntPtr mine = personWindow, fg = GetForegroundWindow();
+        // Not seen in front since this helper started: their topmost window of the browser is the one they used last.
+        if (mine == IntPtr.Zero || !IsWindow(mine)) {
+            mine = IntPtr.Zero;
+            int bp; GetWindowThreadProcessId(h, out bp);
+            foreach (IntPtr w in BrowserWindows(false)) { int wp; GetWindowThreadProcessId(w, out wp); if (wp == bp && !Ours(w)) { mine = w; break; } }
+        }
+        if (mine != IntPtr.Zero && IsWindow(mine) && mine != fg && !Ours(mine)) {
+            SendQuick(mine, 0x0006, (IntPtr)1, IntPtr.Zero);
+            if (GetForegroundWindow() == fg) SendQuick(mine, 0x0006, IntPtr.Zero, IntPtr.Zero);
+            else if (fg != IntPtr.Zero) GiveBackFocus(fg, IntPtr.Zero); // the browser took the foreground for it: back to where the person was
+        }
+    }
+
+    // The keys the person presses while their browser's foreground is lent: held, never passed to the VM's window, and played into theirs
+    // once it is given back. Only real keys are held (a key this or any program sends is marked injected).
+    [StructLayout(LayoutKind.Sequential)] public struct KBDLLHOOKSTRUCT { public uint vkCode, scanCode, flags, time; public IntPtr extra; }
+    [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr extra; }
+    [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT { public int dx, dy; public uint data, dwFlags, time; public IntPtr extra; }
+    [StructLayout(LayoutKind.Explicit)] struct INPUTUNION { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+    [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public INPUTUNION u; }
+    [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public POINT pt; }
+    delegate IntPtr LowLevelProc(int code, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, LowLevelProc proc, IntPtr mod, uint thread);
+    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int code, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern int GetMessage(out MSG m, IntPtr h, uint min, uint max);
+    [DllImport("user32.dll")] static extern bool PeekMessage(out MSG m, IntPtr h, uint min, uint max, uint remove);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+    [DllImport("user32.dll")] static extern uint SendInput(uint n, INPUT[] inputs, int size);
+    static LowLevelProc keyHookProc; // kept alive for as long as the hook is
+    static Thread keyHookThread;
+    static void StartKeyHook() {
+        if (keyHookThread != null) return;
+        var ready = new ManualResetEvent(false);
+        keyHookThread = new Thread(() => {
+            keyHookProc = (code, w, l) => {
+                if (code >= 0 && holdKeys) {
+                    var k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(l, typeof(KBDLLHOOKSTRUCT));
+                    if ((k.flags & 0x10 /* LLKHF_INJECTED */) == 0) { lock (heldKeys) heldKeys.Add(k); return (IntPtr)1; }
+                }
+                return CallNextHookEx(IntPtr.Zero, code, w, l);
+            };
+            SetWindowsHookEx(13 /* WH_KEYBOARD_LL */, keyHookProc, GetModuleHandle(null), 0);
+            ready.Set();
+            MSG m; while (GetMessage(out m, IntPtr.Zero, 0, 0) > 0) { }
+        }) { IsBackground = true };
+        keyHookThread.Start();
+        ready.WaitOne(2000);
+    }
+    static void ReplayHeldKeys() {
+        List<KBDLLHOOKSTRUCT> keys; lock (heldKeys) { keys = new List<KBDLLHOOKSTRUCT>(heldKeys); heldKeys.Clear(); }
+        if (keys.Count == 0) return;
+        var inputs = new INPUT[keys.Count];
+        for (int i = 0; i < keys.Count; i++) {
+            inputs[i].type = 1; // INPUT_KEYBOARD
+            inputs[i].u.ki.wVk = (ushort)keys[i].vkCode;
+            inputs[i].u.ki.wScan = (ushort)keys[i].scanCode;
+            inputs[i].u.ki.dwFlags = ((keys[i].flags & 0x80) != 0 ? 2u /* KEYUP */ : 0u) | ((keys[i].flags & 0x1) != 0 ? 1u /* EXTENDEDKEY */ : 0u);
+        }
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+    // Whether the person is holding a key of their own keyboard down (the mouse buttons, 1 to 6, are not keys).
+    static bool PersonHoldsAKey() {
+        for (int vk = 8; vk < 255; vk++) if ((GetAsyncKeyState(vk) & 0x8000) != 0) return true;
+        return false;
+    }
+
+    // The modifiers of a keystroke for a window of the person's own browser: this thread joins the window's input queue, sets that
+    // queue's key state with the modifiers down for as long as the keystroke takes to be read, and puts it back. That queue is
+    // also the one the person's own windows of that browser type into, so this waits (a few seconds at most) while they are holding
+    // a key themselves, and holds the state for as short a time as it can (Hold). When the queue cannot be joined it says so: a
+    // keystroke carried without its modifiers is a different one - Ctrl+A would be an "a" typed into the page.
+    static string WithModifiersShared(IntPtr target, string mods, Action act) {
+        string result = "OK";
+        var th = new System.Threading.Thread(() => {
+            int pid; uint appThread = GetWindowThreadProcessId(target, out pid);
+            uint me = GetCurrentThreadId();
+            for (int waited = 0; PersonHoldsAKey() && waited < 3000; waited += 20) System.Threading.Thread.Sleep(20);
+            if (appThread == 0 || !AttachThreadInput(me, appThread, true)) { result = "ERR the modifier keys could not be carried to the window"; return; }
+            try {
+                var saved = new byte[256]; GetKeyboardState(saved);
+                var keys = (byte[])saved.Clone();
+                if (mods.Contains("c")) { keys[0x11] |= 0x80; keys[0xA2] |= 0x80; }
+                if (mods.Contains("s")) { keys[0x10] |= 0x80; keys[0xA0] |= 0x80; }
+                if (mods.Contains("a")) { keys[0x12] |= 0x80; keys[0xA4] |= 0x80; }
+                SetKeyboardState(keys);
+                try { act(); } finally { SetKeyboardState(saved); }
             } finally { AttachThreadInput(me, appThread, false); }
         });
         th.Start(); th.Join();
@@ -1615,7 +2297,7 @@ public class Native {
                     break;
                 case "up": PostMessage(target, right ? WM_RBUTTONUP : WM_LBUTTONUP, (IntPtr)flags, lp); break;
             }
-            if (mods.Length > 0) System.Threading.Thread.Sleep(80); // keep the modifiers set until the app has read them
+            if (mods.Length > 0) System.Threading.Thread.Sleep(Hold(80)); // keep the modifiers set until the app has read them
         };
         string result = WithModifiers(target, mods, act);
         if (kind == "down") { captured = target; lastTarget = target; }
@@ -1657,9 +2339,12 @@ public class Native {
             }
         });
         ask.Start(); ask.Join(1000);
+        // A browser has one input queue for all its windows, so the focus it reports can be in a window of the person's: keys are
+        // never sent there.
+        if (attached && focus != IntPtr.Zero && !Belongs(GetAncestor(focus, 2 /* GA_ROOT */))) focus = IntPtr.Zero;
         if (focus != IntPtr.Zero) return focus;
         // What was clicked last, only while it is still there: the last click may have been in an app since closed.
-        if (lastTarget != IntPtr.Zero && IsWindow(lastTarget)) return lastTarget;
+        if (lastTarget != IntPtr.Zero && IsWindow(lastTarget) && (!attached || Belongs(GetAncestor(lastTarget, 2)))) return lastTarget;
         return ws.Count > 0 ? ws[0].H : IntPtr.Zero;
     }
 
@@ -1800,7 +2485,7 @@ public class Native {
             PostMessage(t, mods.Contains("a") ? 0x104u /* WM_SYSKEYDOWN */ : WM_KEYDOWN, (IntPtr)vk, (IntPtr)(mods.Contains("a") ? 0x20000001 : 1));
             if (asChar) PostMessage(t, WM_CHAR, (IntPtr)vk, (IntPtr)1);
             PostMessage(t, mods.Contains("a") ? 0x105u /* WM_SYSKEYUP */ : WM_KEYUP, (IntPtr)vk, (IntPtr)unchecked((int)(mods.Contains("a") ? 0xE0000001 : 0xC0000001)));
-            System.Threading.Thread.Sleep(150);
+            System.Threading.Thread.Sleep(Hold(150));
         });
     }
 }
@@ -2040,66 +2725,10 @@ function Clear-CrashMark([string]$dir) {
     }
 }
 
-# A browser on the private desktop needs its own user-data directory so it cannot hand the launch to the copy already
-# open on the person's visible desktop. On the first launch only, initialize that private directory from the person's
-# real profile. This keeps their chosen Chrome profile and signed-in account while preserving the private desktop's
-# independent lifetime afterward. robocopy tolerates files held open by a running browser; caches and crash data are
-# deliberately omitted, and a later launch never overwrites changes made in the private profile.
-function Get-BrowserProfileSource([string]$base) {
-    switch ($base) {
-        'chrome'   { return (Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data') }
-        'msedge'   { return (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data') }
-        'brave'    { return (Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data') }
-        'vivaldi'  { return (Join-Path $env:LOCALAPPDATA 'Vivaldi\User Data') }
-        'chromium' { return (Join-Path $env:LOCALAPPDATA 'Chromium\User Data') }
-        default    { return '' }
-    }
-}
-
-function Get-ActiveBrowserProfile([string]$dir) {
-    $lsPath = Join-Path $dir 'Local State'
-    if (-not (Test-Path -LiteralPath $lsPath)) { return '' }
-    try {
-        # FileShare.ReadWrite: the person's own browser is usually running and holds Local State open.
-        $fs = [System.IO.File]::Open($lsPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        try { $content = (New-Object System.IO.StreamReader($fs, [Text.Encoding]::UTF8)).ReadToEnd() } finally { $fs.Close() }
-        if (-not $content) { return '' }
-        $json = ConvertFrom-Json $content -ErrorAction SilentlyContinue
-        if (-not $json) { return '' }
-        # Check profile.info_cache for any profile with a signed-in email
-        if ($json.profile -and $json.profile.info_cache) {
-            foreach ($prop in $json.profile.info_cache.PSObject.Properties) {
-                $pData = $prop.Value
-                if ($pData -and $pData.user_name) {
-                    return $prop.Name
-                }
-            }
-        }
-        # Fall back to profile.last_used
-        if ($json.profile -and $json.profile.last_used) {
-            return $json.profile.last_used
-        }
-    } catch {}
-    return ''
-}
-
-# What is never brought over: caches the browser rebuilds on its own, and components it downloads again. Chrome's
-# Service Worker CacheStorage alone was 1.6 GB on the machine this was measured on, and with it the import took minutes.
-$ProfileSkipDirs = @(
-    'Cache', 'Code Cache', 'GPUCache', 'GrShaderCache', 'ShaderCache', 'DawnCache', 'DawnWebGPUCache', 'DawnGraphiteCache',
-    'GraphiteDawnCache', 'GPUPersistentCache', 'Media Cache', 'CacheStorage', 'ScriptCache', 'Crashpad', 'BrowserMetrics',
-    'DeferredBrowserMetrics', 'component_crx_cache', 'extensions_crx_cache', 'screen_ai', 'optimization_guide_model_store',
-    'OnDeviceHeadSuggestModel', 'WasmTtsEngine', 'Safe Browsing', 'Shared Dictionary', 'Download Service',
-    'segmentation_platform', 'Snapshots', 'SODA', 'SODALanguagePacks', 'hyphen-data'
-)
-$ProfileSkipFiles = @('Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock', '*.pma')
-
-# A private profile an older build imported from the person's own browser (it carries an import marker) still holds
-# their cookies, saved passwords and the key they are encrypted with, and launches kept using it after the import was
-# made opt-in (B-19). Without the opt-in such a profile is deleted once, before the browser starts, so it starts empty
-# like any other; the worker signs in on its own screen. With the opt-in it is left as it is.
+# A private profile an older build copied from the person's own browser (it carries an import marker) holds a copy of their
+# cookies and account data, which can never be opened there (see "In place" below) and only sits on the disk. It is deleted before
+# the browser starts.
 function Remove-ImportedHostProfile([string]$dir) {
-    if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -eq '1') { return }
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
     $marks = @(Get-ChildItem -LiteralPath $dir -Force -Filter '.decurix-host-profile-imported-*' -ErrorAction SilentlyContinue)
     if ($marks.Count -eq 0) { return }
@@ -2110,75 +2739,51 @@ function Remove-ImportedHostProfile([string]$dir) {
     }
 }
 
-function Initialize-PrivateBrowserProfile([string]$base, [string]$dir, [string]$requestedProfile) {
-    # Not imported any more (review 2026-11-02): the copy carried the person's cookies, saved passwords and Local State
-    # (the key they are encrypted with) into a browser a worker drives, and anything that steers the worker - a web
-    # page, an email - could then act as the person on every site they are signed in to. The private profile starts
-    # empty; the worker signs in on its own screen, asking the person when it needs to. The import below is kept only
-    # for an explicit opt-in, DECURIX_IMPORT_HOST_BROWSER_PROFILE=1 in this computer's environment.
-    if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -ne '1') { return }
-    if (-not ($Browsers -contains $base)) { return }
-    $source = Get-BrowserProfileSource $base
-    if (-not $source -or -not (Test-Path -LiteralPath $source -PathType Container)) { return }
-    # The profile to bring over is the one the launch will actually open. A profile shortcut ("Koustubh - Chrome") carries
-    # --profile-directory, and that profile - not whichever one is auto-detected as active - is where the person's sign-ins
-    # live. An older build copied only the auto-detected profile, so the shortcut's own profile was launched empty and the
-    # person had to sign in again.
-    $active = $requestedProfile
-    if (-not $active -or -not (Test-Path -LiteralPath (Join-Path $source $active) -PathType Container)) {
-        $active = Get-ActiveBrowserProfile $source
-    }
-    # One marker per profile folder (rather than one for the whole directory): a worker whose browser opens a second profile
-    # imports that one too, and a worker left half-imported by the older build heals itself the next time its shortcut's own
-    # profile is launched. Once imported, later launches never overwrite work or sign-ins added inside the private profile.
-    $safe = if ($active) { $active -replace '[^A-Za-z0-9._-]', '_' } else { 'all' }
-    $marker = Join-Path $dir ".decurix-host-profile-imported-$safe"
-    if (Test-Path -LiteralPath $marker) { return }
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    $common = @('/XJ', '/R:0', '/W:0', '/MT:16', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/XD') + $ProfileSkipDirs + @('/XF') + $ProfileSkipFiles
-    # Only the profile the person uses and the top-level files that go with it (Local State holds the key its cookies and
-    # passwords are encrypted with): other profiles were most of the rest.
-    if ($active -and (Test-Path -LiteralPath (Join-Path $source $active) -PathType Container)) {
-        & robocopy $source $dir '/LEV:1' @common | Out-Null
-        $top = $LASTEXITCODE
-        & robocopy (Join-Path $source $active) (Join-Path $dir $active) '/E' @common | Out-Null
-        $code = [Math]::Max($top, $LASTEXITCODE)
-    } else {
-        & robocopy $source $dir '/E' @common | Out-Null
-        $code = $LASTEXITCODE
-    }
-    # If robocopy skipped locked critical files like Local State, copy them with FileShare.ReadWrite fallback:
-    $localStateDest = Join-Path $dir 'Local State'
-    $localStateSrc = Join-Path $source 'Local State'
-    if (-not (Test-Path -LiteralPath $localStateDest) -and (Test-Path -LiteralPath $localStateSrc)) {
-        try {
-            $inStream = [System.IO.File]::Open($localStateSrc, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-            $outStream = [System.IO.File]::Create($localStateDest)
-            $inStream.CopyTo($outStream)
-            $inStream.Close(); $outStream.Close()
-        } catch {}
-    }
-    # robocopy's exit code is bits: 8 means some files could not be copied - the ones the person's running browser holds
-    # locked (its cookie file, while it is open) - and only 16 is a failure of the copy itself. Treating 8 as failure left
-    # the marker unwritten, so every start imported again, over what the private profile had changed since.
-    if ($code -lt 16 -and (Test-Path -LiteralPath $dir)) { Set-Content -LiteralPath $marker -Value '1' -Encoding ASCII }
+# ---- In place. A browser's cookies and account tokens are encrypted ("v20", Chrome 127 and later) so that only Chrome running from
+# the profile's own folder can open them: a copy anywhere else cannot, however it is made and however it is started. Found
+# 2026-11-12 on Chrome 157: three Google accounts "Failed to decrypt token" on a copy made from the person's real files and started
+# the ordinary way, none on the real folder; 3,510 cookies and the 3 tokens are all v20. So a browser given to a VM is not given a
+# profile of its own: it is the person's own browser, from their own profile folder, signed in as they are, with their history, tabs,
+# extensions and site logins.
+#
+# And it is not run anywhere of ours either. Chrome allows one process per profile folder, on one desktop: run on this helper's
+# private desktop (the first version of this), it took the person's own Chrome from them - every launch of theirs was handed to
+# the process on the hidden desktop and opened out of their sight (found live 2026-11-13). So the VM is given ONE WINDOW of the
+# person's own running browser, made invisible to them (Native.Borrow), and their Chrome stays theirs, whenever they open it.
+
+# Whether launching $p runs a browser from the person's own profile: a browser started plainly - not a web app's --app window
+# (those keep a private profile of their own), not the stand-in for a web app's launcher, not given a profile folder.
+function Test-RunsInPlace($p) {
+    if (-not ($Browsers -contains $p.Base)) { return $false }
+    if ($p.Launcher) { return $false }
+    return ($p.Args -notmatch '(?i)(^|\s)--(app|user-data-dir)\b')
 }
 
-# The command line a resolved program is started with: its own profile for a browser or Electron app (per desktop), and the
-# flags that keep a first-run or restore prompt from taking the keyboard.
+# Starts a completed launch, from Resolve-Launch or a check's answer: on the private desktop, or - for a browser that runs in place -
+# as a window of the person's own browser (which is started if it is not running).
+function Start-Resolved($l) {
+    if (-not $l.InPlace) { return [Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir) }
+    return [Native]::Borrow($l.Base, $l.Target, $l.Args, $l.WorkDir)
+}
+
+# The command line a resolved program is started with: its own profile for an Electron app or a web app's browser (per desktop),
+# and the flags that keep a first-run or restore prompt from taking the keyboard.
 function Complete-Launch($p) {
     $argLine = $p.Args
     Start-WebAppServer $p
+    if (Test-RunsInPlace $p) {
+        # No profile folder of its own: it opens the person's (the shortcut's --profile-directory, else the one it used last).
+        Remove-ImportedHostProfile (Join-Path $ProfileRoot "$DesktopName-$($p.Base)")
+        # Only used when the browser is not running and is started here (otherwise the person's own process is asked for a window and
+        # ignores these): no first-run or restore prompt taking the keyboard of a window nobody sees. Nothing else is changed about the
+        # person's browser - not its accessibility, not its background mode.
+        if ($argLine -notlike '*no-first-run*') { $argLine += ' --no-first-run --no-default-browser-check' }
+        $argLine += ' --disable-session-crashed-bubble --hide-crash-restore-bubble'
+        return @{ Target = $p.Target; Args = $argLine.Trim(); WorkDir = $p.WorkDir; Base = $p.Base; InPlace = $true }
+    }
     if ($p.OwnProfile) {
         $dir = Join-Path $ProfileRoot "$DesktopName-$($p.Base)"
-        # The profile the shortcut asks to open is the one whose sign-ins must come across, so import that one.
-        $requested = ''
-        if ($Browsers -contains $p.Base) {
-            $m = [regex]::Match($argLine, '(?i)--profile-directory=(?:"([^"]*)"|(\S+))')
-            if ($m.Success) { $requested = $m.Groups[1].Value + $m.Groups[2].Value }
-        }
         if ($Browsers -contains $p.Base) { Remove-ImportedHostProfile $dir }
-        Initialize-PrivateBrowserProfile $p.Base $dir $requested
         $argLine = (($argLine + " --user-data-dir=`"$dir`"").Trim())
         # Chromium (a browser, an Electron app) builds the accessibility tree of what a page shows only once something
         # turns it on, and until then UI Automation sees its title bar and nothing in the page: the VM's agent, which
@@ -2192,10 +2797,6 @@ function Complete-Launch($p) {
             # (component_crx_cache, ProvenanceData), and a browser left "running in the background" after its window is
             # closed is a few hundred MB that nobody can see to close.
             $argLine += ' --disable-background-mode --disable-component-update'
-            if ($argLine -notlike '*--profile-directory*') {
-                $chosenProfile = Get-ActiveBrowserProfile $dir
-                if ($chosenProfile) { $argLine += " --profile-directory=`"$chosenProfile`"" }
-            }
         }
         Clear-CrashMark $dir
     }
@@ -2293,11 +2894,16 @@ $Commands = [Action[string, string]] {
         "desktop" {
             if ($rest -match '^[A-Za-z0-9_]{1,48}$') { $script:DesktopName = $rest; Reply "OK" } else { Reply "ERR invalid desktop name" }
         }
+        "attach" {
+            # Mirror mode: show and drive a window the person already has open (their own Chrome, say); starts nothing.
+            $f = $rest.Split("`t")
+            Reply ([Native]::Attach($f[0], $(if ($f.Count -gt 1) { $f[1] } else { '' })))
+        }
         "launch" {
             $f = $rest.Split("`t")
             $r = Resolve-Launch $f[0] $(if ($f.Count -gt 1) { $f[1] } else { '' })
             if ($r.Error) { Reply "ERR $($r.Error)" }
-            else { Reply ([Native]::Launch($DesktopName, $r.Target, $r.Args, $r.WorkDir)) }
+            else { Reply (Start-Resolved $r) }
         }
         "check" {
             $f = $rest.Split("`t")
@@ -2310,7 +2916,7 @@ $Commands = [Action[string, string]] {
             elseif (-not (Test-Path -LiteralPath $f[0] -PathType Leaf)) { Reply "ERR Not found on this computer: $($f[0])" }
             else {
                 $l = Complete-Launch @{ Target = $f[0]; Args = $f[1]; WorkDir = $f[2]; OwnProfile = ($f[3] -eq '1'); Base = $f[4]; Launcher = $(if ($f.Count -gt 5) { $f[5] } else { '' }) }
-                Reply ([Native]::Launch($DesktopName, $l.Target, $l.Args, $l.WorkDir))
+                Reply (Start-Resolved $l)
             }
         }
         "pid" {

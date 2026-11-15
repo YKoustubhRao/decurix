@@ -1054,6 +1054,9 @@ Completed at:
     else:
         log("WARNING: could not send final reply to control plane.")
 
+    # The review pass (review_pass.py): after the report, on its own thread; it never delays or fails the report.
+    _start_review(task_id, kind, checked, verdict, engine, quiet=quiet, interrupted=interrupted, stopped=stopped)
+
     facts_thread = _keep_facts(task_id, quiet=quiet, interrupted=interrupted)
 
     # The task is over: its secret values as they are let go (privacy.remember_literals; the word hashes stay) - once
@@ -1137,6 +1140,19 @@ def _let_go_of_values(task_id):
         task_context._secret_values.pop(task_id, None)
     except Exception as exc:  # noqa: BLE001
         log(f"Could not let go of the task's secret values: {exc}")
+
+
+def _start_review(task_id, kind, checked, verdict, engine, quiet=False, interrupted=False, stopped=False):
+    """Start the review pass of a run checked done (review_pass.after_report), once its report is out. Returns its
+    thread or None. Never raises and never waits."""
+
+    try:
+        from decurix_agent import review_pass
+        return review_pass.after_report(task_id, kind, checked, verdict, engine, quiet=quiet, interrupted=interrupted,
+                                        stopped=stopped)
+    except Exception as exc:  # noqa: BLE001 - the review never costs the report
+        log(f"Review: could not start ({type(exc).__name__})")
+        return None
 
 
 def _keep_facts(task_id, quiet=False, interrupted=False):

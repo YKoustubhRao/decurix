@@ -423,6 +423,11 @@ func (s *Server) RestoreHostApps(ctx context.Context) {
 		if !hostGUIID.MatchString(app.ID) || (listed && !exists[app.Desktop]) {
 			continue
 		}
+		// A browser an older build kept ready runs in place now, and is never started ahead: it would hold the person's profile
+		// from the moment the control plane starts, and their own Chrome could not be opened (found live 2026-11-12).
+		if desktop.SlugRunsInPlace(keptAppSlug(app.Desktop, app.ID)) {
+			continue
+		}
 		s.keptHostApps[app.ID] = app
 	}
 	s.saveKeptHostAppsLocked() // drops the apps of VMs deleted while the control plane was down

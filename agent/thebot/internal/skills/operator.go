@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"thebot/internal/atomizer"
+	"thebot/internal/learnreview"
 	"thebot/internal/llm"
 	"thebot/internal/prompt"
 	"thebot/internal/safety"
@@ -814,6 +815,8 @@ type operatorState struct {
 	LocalTokensPerByte float64 `json:",omitempty"`
 	// WroteFiles are the files this goal's commands wrote by redirection or tee (computed.go).
 	WroteFiles []string `json:",omitempty"`
+	// guardState: the identical-output stub, the screenshot not sent again, the cut-off command (guards.go).
+	guardState
 }
 
 // outputChars is OutputChars, or the local default for a checkpoint written
@@ -825,11 +828,10 @@ func (st *operatorState) outputChars() int {
 	return maxCommandOutputChars
 }
 
-func formatCommandResult(r shellResult, limit int) string {
-	out := r.Output
-	if len(out) > limit {
-		out = out[:limit] + fmt.Sprintf("\n... [%d more characters truncated]", len(r.Output)-limit)
-	}
+// formatCommandResult is a command's result as the model is shown it: a long output cut 40/60 around one marker
+// naming fullPath when the whole text was kept, and a JSON listing that says it has more marked INCOMPLETE (guards.go).
+func formatCommandResult(r shellResult, limit int, fullPath string) string {
+	out := cutOutput(r.Output, limit, fullPath) + listingIncompleteNote(r.Output)
 	return fmt.Sprintf("Command execution result:\n\nexit_code: %d\n\noutput:\n%s", r.ExitCode, out)
 }
 
@@ -918,7 +920,10 @@ func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		st = o.start(rc, subtask)
 		st.jobSecrets = withheld.From(rc.Ctx)
 	}
-	return o.loop(rc, subtask, st)
+	res, err := o.loop(rc, subtask, st)
+	// The goal's transcript as its last turn was sent, for the review pass after the task (internal/learnreview).
+	learnreview.Keep(rc.Ctx, rc.Model, st.Messages, st.PrefixLen, st.Request)
+	return res, err
 }
 
 // pause is the result that waits for a person to approve st.Pending, with the goal kept.
@@ -1314,8 +1319,17 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	} else {
 		st.noteLookup(command, res.Output) // kept apart: a source only once the person confirms it (knowledge.go)
 	}
-	result := formatCommandResult(res, st.outputChars())
-	result += st.noteRun(command, result) // the same few commands taken in turn, round after round (cycle.go)
+	result := formatCommandResult(res, st.outputChars(), st.keptOutputPath(res, st.outputChars()))
+	cycleNote := st.noteRun(command, result) // the same few commands taken in turn, round after round (cycle.go)
+	stubbed := false
+	if stub := st.identicalOutputStub(command, res); stub != "" && cycleNote == "" {
+		// Printed exactly as before, and still shown whole there: the newest message says so instead (guards.go).
+		shown := res
+		shown.Output = stub
+		result, stubbed = formatCommandResult(shown, st.outputChars(), ""), true
+	}
+	head := result
+	result += cycleNote
 	if res.ExitCode != 0 {
 		result += missingProgramHint(res.Output, command)
 	} else if st.ScreenNudged {
@@ -1336,7 +1350,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	screen := screenOnly(command)
 	// A hosted model's transcript is appended to, never rewritten turn by turn: stale screens and old screenshots wait
 	// for the next maintenance pass (context.go). A local model is left as it was.
-	if !st.Hosted && screen && res.ExitCode == 0 && listsScreen(command) {
+	if !st.Hosted && screen && res.ExitCode == 0 && listsScreen(command) && !stubbed {
 		// A new listing of the screen supersedes every earlier screen output: shortened now, once
 		// (screen_digest.go). Actions between listings keep the last listing whole - its refs are still in use.
 		st.digestStaleScreens()
@@ -1348,15 +1362,11 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		msg.Images, msg.ImageLabels = pages, labels
 		msg.Content += pagesNote
 	} else if shot := st.takeScreenshot(started); shot != nil {
-		if !st.Hosted {
-			st.forgetOldPictures(screenshotNote, 0)
-		}
-		msg.Images, msg.ImageLabels = [][]byte{shot}, []string{"the screen as this command left it"}
-		msg.Content += screenshotNote
-		st.ShotStep = st.Step
+		st.attachScreenshot(&msg, shot) // or "screen unchanged since step N" (guards.go)
 	}
 	st.Messages = append(st.Messages, msg)
-	if screen && (listsScreen(command) || len(msg.Content) > longScreenOutput) {
+	st.noteOutputShown(command, res, head, stubbed)
+	if screen && !stubbed && (listsScreen(command) || len(msg.Content) > longScreenOutput) {
 		// Only listings (and long action outputs) are worth shortening later: a short "typed into e4" costs less
 		// than its digest, and leaving it alone keeps one changed message a listing at most.
 		st.ScreenMsgs = append(st.ScreenMsgs, len(st.Messages)-1)
@@ -2112,6 +2122,15 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			if strings.TrimSpace(resp.Text) != "COMMAND:\n"+value {
 				reply = llm.Message{Role: "assistant", Content: "COMMAND:\n" + value}
 			}
+			// A command cut off before its end (an open quote, a here-document never closed) is never run; sent back
+			// whole. Its own syntax decides, and after maxCutCommandNudges in a row the shell does (guards.go).
+			if cut := incompleteCommand(value); cut != "" && st.CutCommandNudges < maxCutCommandNudges {
+				st.CutCommandNudges++
+				rc.Logf("operator", "the command was cut off before its end (%s) - not run, asked for it whole", cut)
+				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: fmt.Sprintf(cutCommandNudge, cut)})
+				continue
+			}
+			st.CutCommandNudges = 0
 			if value == st.LastCommand && st.LastResult != nil && !stoppedBeforeActing(st.LastResult.Output) {
 				repeats++
 				if repeats == 1 {

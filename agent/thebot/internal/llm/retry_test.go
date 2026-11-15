@@ -81,6 +81,7 @@ func TestRateLimitWaitCanBeCancelled(t *testing.T) {
 	}
 }
 func TestRetryHintsAndDeadline(t *testing.T) {
+	pinJitter(t)
 	now := time.Date(2026, 10, 7, 8, 0, 0, 0, time.UTC)
 	for _, sample := range []struct {
 		key, value string
@@ -90,6 +91,11 @@ func TestRetryHintsAndDeadline(t *testing.T) {
 		{"Retry-After", "3", 3 * time.Second},
 		{"Retry-After", now.Add(7 * time.Second).Format(http.TimeFormat), 7 * time.Second},
 		{"Retry-After", "invalid", 2 * time.Second},
+		// A hint of minutes is waited out a minute at a time (maxRetryAfter), never ignored.
+		{"Retry-After", "600", maxRetryAfter},
+		{"Retry-After-Ms", "900000", maxRetryAfter},
+		{"Retry-After", "+Inf", maxRetryAfter},
+		{"Retry-After", now.Add(10 * time.Minute).Format(http.TimeFormat), maxRetryAfter},
 	} {
 		header := http.Header{}
 		header.Set(sample.key, sample.value)
@@ -112,6 +118,7 @@ func TestRetryHintsAndDeadline(t *testing.T) {
 }
 
 func TestTheFallbackWaitIsCapped(t *testing.T) {
+	pinJitter(t)
 	for attempt, want := range map[int]time.Duration{0: 2 * time.Second, 2: 8 * time.Second, 4: 30 * time.Second, 9: 30 * time.Second} {
 		if got := retryDelay(http.Header{}, time.Now(), attempt); got != want {
 			t.Errorf("attempt %d: %v, want %v", attempt, got, want)
@@ -209,5 +216,82 @@ func TestACallThatCouldNotConnectIsTriedAgain(t *testing.T) {
 	}
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+// pinJitter makes the fallback wait exact for the rest of the test.
+func pinJitter(t *testing.T) {
+	t.Helper()
+	saved := jitter
+	jitter = func(d time.Duration) time.Duration { return d }
+	t.Cleanup(func() { jitter = saved })
+}
+
+// With no hint the wait is spread over [d/2, d]: desktops refused at one moment do not all ask again at one moment.
+func TestTheFallbackWaitIsJittered(t *testing.T) {
+	seen := map[time.Duration]bool{}
+	for range 200 {
+		got := retryDelay(http.Header{}, time.Now(), 2) // 8 s before jitter
+		if got < 4*time.Second || got > 8*time.Second {
+			t.Fatalf("wait %v outside [4s, 8s]", got)
+		}
+		seen[got] = true
+	}
+	if len(seen) < 10 {
+		t.Fatalf("only %d distinct waits in 200: not jittered", len(seen))
+	}
+}
+
+// Every provider waits out a 429 and the provider's own failure (5xx, 529 overloaded) as its Retry-After says, and
+// never asks again after any other 4xx.
+func TestEveryProviderHonoursRetryAfterAndLeavesOtherRefusalsAlone(t *testing.T) {
+	answers := map[string]string{
+		"openai":    `{"choices":[{"message":{"content":"ok"}}]}`,
+		"anthropic": `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`,
+		"ollama":    `{"message":{"content":"ok"},"done":true}`,
+	}
+	for _, name := range []string{"openai", "anthropic", "ollama"} {
+		for _, c := range []struct {
+			status    int
+			wantCalls int
+		}{{429, 2}, {503, 2}, {529, 2}, {400, 1}, {404, 1}, {422, 1}} {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if calls == 1 {
+					w.Header().Set("Retry-After", "0")
+					w.WriteHeader(c.status)
+					io.WriteString(w, `{"error":{"message":"no"}}`)
+					return
+				}
+				io.WriteString(w, answers[name])
+			}))
+			var p Provider
+			switch name {
+			case "openai":
+				o := NewOpenAI("k", "")
+				o.BaseURL = srv.URL
+				p = o
+			case "anthropic":
+				a := NewAnthropic("k", "m")
+				a.BaseURL = srv.URL
+				p = a
+			default:
+				o := NewOllama(srv.URL)
+				o.TimeoutFloor = 0
+				p = o
+			}
+			out, err := p.Chat(context.Background(), "m", []Message{{Role: "user", Content: "hi"}}, Options{TimeoutMs: 20000})
+			srv.Close()
+			if calls != c.wantCalls {
+				t.Errorf("%s, HTTP %d: %d calls, want %d (err %v)", name, c.status, calls, c.wantCalls, err)
+			}
+			if c.wantCalls == 2 && (err != nil || out.Text != "ok") {
+				t.Errorf("%s, HTTP %d: the second ask's answer was not used: %+v %v", name, c.status, out, err)
+			}
+			if c.wantCalls == 1 && err == nil {
+				t.Errorf("%s, HTTP %d: a refusal was not reported", name, c.status)
+			}
+		}
 	}
 }

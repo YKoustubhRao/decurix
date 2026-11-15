@@ -176,7 +176,8 @@ class TheCommand(unittest.TestCase):
         with patch.object(cli.core, "act", return_value={"status": "done", "text": "clicked"}) as act:
             self.assertEqual(cli.run(["click", "--see", "the bell icon"]), cli.EXIT_OK)
         # The pre-save checks stand however the control is found (core._commit_check).
-        act.assert_called_once_with("click", see="the bell icon", check_form=True)
+        # ...and an engine's input whose effect was not confirmed is not repeated blind (outcome.py).
+        act.assert_called_once_with("click", see="the bell icon", look_first=True, check_form=True)
 
     def test_type_see(self):
         with patch.object(cli.core, "act", return_value={"status": "done", "text": "typed"}) as act:

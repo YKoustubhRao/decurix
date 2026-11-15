@@ -12,6 +12,12 @@
     "fixture": "fixture.json"
   },
   "facts": [],
+  "approves": [
+    {
+      "control": "Save payee",
+      "role": "button"
+    }
+  ],
   "expected": {
     "outcome": "complete",
     "graders": [

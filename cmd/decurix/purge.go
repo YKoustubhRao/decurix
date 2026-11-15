@@ -76,7 +76,8 @@ func runPurgeSecret(controlPlane, reason string, stdin io.Reader, stdout, stderr
 		label string
 		n     int64
 	}{{"stored bodies and files", c.Blobs}, {"model calls", c.LLMCalls}, {"judgements", c.Judgements},
-		{"task records", c.TaskRecords}, {"chat", c.Chat}, {"queries", c.QueryNotes}, {"run bundles", c.RunBundles}} {
+		{"task records", c.TaskRecords}, {"chat", c.Chat}, {"queries", c.QueryNotes}, {"run bundles", c.RunBundles},
+		{"run search index", c.RunSearch}} {
 		fmt.Fprintf(stdout, "  %-24s %d\n", row.label, row.n)
 	}
 	if c.BlobsFailed > 0 {

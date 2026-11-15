@@ -98,6 +98,7 @@
         "exit": 0,
         "ms": 900,
         "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "output_head": "ok",
         "guard": "allowed"
       },
       "action": {
@@ -148,6 +149,7 @@
         "exit": 0,
         "ms": 1500,
         "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "output_head": "ok",
         "guard": "allowed"
       },
       "action": null,
@@ -183,6 +185,7 @@
         "exit": 0,
         "ms": 1800,
         "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "output_head": "ok",
         "guard": "allowed"
       },
       "action": {

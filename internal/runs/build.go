@@ -518,6 +518,8 @@ type traceCmd struct {
 	Exit         *int   `json:"exit"`
 	Ms           int64  `json:"ms"`
 	OutputSHA256 string `json:"output_sha256"`
+	// OutputHead is the first 2 KB of the output, withheld by soul before it was written (trace.OutputHead).
+	OutputHead string `json:"output_head"`
 }
 
 // ledgerRec is one record of the ledger (<task>.records.json, computer/records.py).
@@ -931,7 +933,8 @@ func commandOf(l traceLine) *Command {
 	if fields := strings.Fields(c.Text); len(fields) > 0 {
 		tool = fields[0]
 	}
-	return &Command{Text: c.Text, Tool: tool, Exit: c.Exit, Ms: c.Ms, OutputSHA256: c.OutputSHA256, Guard: c.Guard}
+	return &Command{Text: c.Text, Tool: tool, Exit: c.Exit, Ms: c.Ms, OutputSHA256: c.OutputSHA256,
+		OutputHead: c.OutputHead, Guard: c.Guard}
 }
 
 // gateOf is what the approval gate decided about a step. An event that paused for approval, or a command soul's guard

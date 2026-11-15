@@ -15,6 +15,23 @@ import (
 	"thebot/internal/withheld"
 )
 
+// retryKind picks the kind of step a failure's retry runs as: what the retry itself says to do, with two exceptions.
+//   - Only a POSITIVE reclassification counts. The failure-reasoning model often drops the phrasing a classifier needs
+//     ("run the command: X" becomes "X"), and "general" then downgraded a real retry into a chat reply that ran nothing.
+//   - An operator step's retry stays the operator's: it has the shell, the screen and the web, so any other kind only
+//     takes tools away. Found live (2026-11-15, core-v2): the retry was a shell line that read a page by its URL,
+//     Classify called it web, and the whole command line went to a search engine.
+func retryKind(original, retryStep string) string {
+	if original == "operator" {
+		return original
+	}
+	kind := atomizer.Classify(retryStep)
+	if kind == "general" && original != "general" {
+		return original
+	}
+	return kind
+}
+
 func (s *Scheduler) runOnce(skill skills.Skill, rc skills.RunContext, subtask skills.Subtask, onLog func(string)) skills.Result {
 	if skill == nil {
 		onLog(fmt.Sprintf("no skill matched task type %q", subtask.Type))
@@ -122,16 +139,7 @@ func (s *Scheduler) runStep(rc skills.RunContext, subtask skills.Subtask, planne
 	// nothing indexed, the failure-reasoning model correctly suggested
 	// retrying as "search the web for X", and the retry still ran through
 	// the rag-query skill, failing the exact same way again.
-	retryType := atomizer.Classify(retryStep)
-	// Only trust a POSITIVE reclassification. The failure-reasoning model
-	// often drops the leading phrasing a classifier needs ("run the
-	// command: X" becomes just "X"), and Classify then says "general" -
-	// which used to silently downgrade a real retry into a chat reply that
-	// never ran anything. Absence of a match is not evidence the retry
-	// became conversational.
-	if retryType == "general" && subtask.Type != "general" {
-		retryType = subtask.Type
-	}
+	retryType := retryKind(subtask.Type, retryStep)
 	if retryType != subtask.Type {
 		onLog(fmt.Sprintf("scheduler: retry is a different kind of step (%s -> %s)", subtask.Type, retryType))
 	}

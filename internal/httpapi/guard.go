@@ -51,8 +51,12 @@ var containerRoutes = []containerRoute{
 	// 2026-11-11: missing here, every desktop got 403, and a restarted agent could neither close a lost question nor
 	// wait again on one its engine kept.
 	{path: "/api/agent/waiting", readOnly: true},
+	// Its own past runs, searched (actingAs; runsearch_routes.go).
+	{path: "/api/agent/runs", readOnly: true},
 	{path: "/api/desktops/memory"},
 	{path: "/api/desktops/learned"},
+	// What its review pass proposes after a run, staged for a person (proposals.go; as itself, its own tasks only).
+	{path: "/api/desktops/proposals"},
 	{path: "/api/desktops/judgements", readOnly: true},
 	{path: "/api/outbox"},
 	// The org's rules and skills, read only.

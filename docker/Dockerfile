@@ -10,8 +10,12 @@ RUN for try in 1 2 3; do timeout 600 go mod download && exit 0; echo "go mod dow
 COPY . .
 
 # TheBot's sources, packed for go:embed (embed.go): without it the binary
-# cannot build the desktop images itself (--build-images).
-RUN go generate .
+# cannot build the desktop images itself (--build-images). Only the packer, not
+# all of `go generate .`: its other step regenerates CODE_MAP.md from
+# `git ls-files`, and .git is not in the build context (.dockerignore), so the
+# whole build failed there (found 2026-11-15; broken since CODE_MAP was
+# generated, 2026-11-07).
+RUN go run embed_gen.go
 
 # Two cores and one package at a time (GOMAXPROCS, -p 1): an unbounded
 # build inside Docker brought down the 8 GB WSL host this is developed on.

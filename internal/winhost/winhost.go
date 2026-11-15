@@ -55,10 +55,9 @@ var (
 	requestTimeout = 20 * time.Second
 	// checkHelperTries is how many helpers in a row may die without answering a single check before Check gives up.
 	checkHelperTries = 3
-	// A launch answers once the program has been started, and the first launch of a browser for a VM first brings the
-	// person's profile over into that VM's private one (bridge.ps1's Initialize-PrivateBrowserProfile) - hundreds of MB,
-	// a minute or more on a busy host. Timed out at requestTimeout, the helper was killed mid-copy, the copy never
-	// finished, and every retry (the kept app's, the person's click) met the same "stopped answering".
+	// A launch answers once the program has been started - and a browser given to a VM answers once it has a window for it, which
+	// is a minute or more when the person's own browser has to start first (bridge.ps1's Borrow). Timed out at requestTimeout,
+	// the helper was killed in the middle of it, and every retry (the kept app's, the person's click) met the same "stopped answering".
 	launchRequestTimeout = 15 * time.Minute
 	launchTimeout        = 30 * time.Second
 	// How long Keep gives one start of a kept app, profile import included.

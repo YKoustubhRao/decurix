@@ -172,6 +172,26 @@ What this makes cheaper, and when:
 - Not yet: trust per step (rungs, promotion), the judge reading the ledger instead of screenshots, each document's
   extraction kept by content hash.
 
+### The model layer (2026-11-12, from hermes-agent; docs/harnesses.md "Model-layer guards")
+
+- **An empty answer is paid for at most twice.** Each unusable reply the operator nudges re-bills the whole prompt
+  (~30k tokens hosted). Two zero-output answers in a row from one route with one finish reason end the call as
+  `llm.ErrEmptyAnswer` instead of up to four nudges (`llm/empty.go`).
+- **A loop is not streamed to the end of its budget.** Ollama's stream is cut when its tail is a degenerate
+  repetition (`llm/runaway.go`); the loop never enters the transcript to seed the next turn.
+- **Claude reads its prefix from the cache across rewrites.** Breakpoints on the system prompt and a rolling newest
+  three messages, so a rewritten newest message (a note appended) or a maintenance pass still finds a cached prefix
+  one or two messages back; one-shot calls get no breakpoint, since a cache write costs 1.25x and nothing reads it.
+  Soul's Anthropic provider now counts cache reads and writes as prompt (`CachedTokens` = the read part). The 1 h
+  TTL is not used: no clean signal at call time says a goal is about to wait on a person.
+- **A picture's price is learned, per route.** `Metered` keeps each conversation's last real prompt count as an
+  anchor; the next call's count, less the anchor's, less the new text at the anchor's own text rate, divided by the
+  new pictures, is a reading (64-32,768 tokens, else dropped; a rewritten prefix or a count below the anchor, as a
+  server reporting only uncached tokens gives, teaches nothing), averaged at weight 0.5 (`llm/imagecost.go`). The
+  budgets (`skills/context.go pictureCharsNow`) count a picture at its learned price times 3 characters a token, never
+  below the flat 4,000: a price that only raises, since an underpriced picture would let a local transcript past
+  num_ctx 8192.
+
 ## Tools a worker builds (2026-11-11)
 
 The owner's question, the same day: with experience the tokens should fall - "have each worker create tools for things
@@ -247,6 +267,30 @@ repair of 1-3 turns; a month whose bills sit in the folder its request names los
 export/filing skill whose consequential steps have effects replays from its first run with every value filled, its
 model turns falling to the repairs, and can earn trust on the `code` basis.
 
+**A read-only tool library for scripts (2026-11-15).** `agent/decurix_tools.py` is installed in the image as
+`/opt/decurix_tools.py`, linked into the system python's site folder, so `import decurix_tools` works in any python3
+of the desktop. It gives a worker's script, or a distilled tool, parsed results from the reading commands:
+- `observe()` returns `{text, elements: [{ref, role, name, value, states}]}`;
+- `read`, `records`, `recall`, `recordings`, `recording`, `skills` and `skill` mirror the gui commands of those names;
+- `office_read(path)` returns `{text, images}`;
+- `lookup` and `lookup_read` mirror `lookup`.
+
+It follows hermes-agent's `code_execution_tool.py` (an allow-listed stub module with a call budget), but runs the shell
+commands instead of an RPC. Its rules:
+- **Actions are refused.** Every action verb, and every flag that writes (`--screenshot`, `--look`), is refused before
+  anything runs.
+- **A budget.** A script may make 50 calls; `DECURIX_TOOLS_BUDGET` may only lower that.
+- **Exit 3 ends the script.** If gui exits 3 (approval needed), its output is printed unchanged and the script ends at
+  once with `os._exit(3)`, so no `try` or `finally` in the script can swallow it.
+- **Claims, not evidence.** What the library returns is the script's account; the final check still reads back
+  every file the script produced.
+
+The distil prompt (`playbooks.DISTIL_SYSTEM`) names only `office_read`. A kept script runs with no approval.
+`ungated_effect` reads a script's text for the screen and the network, and it does not see them when they are
+reached through this library. The script sandbox cuts the network, and with `bwrap` it also hides the display. With
+`unshare` alone, the gui daemon's socket is still reachable, so a kept script could read the screen that way. Whether
+a kept script may read the screen or the web is an owner decision. Tests: `agent/tests/test_decurix_tools.py`.
+
 ## Measuring it
 
 Per skill, per run (`experience.note_verdict` tokens, the task record's executions): tokens by phase (gather / fill /
@@ -261,6 +305,18 @@ call the control plane forwards, with its purpose, task, turn, caller and tokens
 ([harnesses.md](harnesses.md)). Tokens by phase are not kept per run; the nearest is summing the call rows by
 purpose. The rig the figures above came from (`decurix-tests/wide/erp/scorecard2.py`, `probe_proxy.py`) is no longer
 on this host; the call recorder does what the probe did.
+
+**Recomputing it from a database** (`evals/forensics/`, [evals.md](evals.md) "Forensics"): on a copy of `decurix.db`,
+the `tokens` lane gives tokens per checked task by kind of work (the skill, else the task type) and by purpose tag,
+with the cached share; `rework` the tokens retries spent; `halts` the replays' outcomes from soul's traces in the
+bundles. Two sources stay apart: the proxy's calls (the provider's reported usage, joined to a run by worker and time)
+and the desktop's own totals (its word). Every figure is OBSERVED or MODELED, never added together.
+
+**What a token figure means** (held by `internal/eval/accounting_test.go`, a fake provider whose `usage` disagrees with
+the transcript, inflated and deflated): the broker's case and run counts, the case budget, the call recorder, the
+eval row and the spend meter all read `llm.ParseUsage` of the provider's answer, never the transcript's size, and
+each call is counted once (a practice desktop's calls are never metered against a spend limit; the proxy's are).
+Compare tokens across arms, never money: cache warmth makes a price depend on which arm's prefix went first.
 
 ## Handing work to a local model: earned, never assumed
 

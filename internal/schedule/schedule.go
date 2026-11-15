@@ -43,6 +43,10 @@ type Schedule struct {
 	// did. A failed run is consumed (the schedule moves on to its next
 	// occurrence) but never silently: this is its trace.
 	LastError string `json:"last_error"`
+	// RetryOccurrence is the run a failed try is being retried for (NextRunAt is then the retry's time); zero when
+	// none. Missed says what the last stretch of occurrences that never ran was, until the next run settles.
+	RetryOccurrence time.Time `json:"retry_occurrence"`
+	Missed          string    `json:"missed"`
 }
 
 var schema = []string{
@@ -66,6 +70,22 @@ var schema = []string{
 	// The IANA zone the cron is read in (B-37). Existing rows keep UTC, the
 	// zone they were made in, so nothing already scheduled moves.
 	`ALTER TABLE schedules ADD COLUMN zone TEXT NOT NULL DEFAULT 'UTC'`,
+	// The occurrence ledger (occurrences.go): one row per run a schedule owes.
+	`CREATE TABLE schedule_runs (
+		schedule_id   TEXT NOT NULL,
+		occurrence_ns INTEGER NOT NULL,
+		state         TEXT NOT NULL,
+		started_ns    INTEGER NOT NULL,
+		settled_ns    INTEGER NOT NULL DEFAULT 0,
+		attempts      INTEGER NOT NULL DEFAULT 0,
+		detail        TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (schedule_id, occurrence_ns)
+	)`,
+	`CREATE INDEX schedule_runs_recent ON schedule_runs (schedule_id, started_ns)`,
+	// The occurrence a failed try is retried for (0: none), so the retry still says which run it is.
+	`ALTER TABLE schedules ADD COLUMN retry_occurrence_ns INTEGER NOT NULL DEFAULT 0`,
+	// What the last stretch of occurrences nobody ran was, shown beside the schedule until its next run settles.
+	`ALTER TABLE schedules ADD COLUMN missed TEXT NOT NULL DEFAULT ''`,
 }
 
 // InputError is a mistake in what a person gave (a cron expression that does
@@ -285,10 +305,23 @@ func (s *Store) markRun(id string, ranAt time.Time, failure string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return advance(s.db, id, ranAt, failure)
+}
+
+// execQuerier is what advance needs of a *sql.DB or a *sql.Tx.
+type execQuerier interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// advance moves schedule id on from ranAt: to its next occurrence, or disabled when there is none (a one-time run,
+// or a cron that can no longer match). It clears what belonged to the run just made - waiting, a retry, a missed
+// note - and keeps failure as LastError ("" when the run reached its desktop). The caller holds s.mu.
+func advance(q execQuerier, id string, ranAt time.Time, failure string) error {
 	var cronExpr, zone string
 	var runOnce int
 
-	if err := s.db.QueryRow(`SELECT cron_expr, run_once, zone FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce, &zone); err != nil {
+	if err := q.QueryRow(`SELECT cron_expr, run_once, zone FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce, &zone); err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
@@ -311,13 +344,13 @@ func (s *Store) markRun(id string, ranAt time.Time, failure string) error {
 	var err error
 
 	if !ok {
-		_, err = s.db.Exec(
-			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0, waiting = '', waiting_since_ns = 0, last_error = ? WHERE id = ?`,
+		_, err = q.Exec(
+			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0, waiting = '', waiting_since_ns = 0, last_error = ?, retry_occurrence_ns = 0, missed = '' WHERE id = ?`,
 			sqlitedb.ToNS(ranAt), failure, id,
 		)
 	} else {
-		_, err = s.db.Exec(
-			`UPDATE schedules SET last_run_ns = ?, next_run_ns = ?, waiting = '', waiting_since_ns = 0, last_error = ? WHERE id = ?`,
+		_, err = q.Exec(
+			`UPDATE schedules SET last_run_ns = ?, next_run_ns = ?, waiting = '', waiting_since_ns = 0, last_error = ?, retry_occurrence_ns = 0, missed = '' WHERE id = ?`,
 			sqlitedb.ToNS(ranAt), sqlitedb.ToNS(next), failure, id,
 		)
 	}
@@ -353,7 +386,14 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	defer s.mu.Unlock()
 
 	if !enabled {
-		if _, err := s.db.Exec(`UPDATE schedules SET enabled = 0, waiting = '', waiting_since_ns = 0 WHERE id = ?`, id); err != nil {
+		if _, err := s.db.Exec(`UPDATE schedules SET enabled = 0, waiting = '', waiting_since_ns = 0, retry_occurrence_ns = 0 WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("schedule: disable %s: %w", id, err)
+		}
+
+		// A run waiting for another try is given up with the schedule: turned back on, it starts from its next
+		// occurrence, never from a retry a person paused.
+		if _, err := s.db.Exec(`UPDATE schedule_runs SET state = ?, detail = detail || ' Given up: the schedule was turned off.' WHERE schedule_id = ? AND state = ?`,
+			RunFailed, id, RunRetrying); err != nil {
 			return fmt.Errorf("schedule: disable %s: %w", id, err)
 		}
 
@@ -395,7 +435,7 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	}
 
 	if _, err := s.db.Exec(
-		`UPDATE schedules SET enabled = 1, next_run_ns = ? WHERE id = ?`,
+		`UPDATE schedules SET enabled = 1, next_run_ns = ?, retry_occurrence_ns = 0 WHERE id = ?`,
 		sqlitedb.ToNS(next), id,
 	); err != nil {
 		return fmt.Errorf("schedule: enable %s: %w", id, err)
@@ -437,16 +477,16 @@ func (s *Store) DeleteForDesktop(desktopID string) {
 	}
 }
 
-const scheduleColumns = `id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns, last_error, zone`
+const scheduleColumns = `id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns, last_error, zone, retry_occurrence_ns, missed`
 
 // scanSchedule reads one row of scheduleColumns, giving its run times in the
 // schedule's own zone.
 func scanSchedule(rows sqlitedb.Scanner) (Schedule, error) {
 	var sch Schedule
 	var enabled, runOnce int
-	var created, lastRun, nextRun, waitingSince int64
+	var created, lastRun, nextRun, waitingSince, retryOcc int64
 
-	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce, &sch.Waiting, &waitingSince, &sch.LastError, &sch.Zone); err != nil {
+	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce, &sch.Waiting, &waitingSince, &sch.LastError, &sch.Zone, &retryOcc, &sch.Missed); err != nil {
 		return Schedule{}, err
 	}
 
@@ -458,6 +498,7 @@ func scanSchedule(rows sqlitedb.Scanner) (Schedule, error) {
 	sch.LastRunAt = InZone(sqlitedb.FromNS(lastRun), loc)
 	sch.NextRunAt = InZone(sqlitedb.FromNS(nextRun), loc)
 	sch.WaitingSince = sqlitedb.FromNS(waitingSince)
+	sch.RetryOccurrence = InZone(sqlitedb.FromNS(retryOcc), loc)
 
 	return sch, nil
 }

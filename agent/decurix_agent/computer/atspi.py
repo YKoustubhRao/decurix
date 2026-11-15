@@ -890,6 +890,36 @@ def text_now(element):
     return _text(Atspi, node, PARAGRAPH_TEXT_LIMIT)
 
 
+def set_text(element, text):
+    """
+    Set an app's field to `text` whole through the accessibility interface, for when typed keys did not reach it
+    (core.act: "none landed"): EditableText's contents, else - for a number box - Value's current value. Returns which
+    way it was set ("set-text", "set-value"), or None when the field offers neither or refused. Nothing is read back
+    here: the caller's next look does that.
+    """
+
+    try:
+        Atspi = _lib()
+        node = resolve(element)
+    except Exception:  # noqa: BLE001 - no accessibility bus: nothing set
+        return None
+    if node is None:
+        return None
+    try:
+        if node.get_editable_text_iface() is not None and Atspi.EditableText.set_text_contents(node, text):
+            return "set-text"
+    except Exception:  # noqa: BLE001 - not an editable text: perhaps a value
+        pass
+    try:
+        if node.get_value_iface() is not None:
+            number = float(str(text).strip().replace(",", ""))
+            if Atspi.Value.set_current_value(node, number):
+                return "set-value"
+    except Exception:  # noqa: BLE001 - neither way: the caller reports that the keys did not land
+        pass
+    return None
+
+
 def sheet_cell_text(element, row, column):
     """
     What a cell of the sheet a sheet-cell element belongs to shows right now, by its table indices (the element's

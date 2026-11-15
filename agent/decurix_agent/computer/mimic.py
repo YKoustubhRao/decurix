@@ -334,9 +334,11 @@ def _candidates():
 
     found = []
 
+    from decurix_agent import learned
+    aside = learned.archived("skill")  # (set aside by a person: never matched to a request on its own)
     for skill in skills.all_skills():
         text = (skill.get("goal") or skill.get("title") or "").strip()
-        if skill.get("status") == skills.READY and text:
+        if skill.get("status") == skills.READY and text and skill["name"] not in aside:
             found.append({"kind": "skill", "id": skill["name"], "text": text, "when": skill.get("created_at") or 0,
                           "places": lambda s=skill: _places_from_skill(s)})
 

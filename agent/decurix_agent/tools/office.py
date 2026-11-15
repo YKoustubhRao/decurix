@@ -4238,12 +4238,18 @@ def main(argv=None):
     the real error; the engine took the person's workbook for locked and worked in a copy instead."""
 
     from decurix_agent import logging_utils
+    from decurix_agent.computer import privacy
 
     before = logging_utils._log_path
     logging_utils.log_to_file(logging_utils.log_file("decurix-office.log"))
+    # What it prints (a document read, OCR of its pictures) never holds a secret that passed through
+    # (privacy.withhold_registered), as the gui command's output does not.
+    out = sys.stdout
+    sys.stdout = privacy.WithheldOutput(out)
     try:
         return _main(argv)
     finally:
+        sys.stdout = out
         logging_utils._log_path = before
 
 

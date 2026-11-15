@@ -70,27 +70,37 @@ func TestTickFiresDueScheduleWithTimeField(t *testing.T) {
 	}
 }
 
-func TestTickAdvancesEvenWhenSubmitFails(t *testing.T) {
+// A run that did not reach its desktop is tried again 5 minutes later, still as the same occurrence; when the next
+// try would come after the schedule's next occurrence, it is given up and the schedule moves on with the reason.
+func TestAFailedSubmitIsRetriedThenConsumed(t *testing.T) {
 	store, sch := tenMinuteSchedule(t)
 
 	submitter := &fakeSubmitter{err: errors.New("desktop unreachable")}
 
-	firedAt := time.Date(2026, 9, 15, 12, 40, 0, 0, time.UTC)
-	runner := &Runner{Store: store, Submitter: submitter, now: func() time.Time { return firedAt }}
+	clock := time.Date(2026, 9, 15, 12, 40, 0, 0, time.UTC)
+	runner := &Runner{Store: store, Submitter: submitter, now: func() time.Time { return clock }}
 
 	runner.tick(context.Background())
 
-	after := store.List("")
-	if len(after) != 1 || after[0].ID != sch.ID {
-		t.Fatalf("List = %v", after)
+	got := store.List("")[0]
+	if got.ID != sch.ID || !got.LastRunAt.IsZero() || !got.NextRunAt.Equal(clock.Add(5*time.Minute)) ||
+		!got.RetryOccurrence.Equal(time.Date(2026, 9, 15, 12, 40, 0, 0, time.UTC)) || !strings.Contains(got.LastError, "trying again at 12:45") {
+		t.Fatalf("after the first failed try: %+v", got)
 	}
 
-	if !after[0].LastRunAt.Equal(firedAt) {
-		t.Fatalf("LastRunAt = %v, want %v (a failed submit still consumes this run)", after[0].LastRunAt, firedAt)
+	clock = clock.Add(5 * time.Minute)
+	runner.tick(context.Background())
+
+	got = store.List("")[0]
+	if !got.LastRunAt.Equal(clock) || !got.NextRunAt.Equal(time.Date(2026, 9, 15, 12, 50, 0, 0, time.UTC)) ||
+		!got.RetryOccurrence.IsZero() || !strings.Contains(got.LastError, "did not reach the desktop") {
+		t.Fatalf("a try that would pass the next occurrence was not given up: %+v", got)
 	}
 
-	if !after[0].NextRunAt.After(firedAt) {
-		t.Fatalf("NextRunAt = %v, want something after %v", after[0].NextRunAt, firedAt)
+	submitter.mu.Lock()
+	defer submitter.mu.Unlock()
+	if len(submitter.calls) != 2 || !strings.Contains(submitter.calls[1].content, "TIME:{2026-09-15T12:40:00Z}") {
+		t.Fatalf("calls = %v, want the 12:40 run tried twice", submitter.calls)
 	}
 }
 

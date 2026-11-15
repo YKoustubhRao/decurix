@@ -54,7 +54,10 @@ def _task_now():
 
 # Page elements typing can never go into.
 NOT_A_FIELD = {"row", "button", "link", "heading", "image", "img", "tab", "menuitem", "option",
-               "checkbox", "radio", "listitem", "list", "table", "navigation"}
+               "checkbox", "radio", "listitem", "list", "table", "navigation",
+               # A page's static text (cdp's "statictext", kept as "text"; an app's editable "text" is a "textbox" by
+               # then). Typed "into" a label, the keys went to the focused button (found live, 2026-11-15).
+               "text", "paragraph", "label"}
 
 # What typing does go into, for naming the fields a refusal points at.
 TYPING_ROLES = {"textbox", "document", "combobox", "searchbox", "spinbutton", "password text", "entry", "editbar"}

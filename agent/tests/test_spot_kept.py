@@ -35,7 +35,7 @@ class TheSpotFailureIsKept(unittest.TestCase):
                "one_off": False, "gathered": True}
         judged = {"verdict": verify.NOT_DONE, "confidence": 0.9, "seen": "the bill total is 0.00", "why": ""}
         with mock.patch.object(skills, "load", lambda name: copy.deepcopy(store[name])), \
-                mock.patch.object(skills, "save", lambda s: store.__setitem__(s["name"], copy.deepcopy(s))), \
+                mock.patch.object(skills, "save", lambda s, **_: store.__setitem__(s["name"], copy.deepcopy(s))), \
                 mock.patch.object(skill_task.task_context, "current", sampled_task), \
                 mock.patch.object(skill_task.verify, "available", lambda: True), \
                 mock.patch.object(skill_task, "_judge", lambda run, claim, note="", purpose="": dict(judged)), \
