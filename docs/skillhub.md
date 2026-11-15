@@ -49,6 +49,7 @@ POST routes take JSON, or a plain form (`roles` comma-separated). Errors are `{"
 - **No typed secret, in either direction.** A secret step must be `manual` and carry no value. A secret parameter may have no default or example. Any typed value (a step's `text`/`samples`/`value`, a parameter's `default`/`example`) that `privacy.py` recognises as a credential is refused, including one written after its name (`password: ...`). Export refuses the same skill, so it never leaves the desktop.
 - **Local work is never overwritten silently.** If a skill of the same name was taught on this desktop (it has no `installed_from`), or was taught, corrected or relearned here after it was installed, the install is refused with a 409 unless `replace` is set. `installed_from` records the version, the length of `corrections`, `run_answers`, `learned` and `notes` at install time, and the skill's own `version`. If any of them grew, the skill counts as changed here.
 - The skill keeps its status. It drops `runs` and `experience`, so a cheaper path earned on another desktop's screen has to be earned again on this one (correctness first: maturity is per screen). It gains `installed_from {version, sha, at, ...marks}`.
+- **An install is on the desktop's change ledger** (actor `install`, docs/skills.md "The change ledger"): the version it replaced is kept and `/skill rollback <id>` brings it back. An install is a person's act, so it goes through a lock the person set on that skill.
 
 ### Limits and not done
 
@@ -56,6 +57,7 @@ POST routes take JSON, or a plain form (`roles` comma-separated). Errors are `{"
 - The registry never deletes a version. Unassigning a role does not uninstall the skill anywhere.
 - Publishing from a desktop that installed the skill and changed it locally creates a new version. Nothing merges two desktops' divergent corrections.
 - Deleting a desktop calls `Store.ForgetWorker`: its installs and roles go; the versions it published stay.
+- **Use, staleness and locks do not reach the registry yet.** The desktop keeps them (`GET /skills` carries each skill's `usage`: use/view/patch counts, last used, created by, locked/pinned/archived and `state`), but the registry only stores published versions, so the Workforce page and the skills page show no last-used or stale badge yet. Owed: show `usage` on the skills page, and have the control plane pass the names its schedules and mail triggers run (`learned.status(referenced=...)`), since only it knows them.
 
 ## Scoped knowledge
 
@@ -94,6 +96,20 @@ Three places read it, each for the task it works on (`task_context.current()`), 
 - the record ledger's given sources (`computer/records.given_sources(task_id)`, which a `gui record` pick may rest on; `_org_text` keeps one task's text for five minutes);
 - every TheBot request's standing context (`thebot_harness.org_context`, `org_knowledge.standing_context`), so an org rule such as "never pay without a purchase order" reaches a request no skill covers. It goes in the job's `context` field with the other standing context, never in the operator's fixed prompt. The lines are read once per task and kept for its later jobs (a reply, the final check sending it back), so every job of a task sends the same bytes. Each line passes `privacy.withhold_known` first (a line that cannot be checked is left out), lines a taught task's procedure already carries are not repeated, and the block is bounded at 6000 characters (`MAX_CONTEXT_CHARS`) with a closing note naming how many lines were left out. The Claude and Ollama harnesses do not send it.
 
+### Proposed by workers
+
+A worker's review pass after a run checked done ([learning-loop.md](learning-loop.md), "The review pass") proposes; a person decides. Proposals live in their own table (`knowledge_proposals`, an appended `Migrate` step), which `ForWorker` and `ForTask` never read: **nothing proposed is given to any worker**.
+
+- **Row** (`knowledge/proposals.go`): `{id, worker, task_id, kind: lesson|app_note, text, why, evidence: [{quote, where: run|person}], replaces_id, replaces_text, call_id, model, created_at, state: proposed|approved|rejected, decided_at, decided_by, decided_by_name, note, item_id}`.
+- **`Propose(p, roles)`** refuses a duplicate (spacing and case aside) of a live item the worker is given, of its own waiting proposal, or of one a person rejected (`ErrDuplicate`); a `replaces_text` that is not the exact text of a live item the worker is given; and a fourth proposal of one run.
+- **`Approve(id, by, scope, key)`** makes the item with the approver as its source (`person`, `ref` = their actor id, `worker` and `task_id` the run's: plan rule 5). `lesson` becomes a lesson, `app_note` a fact. Scoped to the proposing worker by default, or a role or everyone as the person picks; never another worker or a task. A proposal that replaces an item supersedes it in that item's scope, only while it is still live with the quoted text: otherwise `ErrChanged`, "it changed since this was proposed", and the proposal stays waiting.
+- **`Reject(id, by, note)`** keeps the row, rejected, with who and why. Nothing is deleted.
+
+Routes, primary listener only:
+
+- `POST /api/desktops/proposals {task_id, model?, call_id?, proposals: [{kind, text, why, evidence, replaces}]}` (≤ 3): a desktop's callback (in `containerRoutes`), as itself, for its own tasks only (403). Each proposal is checked again: a `person` quote must stand in a person's own judgement on that task or its request, and no part may hold a value the person marked secret (`heldFor`) or anything secret-shaped (`withhold.Text`). Answers `{kept: [{index, id}], refused: [{index, why}]}`.
+- `GET /api/knowledge/proposals?state=proposed|approved|rejected|all` (waiting by default), with each run's request; `POST /api/knowledge/proposals/approve {id, scope?, scope_key?}` and `.../reject {id, note?}`: `humansOnly`, a person only (the actor from `ActorContext`; O-7). Each decision is also a `knowledge` judgement of that person on the run's task (door `workforce`).
+
 ### Limits
 
 - Text is free prose from people and runs. It is a principle the model reads, never code the harness obeys. Like `taskRules`, it should state principles, not stories.
@@ -107,7 +123,7 @@ Three places read it, each for the task it works on (`task_context.current()`), 
 - **Workers & roles**: each desktop's registry roles, its installed skills, what Outdated reports, and a Sync button.
 - **Skills**: the registry, with Publish, Install and "Give a skill to a role" forms.
 - **Queue** (docs/workqueue.md), **Handoffs** (docs/handoff.md) and **Access** (docs/access.md).
-- **Knowledge**: items by scope with Why, Replace and Retire; an Add form; a lookup by task id.
+- **Knowledge**: on the primary listener, first "Proposed by workers": each waiting proposal's text, why, the quotes it rests on (the person's or the run's), the line it replaces, its worker, task and request, with Approve (for this worker, a role or everyone) and Reject (an optional reason). Then items by scope with Why, Replace and Retire; an Add form; a lookup by task id.
 
 The open tab polls every 4 s while the page is visible. On the gated listener the page shows only Workers & roles, Skills and Knowledge, since the queue, handoff and access routes are on the primary listener only. Their forms still show there, but every write is refused (O-7).
 

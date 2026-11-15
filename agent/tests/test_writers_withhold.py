@@ -39,10 +39,12 @@ ALLOWED = {
                                     "the gate's own words, withheld by shown_by_gate; the gate's user cannot read "
                                     "the worker's values) - a desktop with no gate writes it through write_scrubbed",
     "computer/core.py:_state_lock": "the observation lock file",
+    "computer/control.py:_locked": "the screen control state's lock file (no content)",
     "computer/recording.py:_locked": "a recording's lock file",
     "computer/skill_engine.py:run": "the skill engine's lock file",
     "computer/skill_engine.py:_note_replayed": "the replay notes' lock file",
     "retention.py:_write_label": "the labels' lock file",
+    "learned.py:_locked": "a learned-artefact store's lock file (no content)",
     "workflow_runner.py:_lock": "a workflow run's lock file",
     # Bytes, which no text withholding can read: pictures (secret fields painted over by their callers) and blobs.
     "computer/audit.py:keep_observation": "an observation blob, privacy.scrub'd in _observation_doc before it is "
@@ -134,10 +136,12 @@ FORMS = {
     "gate_server.py:_write_private": {"os.fdopen", "os.replace"},
     "computer/approval.py:_locked": {"open", "os.fdopen", "os.replace"},
     "computer/core.py:_state_lock": {"open"},
+    "computer/control.py:_locked": {"open"},
     "computer/recording.py:_locked": {"open"},
     "computer/skill_engine.py:run": {"open"},
     "computer/skill_engine.py:_note_replayed": {"open"},
     "retention.py:_write_label": {"open"},
+    "learned.py:_locked": {"open"},
     "workflow_runner.py:_lock": {"Path.open"},
     "computer/audit.py:keep_observation": {"os.replace", "write_bytes"},
     "computer/broker.py:deliver_to_caller": {"open", "os.replace"},

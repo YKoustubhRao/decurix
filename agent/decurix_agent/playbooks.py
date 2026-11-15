@@ -125,24 +125,40 @@ def load(name):
     return book if isinstance(book, dict) and isinstance(book.get("commands"), list) else None
 
 
-def save(book):
-    """Write a playbook, through privacy.scrub (review 2026-11-03, E-14: a request's password was kept in the store).
-    A book that cannot be checked for secrets is not written: False."""
+def save(book, actor=None):
+    """Write a playbook, through privacy.scrub (review 2026-11-03, E-14: a request's password was kept in the store),
+    on the store's ledger (learned.write; `actor` the caller's - a "run" write to one a person locked keeps only its
+    uses). A book that cannot be checked for secrets is not written: False."""
 
+    from decurix_agent import learned
     kept = privacy.scrub(book)
     if not isinstance(kept, dict) or kept.get("name") != book["name"]:
         log(f"Playbooks: {book['name']} could not be checked for secrets, so it was not kept")
         return False
     ROOT.mkdir(parents=True, exist_ok=True)
-    privacy.write_scrubbed(_path(book["name"]), kept, atomic=True, json_kw={"indent": 1, "ensure_ascii": False})
+    learned.write("playbook", book["name"], _path(book["name"]), kept, actor=actor, atomic=True,
+                  json_kw={"indent": 1, "ensure_ascii": False})
     return True
 
 
-def delete(name):
+def delete(name, actor=None):
+    """Remove a playbook's file, on the ledger (learned.rollback brings it back). Raises learned.Locked for one a
+    person locked, unless a person removes it."""
+
+    from decurix_agent import learned
     try:
-        _path(name).unlink()
+        learned.remove("playbook", name, _path(name), actor=actor)
+    except learned.Locked:
+        raise
     except OSError:
         pass
+
+
+def _locked(name):
+    """Whether a person locked this playbook (and so its tool): only how its runs went is kept."""
+
+    from decurix_agent import learned
+    return learned.is_locked("playbook", name)
 
 
 def all_books():
@@ -209,7 +225,9 @@ def find(request, skill=None):
 
     if not ENABLED:
         return None
-    books = all_books()
+    from decurix_agent import learned
+    aside = learned.archived("playbook")
+    books = [b for b in all_books() if b.get("name") not in aside]  # (set aside by a person: not offered)
     if skill:
         return next((b for b in books if b.get("skill") == skill), None)
     mine = shape(request)
@@ -627,6 +645,9 @@ def context(request, skill=None):
     with _lock:
         _run["offered"] = book["name"]
         said, _run["said"] = _run["said"], True
+    if not said:
+        from decurix_agent import learned
+        learned.note_use("playbook", book["name"])
 
     if not said:
         try:
@@ -662,7 +683,8 @@ DISTIL_SYSTEM = (
     "Rules:\n"
     "- Python 3 with the standard library only, or bash. It may call the programs the commands called (for example "
     "`office`), in the same way they did. It does nothing the commands did not do: no network, nothing deleted, "
-    "nothing sent.\n"
+    "nothing sent. In Python, `import decurix_tools` and `decurix_tools.office_read(path)` read a document as "
+    "`office read` does, parsed: {\"text\": ..., \"images\": [...]}.\n"
     "- Every argument is something the request states word for word: a file by its name, an address, a phrase it "
     "quotes. Whatever is derived from those (a month's full name from a file's name, a label, a title) is worked "
     "out inside the script, never passed in.\n"
@@ -688,12 +710,18 @@ MAX_DISTIL_SESSIONS = 2
 DROP_UNUSED_AFTER = 2
 
 
-def _drop_tool(book):
+def _drop_tool(book, actor):
+    """Take a playbook's tool away: its script removed on the ledger (rollback brings it back)."""
+
+    from decurix_agent import learned
     tool = book.pop("tool", None)
     if tool and tool.get("path"):
         try:
-            Path(tool["path"]).unlink()
-        except OSError:
+            learned.remove("tool_script", book["name"], tool["path"], actor=actor)
+        except learned.Locked:
+            book["tool"] = tool
+            raise
+        except (OSError, ValueError):
             pass
 
 
@@ -926,7 +954,9 @@ def _run_in_copy(tool, sandbox, work):
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], f"it could not be run ({exc})"
     if done.returncode != 0:
-        return [], f"it exited {done.returncode}: {(done.stderr or done.stdout or '').strip()[-600:]}"
+        # (What it printed goes back to the model that wrote it: never a secret that passed through.)
+        said = privacy.withhold_registered((done.stderr or done.stdout or "").strip()[-600:])
+        return [], f"it exited {done.returncode}: {said}"
     if not (done.stdout or "").strip():
         return [], "it printed nothing: it has to print what it wrote"
 
@@ -1088,7 +1118,9 @@ def _distil(book):
         if not wrong:
             try:
                 TOOLS.mkdir(parents=True, exist_ok=True)
-                privacy.write_scrubbed(path, answer["script"].rstrip() + "\n", newline="\n")
+                from decurix_agent import learned
+                learned.write("tool_script", book["name"], path, answer["script"].rstrip() + "\n", actor="learner",
+                              newline="\n")
                 wrong = _prove(tool)
             except OSError as exc:
                 wrong = f"it could not be saved or tried ({exc})"
@@ -1100,8 +1132,9 @@ def _distil(book):
 
         log(f"Playbooks: the tool written for {book['name']} is not kept (attempt {attempt + 1}): {wrong[:300]}")
         try:
-            path.unlink()
-        except OSError:
+            from decurix_agent import learned
+            learned.remove("tool_script", book["name"], path, actor="learner")
+        except (OSError, ValueError):
             pass
         messages += [
             {"role": "assistant", "content": message.get("content") or ""},
@@ -1209,7 +1242,7 @@ def own_replayed(session, worked):
             record.update(turns=0, direct=True, replay=True)
             book["uses"] = ((book.get("uses") or []) + [record])[-USE_HISTORY:]
             try:
-                save(book)
+                save(book, actor="run")
             except OSError as exc:
                 log(f"Playbooks: could not count a replay: {exc}")
         return
@@ -1262,6 +1295,14 @@ def keep(request, skill=None):
         book = find(request, skill)
 
     try:
+        if book is not None and _locked(book["name"]):
+            # A person locked it: the run is counted, and nothing it would have changed is.
+            book["uses"] = ((book.get("uses") or []) + [run])[-USE_HISTORY:]
+            if clean:
+                book["misses"] = 0
+            save(book, actor="run")
+            log(f"Playbooks: {book['name']} is locked by a person - counted this run, changed nothing else")
+            return book["name"]
         if book is not None:
             book["uses"] = ((book.get("uses") or []) + [run])[-USE_HISTORY:]
             if clean:
@@ -1281,7 +1322,7 @@ def keep(request, skill=None):
                     tool["unused"] = tool.get("unused", 0) + 1
                     if tool["unused"] >= DROP_UNUSED_AFTER:
                         log(f"Playbooks: dropped the tool of {book['name']}: given {tool['unused']} times and not run")
-                        _drop_tool(book)
+                        _drop_tool(book, "retire")
             elif clean and commands:
                 if len(commands) <= len(book["commands"]):
                     book["commands"], book["longer"] = commands, 0
@@ -1292,7 +1333,7 @@ def keep(request, skill=None):
                 # Shell work kept before there was a tool for it gets its one try at one now.
                 if not _on_screen(book["commands"]) and not paused and not book.get("tool_tried"):
                     _distil(book)
-            save(book)
+            save(book, actor="relearn")
             return book["name"]
 
         if not clean or not worth or len(all_books()) >= MAX_PLAYBOOKS:
@@ -1313,7 +1354,7 @@ def keep(request, skill=None):
         if not _on_screen(commands) and not paused:
             _distil(book)
             book["made"]["tokens"] = usage.spent()     # what learning it cost, the tool's writing included
-        save(book)
+        save(book, actor="learner")
         log(f"Playbooks: kept {book['name']} ({len(commands)} commands, {book['made']['tokens']} tokens the first time)")
         return book["name"]
     except OSError as exc:
@@ -1340,7 +1381,11 @@ def tool_failed(book, why):
 
     if not book.get("tool"):
         return
-    _drop_tool(book)
+    if _locked(book["name"]):
+        # Left as the person locked it: its next result is still checked before anything is reported.
+        log(f"Playbooks: the tool of {book['name']} was checked wrong, but a person locked it, so it stays")
+        return
+    _drop_tool(book, "retire")
     faults = (book.get("tool_faults") or []) + [" ".join((why or "its result was not what the request asked").split())[:400]]
     book["tool_faults"] = faults[-MAX_TOOL_FAULTS:]
     # The next clean run by hand may have a script written from it - until too many have gone wrong.
@@ -1369,15 +1414,15 @@ def missed(why=""):
         tool = book.get("tool")
         if tool and any(Path(tool["path"]).as_posix() in c for c in ran):
             tool_failed(book, why)
-            save(book)
+            save(book, actor="run")
             return
         book["misses"] = book.get("misses", 0) + 1
-        if book["misses"] >= RETIRE_AFTER:
-            _drop_tool(book)
-            delete(book["name"])
+        if book["misses"] >= RETIRE_AFTER and not _locked(book["name"]):
+            _drop_tool(book, "retire")
+            delete(book["name"], actor="retire")
             log(f"Playbooks: dropped {book['name']}: not done {book['misses']} times running with it")
         else:
-            save(book)
+            save(book, actor="run")
     except OSError as exc:
         log(f"Playbooks: could not count a miss: {exc}")
 
@@ -1487,8 +1532,8 @@ def forget(name):
         recording.update(entry["recording"], proven=False, misses=0)
     book = load(name)
     if book is not None:
-        _drop_tool(book)
-        delete(name)
+        _drop_tool(book, "person")
+        delete(name, actor="person")
     return True
 
 

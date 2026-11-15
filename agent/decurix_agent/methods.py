@@ -57,10 +57,14 @@ def _all():
     return out
 
 
-def _save(method):
+def _save(method, actor):
+    """Write a method on its store's ledger (learned.write; `actor` the caller's). Raises learned.Locked when a person
+    locked it."""
+
     ROOT.mkdir(parents=True, exist_ok=True)
-    from decurix_agent.computer import privacy
-    privacy.write_scrubbed(_path(method["name"]), method, atomic=True, json_kw={"indent": 1, "ensure_ascii": False})
+    from decurix_agent import learned
+    learned.write("method", method["name"], _path(method["name"]), method, actor=actor, atomic=True,
+                  json_kw={"indent": 1, "ensure_ascii": False})
 
 
 def _without_values(text):
@@ -74,7 +78,11 @@ def find(request):
 
     mine = playbooks.shape(request)
     best, score = None, 0.0
+    from decurix_agent import learned
+    aside = learned.archived("method")
     for method in _all():
+        if method.get("name") in aside:
+            continue  # (set aside by a person: not offered on its own)
         alike = playbooks._alike(mine, method.get("shape") or [])
         if alike > score:
             best, score = method, alike
@@ -136,6 +144,7 @@ def keep(request):
         if entry["said"] and all(entry["said"] != s["said"] for s in said):
             said.append(entry)
     method = find(request)
+    actor = "relearn" if method is not None else "learner"
     if method is None:
         if len(_all()) >= MAX_METHODS:
             return None
@@ -152,8 +161,8 @@ def keep(request):
     method["runs"] = int(method.get("runs") or 0) + 1
     method["kept_at"] = time.time()
     try:
-        _save(method)
-    except OSError as exc:
+        _save(method, actor)
+    except OSError as exc:  # (learned.Locked too: a method a person locked is left as they locked it)
         log(f"Methods: could not keep the method for this kind of task: {exc}")
         return None
     log(f"Methods: kept {method['name']} ({method['runs']} checked run(s))")
@@ -166,6 +175,8 @@ def context(request):
     method = find(request)
     if method is None:
         return ""
+    from decurix_agent import learned
+    learned.note_use("method", method["name"])
     plan = method["plan"]
     lines = [f"{MARKER} (learned from {method.get('runs', 1)} earlier checked run(s) of a request like this one; it "
              "names places and steps, never values - what you read now decides):"]

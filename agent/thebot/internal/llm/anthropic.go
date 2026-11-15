@@ -43,11 +43,56 @@ type anthropicMessage struct {
 }
 
 type anthropicRequest struct {
-	Model       string             `json:"model"`
-	MaxTokens   int                `json:"max_tokens"`
-	System      string             `json:"system,omitempty"`
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens"`
+	// System is the system prompt: a string, or one text block marked for the prompt cache (markForCache); nil for
+	// none.
+	System      any                `json:"system,omitempty"`
 	Messages    []anthropicMessage `json:"messages"`
 	Temperature float64            `json:"temperature,omitempty"`
+}
+
+// anthropicText is a text block; CacheControl marks the end of a prefix Claude may cache.
+type anthropicText struct {
+	Type         string          `json:"type"`
+	Text         string          `json:"text"`
+	CacheControl *anthropicCache `json:"cache_control,omitempty"`
+}
+
+// anthropicCache is a cache breakpoint: "ephemeral", Claude's five-minute cache.
+type anthropicCache struct {
+	Type string `json:"type"`
+}
+
+// cacheBreakpointMessages is how many of the newest messages end a cacheable prefix, beside the system prompt: four
+// breakpoints in all, the most the API takes. A rolling three, not the last alone, because the operator rewrites the
+// newest message (a note appended to it) and its maintenance rewrites older ones: a prefix ending one or two messages
+// earlier is then still found (Hermes agent/prompt_caching.py, "system_and_3").
+const cacheBreakpointMessages = 3
+
+// markForCache puts Claude's cache breakpoints on a request: the system prompt and the last cacheBreakpointMessages
+// messages. A one-shot call (no earlier turn: one user message) gets none: writing a cache costs more than reading the
+// prompt once, and nothing would read it. The marks change no text; the same messages always give the same bytes.
+func markForCache(req *anthropicRequest) {
+	if len(req.Messages) <= 1 {
+		return
+	}
+	if s, ok := req.System.(string); ok && s != "" {
+		req.System = []anthropicText{{Type: "text", Text: s, CacheControl: &anthropicCache{Type: "ephemeral"}}}
+	}
+	for i := max(0, len(req.Messages)-cacheBreakpointMessages); i < len(req.Messages); i++ {
+		switch c := req.Messages[i].Content.(type) {
+		case string:
+			if c != "" {
+				req.Messages[i].Content = []anthropicText{{Type: "text", Text: c, CacheControl: &anthropicCache{Type: "ephemeral"}}}
+			}
+		case []map[string]any:
+			// A message with pictures ends with its text block; an empty text cannot carry a mark.
+			if n := len(c); n > 0 && (c[n-1]["type"] != "text" || c[n-1]["text"] != "") {
+				c[n-1]["cache_control"] = &anthropicCache{Type: "ephemeral"}
+			}
+		}
+	}
 }
 
 type anthropicResponse struct {
@@ -60,6 +105,9 @@ type anthropicResponse struct {
 	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
+		// The prompt read from Claude's cache, and the prompt written to it: both are prompt, beside InputTokens.
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 	apiError
 }
@@ -116,10 +164,17 @@ func (a *AnthropicProvider) chatOnce(ctx context.Context, model string, messages
 	if opts.MaxTokens > 0 {
 		maxTokens = opts.MaxTokens
 	}
-	reqBody := anthropicRequest{Model: model, MaxTokens: maxTokens, System: strings.Join(systemParts, "\n\n"), Messages: msgs, Temperature: opts.Temperature}
+	reqBody := anthropicRequest{Model: model, MaxTokens: maxTokens, Messages: msgs, Temperature: opts.Temperature}
+	if system := strings.Join(systemParts, "\n\n"); system != "" {
+		reqBody.System = system
+	}
+	markForCache(&reqBody)
 	var parsed anthropicResponse
 	headers := map[string]string{"x-api-key": a.APIKey, "anthropic-version": "2023-06-01"}
-	if _, err := postJSON(ctx, a.Client.Do, "anthropic", a.BaseURL+"/v1/messages", headers, reqBody, &parsed, &parsed.apiError); err != nil {
+	// Sent through rateLimitedRequest, as openai.go's calls are: a 429 or the provider's own failure (5xx, 529
+	// overloaded) is waited out as its retry-after says, any other refusal is final.
+	do := func(req *http.Request) (*http.Response, error) { return rateLimitedRequest(a.Client, req) }
+	if _, err := postJSON(ctx, do, "anthropic", a.BaseURL+"/v1/messages", headers, reqBody, &parsed, &parsed.apiError); err != nil {
 		return Result{}, err
 	}
 
@@ -130,13 +185,19 @@ func (a *AnthropicProvider) chatOnce(ctx context.Context, model string, messages
 		}
 	}
 
+	u := parsed.Usage
 	return Result{
 		Text:           text,
-		PromptTokens:   parsed.Usage.InputTokens,
-		ResponseTokens: parsed.Usage.OutputTokens,
+		PromptTokens:   u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
+		ResponseTokens: u.OutputTokens,
+		CachedTokens:   u.CacheReadInputTokens,
 		Truncated:      parsed.StopReason == "max_tokens",
+		FinishReason:   parsed.StopReason,
 	}, nil
 }
+
+// Endpoint is where this provider sends its calls (RouteOf).
+func (a *AnthropicProvider) Endpoint() string { return a.BaseURL }
 
 // IsReachable asks the Models API about the configured model (GET /v1/models/{model}): the key, the network and the
 // model, confirmed without a paid call. It used to send a real chat message, and /api/health (polled every few

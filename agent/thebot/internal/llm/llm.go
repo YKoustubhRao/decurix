@@ -73,6 +73,49 @@ type Result struct {
 	// simply been cut off, because a truncated file and a badly written
 	// file fail in exactly the same way - with a syntax error.
 	Truncated bool
+	// FinishReason is why the provider says it stopped, as it said it ("stop", "length", "end_turn", ...), or
+	// "repetition" when soul cut a stream that had fallen into a loop (runaway.go). "" when it said nothing.
+	FinishReason string
+}
+
+// RouteKey is one route to a model: the provider, the model asked for and the endpoint it was asked at. A fact soul
+// learns about a route while running (a field it refuses, what a picture costs) is kept under the whole key, so a
+// change of brain or of endpoint starts from nothing rather than inheriting another route's fact.
+type RouteKey struct {
+	Provider string
+	Model    string
+	Endpoint string
+}
+
+// String is the key as "provider/model@endpoint".
+func (k RouteKey) String() string { return k.Provider + "/" + k.Model + "@" + k.Endpoint }
+
+// endpointer is a provider that says where it sends its calls.
+type endpointer interface{ Endpoint() string }
+
+// unwrapper is a wrapper (Limited, Metered, a trace) that can hand back the provider it wraps.
+type unwrapper interface{ Unwrap() Provider }
+
+// RouteOf is the route p's calls for model take: its name, the model, and the endpoint of the first provider under
+// any wrappers that says where it sends its calls ("" when none does).
+func RouteOf(p Provider, model string) RouteKey {
+	key := RouteKey{Model: model}
+	if p == nil {
+		return key
+	}
+	key.Provider = p.Name()
+	for depth := 0; p != nil && depth < 8; depth++ {
+		if e, ok := p.(endpointer); ok {
+			key.Endpoint = e.Endpoint()
+			break
+		}
+		u, ok := p.(unwrapper)
+		if !ok {
+			break
+		}
+		p = u.Unwrap()
+	}
+	return key
 }
 
 type Options struct {

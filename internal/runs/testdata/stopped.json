@@ -86,6 +86,7 @@
         "exit": 3,
         "ms": 1200,
         "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "output_head": "ok",
         "guard": "asked"
       },
       "action": {

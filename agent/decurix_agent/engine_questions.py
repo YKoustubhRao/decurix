@@ -549,8 +549,13 @@ def learn_answer(reply, secret=False, judgement_id=""):
     said = {"at": int(time.time()), "q": " ".join(asked.split())[:500], "a": reply}
     kept = [x for x in fresh.get("run_answers") or [] if (x.get("q"), x.get("a")) != (said["q"], said["a"])]
     fresh["run_answers"] = (kept + [said])[-MAX_RUN_ANSWERS:]
-    skills.save(fresh)
     run["skill"]["run_answers"] = fresh["run_answers"]
+    from decurix_agent import learned
+    try:
+        skills.save(fresh, actor="correction")
+    except learned.Locked as exc:
+        log(f"Skill {fresh['name']}: the person's answer holds for this run only: {exc}")
+        return
     log(f"Skill {fresh['name']}: kept the person's answer to {said['q'][:120]!r}")
     if not secret:
         messaging.post_learned("run_answer", fresh["name"], fresh.get("version", 1), said["q"], said["a"],

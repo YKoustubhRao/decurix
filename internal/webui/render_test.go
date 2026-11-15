@@ -392,12 +392,13 @@ func TestRenderEveryPage(t *testing.T) {
 	// the primary-only ones (queue, handoffs, access) when asked for through
 	// the gated listener - neither their markup nor the script that calls them.
 	var workforce bytes.Buffer
-	if err := renderer.RenderWorkforce(&workforce, WorkforcePageData{HasSkillHub: true, HasKnowledge: true, HasQueue: true, HasHandoffs: true, HasAccess: true}); err != nil {
+	if err := renderer.RenderWorkforce(&workforce, WorkforcePageData{HasSkillHub: true, HasKnowledge: true, HasQueue: true, HasHandoffs: true, HasAccess: true, HasProposals: true}); err != nil {
 		t.Fatalf("RenderWorkforce: %v", err)
 	}
 	for _, want := range []string{
 		`id="sec-workers"`, `id="sec-skills"`, `id="sec-queue"`, `id="sec-handoffs"`, `id="sec-knowledge"`, `id="sec-access"`,
 		"/api/skillhub/sync", "/api/queue/limits", "/api/handoffs/cancel", "/api/knowledge/why", "/api/access/policies/check",
+		"Proposed by workers", `id="proposalList"`, "/api/knowledge/proposals/approve", "/api/knowledge/proposals/reject",
 		`href="/workforce" class="active"`, "D.poll(refresh, POLL_MS)",
 	} {
 		if !strings.Contains(workforce.String(), want) {
@@ -408,7 +409,8 @@ func TestRenderEveryPage(t *testing.T) {
 	if err := renderer.RenderWorkforce(&workforce, WorkforcePageData{Gated: true, HasSkillHub: true, HasKnowledge: true}); err != nil {
 		t.Fatalf("RenderWorkforce (gated): %v", err)
 	}
-	for _, gone := range []string{`id="sec-access"`, "/api/access/", `id="sec-queue"`, "/api/queue", `id="sec-handoffs"`, "/api/handoffs"} {
+	for _, gone := range []string{`id="sec-access"`, "/api/access/", `id="sec-queue"`, "/api/queue", `id="sec-handoffs"`, "/api/handoffs",
+		"/api/knowledge/proposals", `id="proposalList"`} {
 		if strings.Contains(workforce.String(), gone) {
 			t.Errorf("the gated workforce page still has %q", gone)
 		}

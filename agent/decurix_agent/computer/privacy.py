@@ -4,6 +4,7 @@ import os
 import re
 import unicodedata
 import urllib.parse
+import zlib
 from pathlib import Path
 
 from decurix_agent.computer import elements as el
@@ -159,15 +160,17 @@ def remember_secrets(text):
     """Keep the hashes of the secrets `text` gives, for withhold_known to find. Never raises."""
 
     try:
-        hashes = [_hash(s) for s in request_secrets(text)]
+        found = request_secrets(text)
+        hashes = [_hash(s) for s in found] + _exact_entries(found)
     except Exception:  # noqa: BLE001 - remembering is a safety net, never a failure of the task
         return
     _keep_hashes(hashes)
 
 
 def _keep_hashes(hashes):
-    """Add hashes to the secrets file. When it cannot be written they are still withheld in this process (_unsaved):
-    a secret not remembered must not be a secret let through. Never raises."""
+    """Add hashes (and exact entries, _exact_entries) to the secrets file, at most _MAX_KEPT of each kind, the newest
+    kept. When it cannot be written they are still withheld in this process (_unsaved): a secret not remembered must
+    not be a secret let through. Never raises."""
 
     if not hashes:
         return
@@ -175,7 +178,9 @@ def _keep_hashes(hashes):
         path = _secrets_file()
         path.parent.mkdir(parents=True, exist_ok=True)
         kept = [h for h in path.read_text(encoding="utf-8").split() if h] if path.exists() else []
-        kept = list(dict.fromkeys(kept + list(hashes)))[-_MAX_KEPT:]
+        kept = list(dict.fromkeys(kept + list(hashes)))
+        kept = ([h for h in kept if not h.startswith(_EXACT_TAG)][-_MAX_KEPT:]
+                + [h for h in kept if h.startswith(_EXACT_TAG)][-_MAX_KEPT:])
         path.write_text("\n".join(kept) + "\n", encoding="utf-8")
         try:
             os.chmod(path, 0o600)
@@ -213,8 +218,9 @@ def _known():
 
 
 def known_secret_in(text):
-    """Whether text holds a word that is one of the request secrets remembered. True when it cannot be told (fail
-    closed: a text that cannot be checked is treated as holding one)."""
+    """Whether text holds a word that is one of the request secrets remembered, or the exact bytes of a secret that
+    passed through (_exact_spans). True when it cannot be told (fail closed: a text that cannot be checked is treated
+    as holding one)."""
 
     if not text:
         return False
@@ -222,9 +228,214 @@ def known_secret_in(text):
         known = _known()
         if not known:
             return False
-        return any(_hash(w) in known or _hash(w.rstrip(".:!?")) in known for w in _WORD.findall(str(text)))
+        if any(_hash(w) in known or _hash(w.rstrip(".:!?")) in known for w in _WORD.findall(str(text))):
+            return True
+        return bool(_exact_spans(str(text), _exact_index()))
     except Exception:  # noqa: BLE001 - fail closed
         return True
+
+
+# ============================================================
+# The exact bytes of every secret that passed through (2026-11-12)
+#
+# A word hash finds a secret only where it stands as a word between the separators _WORD knows: "pw:Hunter2!" (one
+# word with its label), a passphrase with spaces in it, or a value glued into a longer token was let through once its
+# task's plain values were let go (clear_literals). So every secret that passes through - a request's
+# (remember_secrets), a value typed into a secret field or a secret reply (remember_value), a task's secret values
+# (remember_literals), a marked message (remember_marked) - is also kept by its exact bytes and their normal forms (CR
+# and LF taken out, surrounding whitespace trimmed, whitespace collapsed). Kept as hashes like the words, never the
+# text: its length in UTF-8 bytes, a CRC-32 that finds a candidate cheaply and the SHA-256 that confirms it, in the
+# same file as the word hashes (so the screen side of broker mode is told them with no more plumbing). A text is
+# checked by sliding a window of each kept length over its bytes, longest value first: secrets are short, and a
+# window costs about 0.3 microseconds. The technique is hermes-agent's (agent/redact.py,
+# register_vault_redaction_value), which keeps the plain values in memory; this store outlives a task, so it keeps
+# hashes.
+#
+# The floor (a word is no secret to withhold everywhere: "OTP: ask me" once withheld every later "ask", gotchas part 6):
+# a form of fewer than MIN_SUBSTRING characters, or of letters and spaces only and shorter than MIN_EXACT_PLAIN, or
+# longer than MAX_EXACT, is never kept here. A value with no letter (a PIN, a code, a figure) and a value of letters and
+# spaces only are withheld only where they stand as a whole token; a value that mixes letters with digits or marks
+# ("Hunter2!", "ab;cd9xyz") wherever it stands.
+# ============================================================
+
+_EXACT_TAG = "x"  # (a SHA-256 in hex never starts with it)
+MIN_EXACT_PLAIN = 12
+MAX_EXACT = 512
+_exact_cache = {}
+
+
+def exact_forms(value):
+    """The forms of a secret that are kept by their exact bytes: as it came, trimmed, without CR and LF (what a text
+    field makes of it), both, and with its whitespace collapsed (as the task's values are kept)."""
+
+    value = "" if value is None else str(value)
+    flat = value.replace("\r", "").replace("\n", "")
+    forms = (value, value.strip(), flat, flat.strip(), " ".join(value.split()))
+    return list(dict.fromkeys(f for f in forms if f))
+
+
+def exact_mode(form):
+    """How a form is withheld: "a" wherever it stands, "w" only as a whole token, or None when it is under the floor
+    (see above) and never kept."""
+
+    if not form or len(form) < MIN_SUBSTRING or len(form) > MAX_EXACT:
+        return None
+    low = form.lower()
+    if "[withheld" in low or "[held back" in low:
+        return None
+    letters = any(unicodedata.category(ch)[0] == "L" for ch in form)
+    others = any(unicodedata.category(ch) == "Nd" or unicodedata.category(ch)[0] in "PS" for ch in form)
+    if not others:
+        return "w" if letters and len(form) >= MIN_EXACT_PLAIN else None
+    return "a" if letters else "w"
+
+
+def _exact_entry(form, mode):
+    data = form.encode("utf-8", "surrogatepass")
+    return f"{_EXACT_TAG}{len(data)}.{mode}.{zlib.crc32(data):08x}.{hashlib.sha256(data).hexdigest()}"
+
+
+def _exact_entries(values, whole=False):
+    """The exact entries of values (each form above the floor); a value marked WHOLE_TOKEN, or every one with `whole`,
+    only as a whole token."""
+
+    out = []
+    for value in values or ():
+        value = "" if value is None else str(value)
+        forced = whole or value.startswith(WHOLE_TOKEN)
+        if value.startswith(WHOLE_TOKEN):
+            value = value[len(WHOLE_TOKEN):]
+        for form in exact_forms(value):
+            mode = exact_mode(form)
+            if mode:
+                out.append(_exact_entry(form, "w" if forced else mode))
+    return list(dict.fromkeys(out))
+
+
+def remember_exact(values, whole=False):
+    """Keep the exact bytes of each secret in `values` (by hash, see above), for every later withholding. Never
+    raises."""
+
+    try:
+        entries = _exact_entries(values, whole)
+    except Exception:  # noqa: BLE001 - remembering is a safety net, never a failure of the task
+        return
+    _keep_hashes(entries)
+
+
+def _exact_index():
+    """{length in bytes: {crc: {sha256: mode}}} of the exact entries kept. Raises _Unreadable (callers fail closed)."""
+
+    entries = frozenset(k for k in _known() if k.startswith(_EXACT_TAG))
+    if not entries:
+        return {}
+    if _exact_cache.get("entries") != entries:
+        index = {}
+        for entry in entries:
+            try:
+                length, mode, crc, sha = entry[len(_EXACT_TAG):].split(".")
+                length, crc = int(length), int(crc, 16)
+            except ValueError:
+                continue
+            if length <= 0 or mode not in ("a", "w"):
+                continue
+            modes = index.setdefault(length, {}).setdefault(crc, {})
+            if modes.get(sha) != "a":  # (kept both ways: wherever it stands wins)
+                modes[sha] = mode
+        _exact_cache.update(entries=entries, index=index)
+    return _exact_cache["index"]
+
+
+def _exact_spans(text, index):
+    """The (start, end) in `text` of every kept secret's exact bytes, a whole-token one only where it stands as one."""
+
+    if not index or not text:
+        return []
+    data = text.encode("utf-8", "surrogatepass")
+    view, crc = memoryview(data), zlib.crc32
+    found = []
+    for length, table in index.items():
+        if length > len(data):
+            continue
+        for at in [i for i in range(len(data) - length + 1) if crc(view[i:i + length]) in table]:
+            mode = table[crc(view[at:at + length])].get(hashlib.sha256(view[at:at + length]).hexdigest())
+            if mode:
+                found.append((at, at + length, mode))
+    spans = []
+    for a, b, mode in found:
+        if len(data) != len(text):  # (not ASCII: byte offsets to character offsets)
+            a, b = len(data[:a].decode("utf-8", "surrogatepass")), len(data[:b].decode("utf-8", "surrogatepass"))
+        if mode == "w" and ((a > 0 and _letter_or_digit(text[a - 1])) or (b < len(text) and _letter_or_digit(text[b]))):
+            continue
+        spans.append((a, b))
+    return spans
+
+
+def _withhold_spans(text, spans):
+    """`text` with each span replaced by [withheld]: the longest first, never one that overlaps another chosen or a
+    [withheld] mark already there."""
+
+    if not spans:
+        return text
+    taken = []
+    at = text.find(_MARKER)
+    while at != -1:
+        taken.append((at, at + len(_MARKER)))
+        at = text.find(_MARKER, at + 1)
+    chosen = []
+    for a, b in sorted(set(spans), key=lambda s: (s[0] - s[1], s[0])):
+        if all(b <= x or a >= y for x, y in taken):
+            taken.append((a, b))
+            chosen.append((a, b))
+    out, last = [], 0
+    for a, b in sorted(chosen):
+        out += [text[last:a], _MARKER]
+        last = b
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _withhold_exact(text):
+    """`text` with the exact bytes of every kept secret withheld. Raises _Unreadable (callers fail closed)."""
+
+    return _withhold_spans(text, _exact_spans(text, _exact_index()))
+
+
+def withhold_registered(obj):
+    """
+    What a tool prints for the worker to read (the screen's text and OCR, a page's or an app's read, a document read, a
+    script's output), with every secret that passed through withheld: the tasks' values as they are, the exact bytes
+    kept, the hashed words. No shape rule: an OTP or a key a page shows is the worker's to read; only what the task was
+    given, or typed, as a secret is withheld. A str comes back a str; dicts and lists are withheld string by string.
+    Never raises: what cannot be checked comes back as HELD_BACK ({"held_back": ...} for a dict, [] for a list).
+    """
+
+    if obj is None or obj == "":
+        return obj
+    try:
+        if isinstance(obj, str):
+            return obj if obj.isspace() else _withhold_known(obj, shapes=False)
+        return _withhold_tree(obj, False)
+    except Exception:  # noqa: BLE001 - fail closed
+        if isinstance(obj, dict):
+            return {"held_back": HELD_BACK}
+        if isinstance(obj, (list, tuple)):
+            return []
+        return HELD_BACK
+
+
+class WithheldOutput:
+    """A text stream that withholds every registered secret (withhold_registered) from what is written to it: a
+    command's stdout, so nothing it prints for the worker holds one."""
+
+    def __init__(self, out):
+        self.out = out
+
+    def write(self, text):
+        return self.out.write(withhold_registered(text) if isinstance(text, str) else text)
+
+    def __getattr__(self, name):
+        return getattr(self.out, name)
 
 
 # What is shown in place of a text that could not be checked for secrets. Withholding fails closed: an error in it
@@ -338,6 +549,7 @@ def remember_literals(values, task_id=""):
     """Keep `values` as the task's secret values, as they are. Never raises; a value that cannot be kept is still
     withheld in this process (_unsaved_literals)."""
 
+    remember_exact(values)  # (as they came: their exact bytes outlive the task, as hashes)
     values = clean_values(values)
     if not values:
         return
@@ -543,7 +755,7 @@ def _withhold_literals(text):
 
 
 def _withhold_known(text, shapes=True):
-    text = _withhold_literals(text)
+    text = _withhold_exact(_withhold_literals(text))
     if shapes:
         text = _withhold_shapes(text)
     known = _known()
@@ -1209,6 +1421,7 @@ def remember_marked(text, task_id):
     try:
         said = attachments_text(text)
         remember_secrets(said)
+        remember_exact([said])
         remember_value(" ".join(said.split()))
         remember_literals(marked_values(text), task_id or "")  # (given whole: the files it brings are its data)
     except Exception:  # noqa: BLE001 - remembering is a safety net; the control plane withholds the message too
@@ -1217,12 +1430,17 @@ def remember_marked(text, task_id):
 
 def remember_value(value):
     """Keep a secret typed into a password or code field (its hash), so withhold_known keeps it out of replies too.
-    Never raises."""
+    Never raises. Its exact bytes are kept too (remember_exact)."""
 
+    try:
+        exact = _exact_entries([value])
+    except Exception:  # noqa: BLE001 - the word hash below is still kept
+        exact = []
     value = (value or "").strip()
     if len(value) < 3:
+        _keep_hashes(exact)
         return
-    _keep_hashes([_hash(value)])
+    _keep_hashes([_hash(value)] + exact)
 
 
 def withhold_text(element, text):

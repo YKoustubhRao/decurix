@@ -148,10 +148,19 @@ def promote(task_id, stage=None):
             for folder in sorted(p for p in source.iterdir() if (p / "SKILL.md").is_file()):
                 target = LEARNED / folder.name
                 target.mkdir(parents=True, exist_ok=True)
+                from decurix_agent import learned
                 from decurix_agent.computer import privacy
-                if (target / "SKILL.md").is_file():
-                    privacy.write_scrubbed(target / "SKILL.prev.md", (target / "SKILL.md").read_text(encoding="utf-8"))
-                privacy.write_scrubbed(target / "SKILL.md", (folder / "SKILL.md").read_text(encoding="utf-8"))
+                old = (target / "SKILL.md").read_text(encoding="utf-8") if (target / "SKILL.md").is_file() else None
+                try:
+                    # On the store's ledger (learned.write): a guide a person locked is left as they locked it.
+                    learned.write("app_guide", folder.name, target / "SKILL.md",
+                                  (folder / "SKILL.md").read_text(encoding="utf-8"),
+                                  actor="relearn" if old is not None else "learner", task_id=task_id or None)
+                except learned.Locked as exc:
+                    log(f"app_skills: {exc}")
+                    continue
+                if old is not None:
+                    privacy.write_scrubbed(target / "SKILL.prev.md", old)
                 promoted.append(folder.name)
             shutil.rmtree(source, ignore_errors=True)
         if task_id and task.is_dir() and not any(task.iterdir()):
@@ -175,7 +184,10 @@ def matching(text):
     """The guides whose app the text names, in name order."""
 
     lowered = (text or "").lower()
-    return [g for g in guides() if any(_names(t, lowered) for t in g["terms"])]
+    from decurix_agent import learned
+    aside = learned.archived("app_guide")
+    return [g for g in guides() if any(_names(t, lowered) for t in g["terms"])
+            and not (g.get("learned") and g["name"] in aside)]
 
 
 def named(name):
@@ -213,7 +225,13 @@ def context(text):
     """The guides for the apps a task's text names, as one text, or ""."""
 
     try:
-        return render(matching(text))
+        found = matching(text)
+        shown = render(found)
+        from decurix_agent import learned
+        for g in found:
+            if g.get("learned") and f"{g['name']} (" in shown:
+                learned.note_use("app_guide", g["name"])
+        return shown
     except Exception as exc:  # a guide must never cost a task
         log(f"app_skills: {exc}")
         return ""

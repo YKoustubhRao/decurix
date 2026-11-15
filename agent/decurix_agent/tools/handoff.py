@@ -2,7 +2,11 @@
 Handing part of a task to another worker, or asking another worker a question: the `handoff` shell command.
 
     handoff delegate --to WORKER|--role ROLE|--skill SKILL --request TEXT [--input k=v]... [--file PATH]...
-                     [--expect TEXT] [--wait SECONDS]
+                     [--expect TEXT] [--wait SECONDS] [--schema JSON | --schema-file PATH]
+
+With --schema the result is held to a contract (an object, its required keys, each key's type): the receiver ends its
+report with that object, the control plane checks it, and on a mismatch sends the contract once more. The object is
+printed as `data:`; a receiver stopped part way prints its last partial result marked `interrupted`.
     handoff ask --skill SKILL [--wait SECONDS] QUESTION
     handoff status ID
     handoff cancel ID
@@ -110,11 +114,36 @@ def _pairs(items):
     return inputs
 
 
-def create(target, request, inputs=None, files=None, expect=""):
-    """POST a new handoff; the record the control plane made. target is {"to_worker"|"to_role"|"to_skill": value}."""
+def schema_from(text="", path=""):
+    """The output contract given as JSON text or in a file: a dict, or None for none. Raises HandoffError, nothing
+    sent, for one that is not a JSON object (the control plane checks the subset it reads)."""
+
+    if path:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            raise HandoffError(f"--schema-file {path} could not be read: {exc}") from None
+    if not str(text or "").strip():
+        return None
+    try:
+        schema = json.loads(text)
+    except ValueError:
+        raise HandoffError("--schema is not JSON: give a contract like "
+                           '{"type": "object", "required": ["total"], "properties": {"total": {"type": "number"}}}') from None
+    if not isinstance(schema, dict):
+        raise HandoffError("--schema must be a JSON object (a contract for an object result)")
+    return schema
+
+
+def create(target, request, inputs=None, files=None, expect="", schema=None):
+    """POST a new handoff; the record the control plane made. target is {"to_worker"|"to_role"|"to_skill": value}.
+    schema, when given, is the contract the result is held to (internal/handoff/schema.go)."""
 
     body = {"desktop_id": config.DESKTOP_ID, "from_task": task_context.current(), "request": _withhold(request),
             "inputs": inputs or {}, "files": _files(files), "expected": _withhold(expect or "")}
+    if schema:
+        body["output_schema"] = schema
     body.update(target)
     return _call("POST", "/api/handoffs", body)
 
@@ -240,6 +269,12 @@ def render(record, kind="handoff"):
     _list(lines, "evidence", result.get("evidence"))
     _list(lines, "files", result.get("files"))
     _list(lines, "open questions", result.get("open_questions"))
+    if result.get("data") is not None:
+        lines.append("data: " + json.dumps(result["data"], ensure_ascii=False))
+    if result.get("schema_errors"):
+        _list(lines, "contract errors", result.get("schema_errors"))
+    if result.get("interrupted"):
+        lines.append("interrupted: yes - the report and data above are the receiver's last partial result, not a result")
     if kind == "ask":
         lines.append("note: an answer is what the other worker was taught, not something anyone checked; "
                      "use it as advice, and still check the work it leads to.")
@@ -276,6 +311,9 @@ def _parser():
                    help="a file of the work to carry (under ~/work, the shared folder or ~/Downloads; never a hidden folder)")
     d.add_argument("--expect", default="", help="what the result must show when it is done")
     d.add_argument("--wait", type=float, default=DEFAULT_WAIT, help="seconds to wait for the result (default 1800)")
+    d.add_argument("--schema", default="", help="a JSON contract the result must match: an object type, required "
+                   "keys and each key's type")
+    d.add_argument("--schema-file", default="", help="the same contract, read from a file")
 
     a = sub.add_parser("ask", help="ask a free worker taught a skill, before asking a person")
     a.add_argument("--skill", required=True)
@@ -303,7 +341,8 @@ def main(argv=None, out=sys.stdout):
         if args.command == "delegate":
             target = ({"to_worker": args.to} if args.to else {"to_role": args.role} if args.role
                       else {"to_skill": args.skill})
-            record = create(target, args.request, _pairs(args.input), args.file, args.expect)
+            record = create(target, args.request, _pairs(args.input), args.file, args.expect,
+                            schema=schema_from(args.schema, args.schema_file))
             record = wait_for(record, args.wait)
             kind = "handoff"
         elif args.command == "ask":

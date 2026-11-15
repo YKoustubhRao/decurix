@@ -319,6 +319,9 @@ type traced struct{ inner llm.Provider }
 func (t *traced) Name() string                         { return t.inner.Name() }
 func (t *traced) IsReachable(ctx context.Context) bool { return t.inner.IsReachable(ctx) }
 
+// Unwrap is the provider traced wraps, so llm.RouteOf finds its endpoint.
+func (t *traced) Unwrap() llm.Provider { return t.inner }
+
 // Chat delegates, then writes the call's line, failed or not.
 func (t *traced) Chat(ctx context.Context, model string, messages []llm.Message, opts llm.Options) (llm.Result, error) {
 	start := time.Now()

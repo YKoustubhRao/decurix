@@ -32,6 +32,12 @@
       "required": true
     }
   ],
+  "approves": [
+    {
+      "control": "Save bill",
+      "role": "button"
+    }
+  ],
   "expected": {
     "outcome": "complete",
     "graders": [

@@ -28,7 +28,7 @@ const purgeDoor = "privacy"
 
 // purgeStores is the stores this server purges, as it has them open.
 func (s *Server) purgeStores() purge.Stores {
-	st := purge.Stores{DB: s.DB, Tasks: s.Tasks, Chat: s.Chat, Notes: s.QueryNotes, Runs: s.RunStore}
+	st := purge.Stores{DB: s.DB, Tasks: s.Tasks, Chat: s.Chat, Notes: s.QueryNotes, Runs: s.RunStore, Search: s.RunSearch}
 	if s.LLMRec != nil {
 		st.Calls = s.LLMRec
 		st.Blobs = s.LLMRec.Blobs()

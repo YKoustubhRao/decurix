@@ -989,9 +989,27 @@ def _gate(reply, kind, engine):
                 "any source, so nothing but the model's look at the screen stands behind them:\n"
                 + "\n".join(f"- saved at {where}" for where in unread_saves[:12])
                 + "\nLook at each before relying on it.")
-        write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=False,
+        # gated: this gate settled it, so it is not checked again - found live (2026-11-15), without it the report went
+        # back through this gate, was judged done again, and came here again until the task's time ran out.
+        write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=False, gated=True,
                           verdict=verdicts.make(verdicts.UNCHECKED, "skill_gate" if run is not None else "verify",
                                                 why=f"{len(unread_saves)} saved record(s) not read back"))
+        return True
+
+    review_open = verify.review_left_open(reply) if decided["status"] == verify.DONE else []
+    if review_open:
+        # An independent review raised points the worker did not settle and the person was not asked (soul carries them
+        # with the report): the judge's look at the screen does not answer them, so this is no checked done. Found live
+        # (2026-11-15, a GSTR-1 run): four points were carried - a receiver never validated among them - and the run
+        # went out "checked" on a return that was saved and never filed.
+        guidance.end()
+        if run is not None:
+            _record_verdict(run, True, checked_by="model", helped=_helped(run, guided), basis=["model"])
+        text = (f"{reply}\n\nNOT checked: an independent review of this work left {len(review_open)} point(s) open "
+                "(listed above) that nothing done since settled. Check each before relying on the result.")
+        write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=False, gated=True,
+                          verdict=verdicts.make(verdicts.UNCHECKED, "skill_gate" if run is not None else "verify",
+                                                why=f"{len(review_open)} review point(s) left open"))
         return True
 
     if decided["status"] == verify.DONE:

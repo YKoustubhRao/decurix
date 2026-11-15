@@ -66,6 +66,9 @@ type Arm struct {
 	// Soul runs the arm with every decision soul words and reads in place of Python (desktop.SoulDecisionSwitches,
 	// plan rule 3 phase 2), to measure them against the same arm without: a model arm's only.
 	Soul bool `json:"soul,omitempty"`
+	// Off is the one mechanism this arm switches off (an ablation arm, `<model>[+expert]-<mechanism>`): a key of
+	// Mechanisms, set on its practice desktop by the switch the agent already reads (ablation.go). "" is none.
+	Off string `json:"off,omitempty"`
 	// AgentTreeRev names the agent tree ("" is the image's own); AgentTree is its tar, rooted at decurix_agent/.
 	AgentTreeRev string `json:"agent_tree_rev,omitempty"`
 	AgentTree    []byte `json:"-"`
@@ -283,7 +286,8 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	now := s.Store.now()
 	run := Run{ID: sqlitedb.NewID("e", 8), CreatedAt: now, StartedAt: now, SuiteName: suite.Name, SuiteSHA: suite.SHA, SuiteBlob: blob,
 		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning, Note: graderNote(), CarryState: req.CarryState,
-		FromWorker: req.FromWorker, SnapshotSHA: worker.snapshotSHA, WorkerTreeSHA: worker.treeSHA, snapshot: worker.snapshot}
+		FromWorker: req.FromWorker, SnapshotSHA: worker.snapshotSHA, WorkerTreeSHA: worker.treeSHA, snapshot: worker.snapshot,
+		Classes: caseClasses(cases)}
 	if err := s.Store.Create(run); err != nil {
 		return Run{}, err
 	}
@@ -393,6 +397,20 @@ func caseIDs(cases []Case) []string {
 	return out
 }
 
+// caseClasses is each case's failure class, for the cases that name one (nil when none does).
+func caseClasses(cases []Case) map[string]string {
+	var out map[string]string
+	for _, c := range cases {
+		if c.Class != "" {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[c.ID] = c.Class
+		}
+	}
+	return out
+}
+
 // selectCases is the suite's cases, limited to ids when given, in the suite's order.
 func selectCases(s Suite, ids []string) ([]Case, error) {
 	if len(ids) == 0 {
@@ -444,7 +462,13 @@ func (s *Service) checkArms(arms []Arm) ([]Arm, error) {
 			if !s.Hub.Configured(ExpertProvider) {
 				return nil, BadRequest("The scripted expert needs the Azure model set up.")
 			}
+			if _, ok := offSwitch(a.Off); !ok {
+				return nil, BadRequest(offRefusal(a.Name, a.Off))
+			}
 		case ArmOracle, ArmNothing, ArmAsk:
+			if a.Off != "" {
+				return nil, BadRequest(fmt.Sprintf("Arm %s: only a model arm can switch a mechanism off.", a.Name))
+			}
 			a.Provider, a.Model, a.Expert, a.Soul = ExpertProvider, "", false, false
 		default:
 			return nil, BadRequest(fmt.Sprintf("Arm %s: the kind is model, oracle, nothing or ask.", a.Name))
@@ -616,14 +640,14 @@ func (s *Service) execute(ctx context.Context, run Run, suite Suite, cases []Cas
 		expert = &Expert{Hub: s.Hub, Recorder: s.Recorder, Deployment: arms[0].ExpertDeployment}
 		_ = s.Store.AddNote(run.ID, "The expert is "+ExpertProvider+" "+expert.Deployment+".")
 	}
-	invalid := false
+	changed, unscored := false, 0
 	for i := range arms {
 		if ctx.Err() != nil {
 			return
 		}
-		bad, err := s.runArm(ctx, run, suite, cases, &arms[i], i, expert, served)
+		bad, left, err := s.runArm(ctx, run, suite, cases, &arms[i], i, expert, served)
 		_ = s.Store.SetArms(run.ID, arms)
-		invalid = invalid || bad
+		changed, unscored = changed || bad, unscored+left
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("eval: run %s arm %s: %v", run.ID, arms[i].Name, err)
@@ -632,11 +656,14 @@ func (s *Service) execute(ctx context.Context, run Run, suite Suite, cases []Cas
 			return
 		}
 	}
-	note := ""
-	if invalid {
-		note = "invalid: a model changed during the run."
+	var notes []string
+	if changed {
+		notes = append(notes, "invalid: a model changed during the run.")
 	}
-	_ = s.Store.Finish(run.ID, RunDone, note)
+	if unscored > 0 {
+		notes = append(notes, fmt.Sprintf("invalid: %d case run(s) had no model turn after %d reruns.", unscored, MaxCellReruns))
+	}
+	_ = s.Store.Finish(run.ID, RunDone, strings.Join(notes, " "))
 }
 
 // publicError is what a run's note may say of an error: its own sentence, or a fixed line.
@@ -648,24 +675,31 @@ func publicError(err error) string {
 	return practice.Public(err)
 }
 
-// runArm makes the arm's practice desktop, runs every repeat of every case in it and removes it. It reports whether
-// any row was invalid.
-func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case, arm *Arm, index int, expert *Expert, served *servedPins) (bool, error) {
+// practiceRunID is the practice run id every arm of a run makes its desktop under. It is the same for every arm on
+// purpose: it names the desktop, its host name, its mock and the browser's host mapping, all of which the worker can
+// read, and nothing the worker can see may tell one arm from another (a path that differed by arm made two identical
+// tool surfaces behave differently in another project's A/B). The arms run one after another, each desktop removed
+// before the next is made, so the one id never names two desktops at once.
+func practiceRunID(run Run) string { return run.ID + "-w" }
+
+// runArm makes the arm's practice desktop, runs every repeat of every case in it and removes it. It reports whether a
+// model changed under any row, and how many case runs were left with no model turn after their reruns.
+func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case, arm *Arm, index int, expert *Expert, served *servedPins) (bool, int, error) {
 	image, err := s.Sandbox.DesktopImageID(ctx, "basic")
 	if err != nil {
-		return false, practice.Sentence("The desktop image could not be read.")
+		return false, 0, practice.Sentence("The desktop image could not be read.")
 	}
 	arm.Image = image
 	broker, err := s.BrokerURL(ctx)
 	if err != nil {
-		return false, practice.Sentence("The practice broker could not start.")
+		return false, 0, practice.Sentence("The practice broker could not start.")
 	}
-	armRun := fmt.Sprintf("%s-a%d", run.ID, index+1)
+	armRun := practiceRunID(run)
 	desktopID := desktop.PracticeDesktopID(armRun)
 	spec := desktop.PracticeSpec{RunID: armRun, Image: image, Harness: "thebot", Brain: arm.Provider, Model: arm.Model,
 		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: run.startSnapshot(),
 		LegacyGate:    arm.AgentTreeRev != "" && arm.AgentTreeRev != WorkerTreeRev,
-		SoulDecisions: arm.Soul}
+		SoulDecisions: arm.Soul, Switches: arm.switches()}
 	if spec.Model == "" {
 		spec.Model = "default"
 	}
@@ -697,12 +731,12 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 	}()
 	if d, err = s.Sandbox.CreatePractice(ctx, spec); err != nil {
 		if errors.Is(err, desktop.ErrNoSecret) {
-			return false, practice.Sentence("The practice desktop was not made: " + desktop.ErrNoSecret.Error() + ".")
+			return false, 0, practice.Sentence("The practice desktop was not made: " + desktop.ErrNoSecret.Error() + ".")
 		}
-		return false, practice.Sentence("The practice desktop could not be created.")
+		return false, 0, practice.Sentence("The practice desktop could not be created.")
 	}
 	if err := s.waitAgent(ctx, d); err != nil {
-		return false, practice.Sentence("The practice desktop's agent never became ready.")
+		return false, 0, practice.Sentence("The practice desktop's agent never became ready.")
 	}
 	// What the arm's model and the expert resolve to now, against the run's pins, once its desktop is ready to
 	// work: a change since the run started makes every row of this arm invalid, calls or none.
@@ -721,19 +755,20 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 			drift = fmt.Sprintf("%s: the expert's provider is reached at another endpoint than when the run started", modelChanged)
 		}
 	}
-	invalid := false
+	changed, unscored := false, 0
 	first := true
 	for rep := 1; rep <= run.Repeats; rep++ {
 		for i, c := range cases {
 			if ctx.Err() != nil {
-				return invalid, nil
+				return changed, unscored, nil
 			}
 			s.setProgress(run.ID, func(p *Progress) { p.Arm, p.Repeat, p.Case = arm.Name, rep, c.ID })
 			// Every case starts from the snapshot (its desktop is new for the first), unless the run carries state:
 			// then only a repeat's first case does, and its later cases find what the earlier ones left. Between
 			// those, the desktop is settled: the earlier case's open question or unfinished work is ended (it would
-			// hold the next request back, found live 2026-11-08), and nothing it learned is cleared.
-			if !first {
+			// hold the next request back, found live 2026-11-08), and nothing it learned is cleared. A rerun of a case
+			// the model made no turn in starts as the case itself did.
+			prepare := func() error {
 				reset := func() error {
 					var err error
 					if !run.CarryState || i == 0 {
@@ -762,34 +797,82 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 						err = reset()
 					}
 				}
-				if ctx.Err() != nil {
-					return invalid, nil
-				}
-				if err != nil {
+				if err != nil && ctx.Err() == nil {
 					log.Printf("eval: run %s arm %s case %s: the practice desktop's reset failed again: %v", run.ID, arm.Name, c.ID, err)
-					return invalid, practice.Sentence("The practice desktop could not be reset between cases.")
+					return practice.Sentence("The practice desktop could not be reset between cases.")
 				}
+				return nil
 			}
-			first = false
-			row := s.runCase(ctx, run, suite, *arm, armRun, d, c, rep, expert, served)
-			if arm.Served == "" && len(row.Served) > 0 {
-				arm.Served = row.Served[0]
-			}
-			if ctx.Err() != nil {
-				return invalid, nil
-			}
-			if drift != "" {
-				row.Invalid = true
-				row.Problems = append(row.Problems, drift)
-			}
-			invalid = invalid || row.Invalid
-			if err := s.Store.AddRow(row); err != nil {
-				return invalid, fmt.Errorf("store a row: %w", err)
+			for attempt := 1; ; attempt++ {
+				if !first {
+					err := prepare()
+					if ctx.Err() != nil {
+						return changed, unscored, nil
+					}
+					if err != nil {
+						return changed, unscored, err
+					}
+				}
+				first = false
+				row := s.runCase(ctx, run, suite, *arm, armRun, d, c, rep, expert, served)
+				row.Attempt = attempt
+				if arm.Served == "" && len(row.Served) > 0 {
+					arm.Served = row.Served[0]
+				}
+				if ctx.Err() != nil {
+					return changed, unscored, nil
+				}
+				if drift != "" {
+					row.Invalid, row.InvalidWhy = true, InvalidModelChanged
+					row.Problems = append(row.Problems, drift)
+				}
+				changed = changed || (row.Invalid && row.InvalidWhy == InvalidModelChanged)
+				if err := s.Store.AddRow(row); err != nil {
+					return changed, unscored, fmt.Errorf("store a row: %w", err)
+				}
+				if !rerun(row) {
+					break
+				}
+				if attempt > MaxCellReruns {
+					// Still no turn after every rerun: the case run stays unscored in this arm, and the table leaves the
+					// same case run out of the other model arms too (stats.go, pairedOut).
+					unscored++
+					break
+				}
+				log.Printf("eval: run %s arm %s case %s repeat %d: the model made no turn; running it again", run.ID, arm.Name, c.ID, rep)
 			}
 			s.setProgress(run.ID, func(p *Progress) { p.Done++ })
 		}
 	}
-	return invalid, nil
+	return changed, unscored, nil
+}
+
+// Why a row is invalid (eval_rows.invalid_why). A row stored before the reason was kept says "", which reads as a
+// model change: the only reason there was.
+const (
+	InvalidModelChanged = "model_changed"
+	InvalidNoTurn       = "no_turn"
+)
+
+// MaxCellReruns is how many times one case run the model made no turn in is run again before it is left unscored.
+const MaxCellReruns = 2
+
+// noTurnProblem is what a row the model made no turn in says.
+const noTurnProblem = "no model turn: every call the worker made failed at the provider or never reached it, and the case ended without the worker's answer"
+
+// noTurn reports a model case the model made no turn in: the worker asked the model at least once, the provider
+// answered none of its calls with a turn (an error status, or never reached), and the case ended in an error or ran
+// out of time - not in the worker's own answer, question or approval. A case the worker finished without the model (a
+// taught replay) made a turn of its own and is scored; so is a worker that failed before asking the model at all.
+func noTurn(kind, observed string, u practice.CaseUsage) bool {
+	return kind == ArmModel && u.Calls-u.Failed == 0 && u.Failed+u.Unreached > 0 &&
+		(observed == ObservedError || observed == ObservedTimeout)
+}
+
+// rerun is the one rule that runs a case again, the same for every arm: it reads the row alone, never the arm, so a
+// provider's failure is retried identically wherever it falls. Only a row the model made no turn in is rerun.
+func rerun(r Row) bool {
+	return r.Invalid && r.InvalidWhy == InvalidNoTurn
 }
 
 // waitAgent polls the practice desktop's agent until it answers.
@@ -885,7 +968,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	route.Origin = tasks.Origin{Kind: tasks.OriginEval, Ref: fmt.Sprintf("%s/%s/%d/%s", run.ID, arm.Name, rep, c.ID)}
 	var problems []string
 	if s.Tasks != nil {
-		if _, err := s.Tasks.CommitTyped(route, tasks.Worker{ID: desktopID, Name: "Eval " + arm.Name, Engine: "eval", Profile: "practice"},
+		if _, err := s.Tasks.CommitTyped(route, tasks.Worker{ID: desktopID, Name: "Eval " + run.ID, Engine: "eval", Profile: "practice"},
 			"Eval ("+c.Category+"): "+clipText(suite.Withhold(c.Request), 200), tasks.TypePractice, route.Origin); err != nil {
 			problems = append(problems, "The case's task record could not be opened.")
 		}
@@ -916,7 +999,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 		case ArmModel:
 			problems = append(problems, s.observeModel(caseCtx, d, desktopID, route.TaskID, c, arm, expert, obs, &ev)...)
 		case ArmOracle:
-			problems = append(problems, s.runOracle(caseCtx, d, desktopID, route.TaskID, c, &ev)...)
+			problems = append(problems, s.runOracle(caseCtx, d, desktopID, route.TaskID, desktop.PracticeMockHost(armRun), c, &ev)...)
 		case ArmAsk:
 			problems = append(problems, s.askAnything(caseCtx, desktopID, route.TaskID, c, expert, &ev)...)
 		default:
@@ -971,7 +1054,8 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	row := Row{RunID: run.ID, Arm: arm.Name, Repeat: rep, CaseID: c.ID, TaskID: route.TaskID, Observed: res.Observed,
 		Checked: ev.Checked != nil && *ev.Checked, Passed: res.Passed, FalseDone: res.FalseDone, DoneUncheckedWrong: res.DoneUncheckedWrong,
 		QRequired: res.Questions.Required, QOther: res.Questions.Other, QDeclined: res.Questions.Declined, TokensIn: usage.Input, TokensCached: usage.Cached, TokensOut: usage.Output,
-		Calls: usage.Calls, Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now(), Infra: res.Infra}
+		Calls: usage.Calls, Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now(), Infra: res.Infra,
+		ProviderErrors: usage.Failed + usage.Unreached}
 	row.Problems = append(append([]string{}, res.Problems...), problems...)
 	row.Served = usage.Served
 	row.TrajectoryID = trajectory
@@ -992,6 +1076,12 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	}
 	if containsString(problems, modelChanged) {
 		row.Invalid = true
+	}
+	if row.Invalid {
+		row.InvalidWhy = InvalidModelChanged
+	} else if !res.Infra && noTurn(arm.Kind, ev.Observation, usage) {
+		row.Invalid, row.InvalidWhy = true, InvalidNoTurn
+		row.Problems = append(row.Problems, noTurnProblem)
 	}
 	for i := range row.Problems {
 		row.Problems[i] = suite.Withhold(row.Problems[i])
@@ -1319,9 +1409,11 @@ func (s *Service) askAnything(ctx context.Context, desktopID, taskID string, c C
 
 // oraclePrelude runs one oracle line as the worker would run a command in its desktop session: the session's
 // display and bus, the office tools on the path, the case's folder as the working folder, the task's id, and
-// MOCK_ROUTE for curl to reach the case's mock under its own host name.
+// MOCK_ROUTE for curl to reach the case's mock under its own host name. That name is the run's ($4,
+// desktop.PracticeMockHost): since each run's mock answers to its own name (2026-11-09), the bare alias resolved to
+// nothing, and every oracle step that curls the mock failed with "Could not resolve host" (found live, 2026-11-15).
 const oraclePrelude = `export HOME=/home/headless USER=headless DISPLAY=:1 XAUTHORITY=/home/headless/.Xauthority NO_AT_BRIDGE=0 LANG=C.UTF-8
-export PATH=/opt/office-venv/bin:/usr/local/bin:/usr/bin:/bin DECURIX_TASK_ID="$1" MOCK_ROUTE="--connect-to ::` + desktop.PracticeMockAlias + `:` + desktop.PracticeMockPort + `"
+export PATH=/opt/office-venv/bin:/usr/local/bin:/usr/bin:/bin DECURIX_TASK_ID="$1" MOCK_ROUTE="--connect-to ::${4:-` + desktop.PracticeMockAlias + `}:` + desktop.PracticeMockPort + `"
 for p in /proc/[0-9]*; do
   if [ "$(cat "$p/comm" 2>/dev/null)" = xfce4-session ]; then
     d=$(tr '\0' '\n' < "$p/environ" 2>/dev/null | grep '^DBUS_SESSION_BUS_ADDRESS=' | head -n 1)
@@ -1339,15 +1431,16 @@ eval "$3"`
 // oracle rows named no trajectory (core-v2 calibration, round 8).
 const oracleContextScript = `import sys; sys.path.insert(0, "/opt"); from decurix_agent import task_context; task_context.start(sys.argv[1], sys.argv[2])`
 
-// oracleArgv is the command line one oracle step runs as.
-func oracleArgv(taskID, caseID, line string) []string {
-	return []string{"/bin/bash", "-c", oraclePrelude, "oracle", taskID, desktop.PracticeWorkDir + "/" + caseID, line}
+// oracleArgv is the command line one oracle step runs as; mockHost is the run's mock app name ("" when the case has
+// no mock).
+func oracleArgv(taskID, caseID, line, mockHost string) []string {
+	return []string{"/bin/bash", "-c", oraclePrelude, "oracle", taskID, desktop.PracticeWorkDir + "/" + caseID, line, mockHost}
 }
 
 // runOracle runs the case's scripted solution as the worker and records how it ended: an approval when the gate
 // stopped an approval step, an error when a step exited otherwise than it should, else a checked final with the
 // solution's answer.
-func (s *Service) runOracle(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID string, c Case, ev *Evidence) []string {
+func (s *Service) runOracle(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID, mockHost string, c Case, ev *Evidence) []string {
 	answer := "Done."
 	if exit, _, err := s.Sandbox.ExecPracticeAsWorker(ctx, d.ContainerID, []string{"/usr/bin/python3", "-I", "-c", oracleContextScript, taskID, c.Request}, time.Minute); err != nil || exit != 0 {
 		ev.Infra = append(ev.Infra, "The oracle's task could not be made the worker's current one.")
@@ -1373,7 +1466,7 @@ func (s *Service) runOracle(ctx context.Context, d desktop.PracticeDesktop, desk
 		if dl, ok := ctx.Deadline(); ok {
 			remaining = time.Until(dl)
 		}
-		exit, out, err := s.Sandbox.ExecPracticeAsWorker(ctx, d.ContainerID, oracleArgv(taskID, c.ID, st.Line), remaining)
+		exit, out, err := s.Sandbox.ExecPracticeAsWorker(ctx, d.ContainerID, oracleArgv(taskID, c.ID, st.Line, mockHost), remaining)
 		said := strings.TrimSpace(string(out))
 		if err != nil {
 			ev.Observation, ev.FinalText = ObservedError, said
@@ -1408,7 +1501,7 @@ const gateSignedQuestion = `python3 -c 'import json, sys; sys.path.insert(0, "/o
 
 // gateQuestion is the desktop's gate's own question for the action it holds, when its signature checks; "" otherwise.
 func (s *Service) gateQuestion(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID, caseID string) string {
-	exit, out, err := s.Sandbox.ExecPracticeAsWorker(ctx, d.ContainerID, oracleArgv(taskID, caseID, gateSignedQuestion), 30*time.Second)
+	exit, out, err := s.Sandbox.ExecPracticeAsWorker(ctx, d.ContainerID, oracleArgv(taskID, caseID, gateSignedQuestion, ""), 30*time.Second)
 	if err != nil || exit != 0 {
 		return ""
 	}

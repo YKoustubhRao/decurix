@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -93,14 +92,11 @@ type openaiChatRequest struct {
 	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
 }
 
-// noCacheKey is set once a provider refused prompt_cache_key: it is not sent again.
-var noCacheKey atomic.Bool
-
 // cacheKey routes one goal's calls of one kind to the same cache: its instructions (the first message) and its request
 // (the first user message), hashed. Found (2026-10-31): with no key, GPT-6 deployments cached 35% of the prompt against
 // 83% on gpt-5.4, with the same harness.
 func cacheKey(msgs []openaiMessage) string {
-	if noCacheKey.Load() || len(msgs) == 0 {
+	if len(msgs) == 0 {
 		return ""
 	}
 	h := sha256.New()
@@ -182,7 +178,10 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 		MaxTokens:   opts.MaxTokens,
 		Stop:        opts.Stop,
 		Effort:      o.Effort,
-		CacheKey:    cacheKey(msgs),
+	}
+	route := RouteKey{Provider: o.Name(), Model: model, Endpoint: o.BaseURL}
+	if !learnedRoutes.has(route, factNoCacheKey) {
+		reqBody.CacheKey = cacheKey(msgs)
 	}
 	if opts.ResponseFormat != "" && json.Valid([]byte(opts.ResponseFormat)) {
 		reqBody.ResponseFormat = json.RawMessage(opts.ResponseFormat)
@@ -192,8 +191,9 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 	var parsed openaiChatResponse
 	respBytes, err := postJSON(ctx, do, "openai", o.BaseURL+"/v1/chat/completions", headers, reqBody, &parsed, &parsed.apiError)
 	if err != nil && reqBody.CacheKey != "" && strings.Contains(err.Error(), "prompt_cache_key") {
-		// A provider that does not know the key: the same request without it, and never again with it.
-		noCacheKey.Store(true)
+		// A route that does not know the key: the same request without it, and never again with it on this route
+		// (routefacts.go) - another model or endpoint still sends it.
+		learnedRoutes.learn(route, factNoCacheKey)
 		reqBody.CacheKey, parsed = "", openaiChatResponse{}
 		respBytes, err = postJSON(ctx, do, "openai", o.BaseURL+"/v1/chat/completions", headers, reqBody, &parsed, &parsed.apiError)
 	}
@@ -210,8 +210,12 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 		ResponseTokens: parsed.Usage.CompletionTokens,
 		CachedTokens:   parsed.Usage.PromptTokensDetails.CachedTokens,
 		Truncated:      truncatedFinish(parsed.Choices[0].FinishReason),
+		FinishReason:   parsed.Choices[0].FinishReason,
 	}, nil
 }
+
+// Endpoint is where this provider sends its calls (RouteOf).
+func (o *OpenAIProvider) Endpoint() string { return o.BaseURL }
 
 func (o *OpenAIProvider) IsReachable(ctx context.Context) bool {
 	if o.APIKey == "" {

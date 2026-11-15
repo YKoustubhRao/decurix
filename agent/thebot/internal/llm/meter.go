@@ -60,13 +60,22 @@ func WithUsage(ctx context.Context) (context.Context, *Usage) {
 // Metered wraps a Provider so every Chat call's token counts are added to the
 // Usage its context carries (WithUsage). A call with no Usage in its context
 // is passed through uncounted.
+//
+// It also reads each answer against the conversation it belongs to (conversationID): two zero-output answers in a row
+// end as ErrEmptyAnswer (empty.go), and the real prompt counts teach what a picture costs on the route (imagecost.go).
 func Metered(inner Provider) Provider { return &meteredProvider{inner: inner} }
 
-type meteredProvider struct{ inner Provider }
+type meteredProvider struct {
+	inner Provider
+	convs conversations
+}
 
 func (m *meteredProvider) Name() string { return m.inner.Name() }
 
 func (m *meteredProvider) IsReachable(ctx context.Context) bool { return m.inner.IsReachable(ctx) }
+
+// Unwrap is the provider Metered wraps (RouteOf).
+func (m *meteredProvider) Unwrap() Provider { return m.inner }
 
 // Chat delegates, then counts what the call used - a failed call too, when
 // the provider reported counts for it.
@@ -76,7 +85,26 @@ func (m *meteredProvider) Chat(ctx context.Context, model string, messages []Mes
 	if u, ok := ctx.Value(usageKey{}).(*Usage); ok && u != nil && (err == nil || res.PromptTokens > 0) {
 		u.add(res)
 	}
-	return res, err
+	if err != nil {
+		return res, err
+	}
+	route := RouteOf(m.inner, model)
+	id := conversationID(route, TagsFrom(ctx).Job, opts.Purpose, messages)
+	var now *usageAnchor
+	if res.PromptTokens > 0 {
+		now = anchorFor(messages, res.PromptTokens) // hashed outside the lock
+	}
+	m.convs.mu.Lock()
+	defer m.convs.mu.Unlock()
+	conv := m.convs.get(id)
+	if now != nil {
+		imageCosts.learn(route, conv.anchor, messages, now)
+		conv.anchor = now
+	}
+	if empty := conv.noteAnswer(route, res); empty != nil {
+		return res, empty
+	}
+	return res, nil
 }
 
 // Embed passes straight through, as Limited's does.

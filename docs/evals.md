@@ -96,6 +96,10 @@ browser maps to the run's own mock (`practice-mock-<run>:8000`, `desktop.Practic
 
 - `category` is one of Simulate's (`ordinary`, `varied`, `missing_input`, `invalid_input`, `injection`, `approval`,
   `duplicate`); `kind` is a free label for grouping in reports.
+- `class` (optional) names the **failure class** the case traps: a short slug (`^[a-z0-9][a-z0-9-]{0,47}$`, e.g.
+  `date-order`). The run keeps each case's class (`eval_runs.classes`) and the table reports pass and false done per
+  class. **A fix names the class it moves, and must move its trap cases**: a change claimed for a class that leaves its
+  cases where they were is not that class's fix.
 - The request reads as a person would write it and never hints at a grader.
 - `facts` are what the person who gave the task knows. `required` is explicit on every fact. `refers_to` (1 to 16
   phrases of 1 to 6 words) is what a question must say to be about the fact: a question names it when it holds every
@@ -189,7 +193,7 @@ questions section and in `learning_curve.py`'s rows), never as required or other
 An arm pins everything that changes behaviour: `provider` (`azure` or `claude`), `model` (`default` or `fast`, the hub's
 two deployments), `expert` (on or off), and the agent tree (the image's, or a `git archive` of
 `agent/decurix_agent` at a rev, resolved to its commit id, copied into the practice desktop as Simulate copies a
-worker's). On the command line an arm is `[claude:]<model>[+expert][+soul][@<rev>]` (no prefix is azure), or `oracle`,
+worker's). On the command line an arm is `[claude:]<model>[+expert][+soul][-<mechanism>][@<rev>]` (no prefix is azure), or `oracle`,
 `oracle@<rev>`, `nothing` or `ask`; an arm whose rev is not lower case (`HEAD`, a branch) is renamed
 `<model>[+expert]@<first 12 of its commit id>`. Each arm gets one practice desktop of its own (2 GiB, the `basic`
 image, the `thebot` harness), made before its first case and removed after its last. An arm with its own agent
@@ -205,6 +209,32 @@ endpoint, a call served by another deployment, or an answer naming another model
 deployment, makes its rows invalid ("model changed during the run"), and the run's note says `invalid`. A key change
 alone is not a model change. Invalid rows are data (`eval_rows.invalid`),
 left out of every rate and Wilson bound and counted apart, and the table then opens with **INVALID**.
+
+**Ablation arms** switch one mechanism off to measure what it buys: `<model>[+expert][+soul]-<mechanism>[@<rev>]`
+(`default+expert-playbooks`, `Arm.Off`). A mechanism maps only to a switch the agent already reads, set on that arm's
+practice desktop (`desktop.PracticeSpec.Switches`: a `DECURIX_` name and a number, nothing else passes);
+`internal/eval/ablation.go` holds the map and `TestEveryAblationSwitchIsReadByTheAgent` holds each to the file that
+reads it:
+
+| mechanism | switch | what is off |
+|---|---|---|
+| `playbooks` | `DECURIX_PLAYBOOKS=0` | playbooks: nothing kept, nothing offered |
+| `spot-judge` | `DECURIX_SPOT_JUDGE_EVERY=0` | the spot judgement of trusted replays |
+| `heal-model` | `DECURIX_ESCALATION_MODEL_CALLS=0` | the healing ladder's model rungs |
+
+No switch, so refused with why and the list above: `replay` (only its timings are settable), `long-requests`,
+`memory` (`DECURIX_MEMORY_CONTEXT_CHARS=0` still shows one entry), `tool-direct` and `skill-trust` (counts with no
+"never" value), `repairs` (at least 3), `plan-ask` (soul sets it per command), `soul` (switched on by `+soul`). A switch
+is not added to the agent to make an arm possible. A calibration arm switches nothing off.
+
+**The worker never sees which arm it is in.** Every arm of a run makes its practice desktop under the one practice run
+id (`<run>-w`, `practiceRunID`): the desktop's id and host name, its mock's host and the browser's host mapping are the
+same in every arm, since the arms run one after another and each desktop is removed before the next is made. The arm's
+name, the suite's name and the agent tree's revision reach nothing the worker reads: not the environment, the request,
+the input folder (named by the case) or a command; the task record's worker is named `Eval <run>`, and the arm is in
+`labels.eval`. Why: in another project's A/B, a workspace path that differed by arm made two byte-identical tool
+surfaces behave differently. What does differ is the arm itself: the model's provider and label, `+soul`'s and an
+ablation's switch, the agent tree (`TestNothingTheWorkerSeesNamesTheArmSuiteOrRevision`).
 
 **Repeats are independent samples.** Before every case but the arm's first (its desktop is new) the practice desktop
 is returned to the run's snapshot: every
@@ -232,6 +262,34 @@ id): settling every few seconds was refused its desktop after a few cases. The t
 a suite with neither `carry_state` nor `carry_allowed`, and a `carry_state` suite without `--carry-state`, are refused
 before anything is made (`checkCarry`); a `carry_allowed` suite runs either way. The run row keeps the mode (`eval_runs.carry_state`), and the table's head says which ran: "State:
 carried from case to case" or "State: reset to the snapshot before every case".
+
+### Bookkeeping
+
+Five rules every table keeps, stated in its head (`- Bookkeeping: ...`) and held by `internal/eval/bookkeeping_test.go`:
+
+1. **A case run whose model made no turn is invalid and run again, never scored.** No turn: the worker asked the model
+   at least once, the provider answered none of its calls with a turn (an error status, or never reached:
+   `practice.CaseUsage.Failed` / `Unreached`), and the case ended in an error or ran out of time. A case finished
+   without the model (a taught replay), or a worker that failed before asking the model, made its own turn and is
+   scored. The row is stored (`invalid`, `invalid_why = no_turn`), the desktop is reset as before the case, and the
+   case run is run again, at most `MaxCellReruns` (2) more times; each run is its own row (`attempt`). One still
+   without a turn stays unscored, and the run's note and the table open with **INVALID: N case run(s) had no model
+   turn**.
+2. **A provider-error retry is applied identically to every arm.** The rerun rule (`rerun`) reads the row alone, never
+   the arm; the hub retries nothing itself, and a provider failure mid-case that the worker's own code retries is part
+   of the arm under test. Each arm's line in the table says its provider errors and its reruns.
+3. **Runs are never excluded from one arm only.** A case run (case, repeat) left out of one model arm (a model change,
+   no turn after every rerun, infrastructure) is left out of every model arm, counted as "paired" in the rows-left-out
+   section. A case run an arm has not run yet leaves nothing out. Calibration arms are not compared, so not paired.
+4. **Errored runs score 0 for accuracy but are left out of efficiency.** A run that ended in an error, a timeout or
+   the token budget counts in k/n as a failure, and is left out of the tokens, cached share and minutes (shown as
+   "(-N errored)"); `run.py curve` does the same.
+5. **Compare tokens, not money.** No price is known to the runner; nothing in a table is a currency.
+
+How this reconciles with what was: an invalid row was a model change only; it still is one (`invalid_why` empty on a
+row stored before it was kept reads as `model_changed`), and still makes the table INVALID. A no-turn row is invalid
+too, but a rerun that scored makes nothing INVALID. Migration step 8 adds `eval_rows.invalid_why`, `attempt`,
+`provider_errors` and `eval_runs.classes`.
 
 Three calibration arms run no model: `oracle` runs each case's scripted solution (graded as if the facts were given,
 since the oracle knows them) and must pass every case; `nothing` claims "done", checked, without doing anything; and
@@ -347,8 +405,9 @@ the suite, arms, repeats, cases and a `tree_<arm>` per agent tree), `GET /api/ev
 
 **The table** (`internal/eval/stats.go`) has one column per arm and one row per case, plus a total, in five sections:
 pass (k/n with the Wilson 95% lower bound), false done (k/n with the Wilson 95% upper bound, then done-unchecked-wrong),
-questions per run (required / other), tokens per run (median, p90, the cached share of input), and minutes per run
-with the rows left out (invalid, infrastructure). Its head names the suite and its SHA, the date, the repeats, whether state was carried between cases, the
+questions per run (required / other / declined), tokens per run (median, p90, the cached share of input; errored runs
+left out), and minutes per run with the rows left out (invalid, infrastructure, no model turn, paired: "Bookkeeping"
+above); then, when any case names a `class`, pass and false done per failure class. Its head names the suite and its SHA, the date, the repeats, whether state was carried between cases, the
 status, the note and every arm's pins, and opens with INVALID, INCOMPLETE or "not a result" when they hold.
 
 The suite and each `@<rev>` arm's agent tree are sent gzip-compressed; the control plane unpacks each and bounds it
@@ -675,13 +734,22 @@ redirected in a person's desktop. `teach-stop` stops the mock and removes the bl
 
 **The curve, case by case** (`evals/tools/learning_curve.py live`): for a curve, the taught worker runs a suite's fresh cases in order with `--cases <ids> --carry-state --repeats 1 --from-worker <id>`, and the untaught baseline the first three. `learning_curve.py live --cp <plane> --run <run id> --workflow <name> --arm taught|untaught --build <sha> --cases <ids> --out <file>.json` follows the run and appends each case's row the moment it lands: correct, minutes, tokens in / cached / out, model turns, questions (required / other), the final check's send-backs, steps the taught replay did against commands the model ran, and with `--skill-cmd` (a command printing the taught skill's JSON) its trust stage and whether this run's verdict counted, and why not. Each row is written once, the file stays a whole JSON list (a temporary file renamed over it, under a lock file), so two followers can share one file and a page can read it while the runs go on.
 
+## Forensics: what real work spent
+
+`evals/forensics/lanes.py` reads a copy of a control plane's `decurix.db` (read-only) and, optionally, its run
+bundles, and writes one JSON per lane: tokens per checked task by kind of work and by purpose, questions per run, gate
+stops and false-done candidates, replay halts by cause, rework. Every figure is labelled OBSERVED or MODELED and the
+two are never added; each lane keeps its own caveats. The lanes find where a class of failure costs; a fix is then
+measured here, with a case of that class (`evals/forensics/README.md`).
+
 ## Adding a case (fails before, passes after)
 
 Rule 1: a behaviour change ships with a case that fails before it and passes after, plus a matrix with at least 5
 repeats showing no regression elsewhere.
 
 1. Write the case under `evals/suites/<suite>/cases/<id>/`, add its id to `suite.json`, and make its inputs with
-   `evals/tools/` (stdlib only; commit the tool and its output). Fictional names, amounts and numbers only.
+   `evals/tools/` (stdlib only; commit the tool and its output). Fictional names, amounts and numbers only. Give it the
+   `class` of the failure it traps; the fix names that class and must move its cases.
 2. Write its oracle, then calibrate: `--arm oracle --arm nothing --repeats 1` must pass the new case for `oracle` and
    fail it for `nothing`. `go test ./internal/eval -run TestCoreSuiteLoads` (or the suite's own load test) must pass.
 3. Run before and after in one command, the old agent tree against the new:

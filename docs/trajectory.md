@@ -160,7 +160,8 @@ time order; a tie is broken by turn.
   "model": {"provider", "deployment"} | null,
   "prompt_sha256": "...", "prefix_sha256": "...",
   "observation": {"frame": "<before frame>", "ax": "<obs name>", "window", "url"} | null,
-  "command": {"text", "tool", "exit", "ms", "output_sha256", "guard"} | null,  // guard: allowed | asked | refused
+  "command": {"text", "tool", "exit", "ms", "output_sha256", "output_head", "guard"} | null,
+             // guard: allowed | asked | refused; output_head: the output's first 2 KB as soul's trace keeps it (withheld)
   "action": {"record_id", "kind", "target", "text", "withheld", "backend", "outcome", "actor"} | null,
   "gate": {"decision", "request_id", "judgement_id"},
   "diff": {"before", "after", "change", "expect"} | null,
@@ -199,6 +200,27 @@ verdict is the run's label (`labels.run`); it is never copied onto steps. The fi
 
 A training export takes steps by their own label and runs by `labels.run` (with the verdict's basis: W0.5 counts
 `code`, `ledger` and `person`).
+
+### Training export
+
+`internal/sftexport` writes the checked-done runs as JSON lines (`decurix.sft/v1`, one line a run):
+`GET /api/runs/training-export?since=30d&format=decurix|toolcall[&worker=][&max=]` (primary listener, humansOnly) or
+`decurix --export-training [--since 7d] [--format toolcall] [--url ...] > runs.jsonl` (a thin client of that route).
+
+- **Which runs:** `labels.run` is `done`, the verdict says `done` with a `code`, `ledger` or `person` basis (or a person
+  marked it correct), no person marked it wrong, its eval row is not a false done, invalid or infrastructure, it has a
+  bundle and a final report. Each run left out is counted by why (the `X-Decurix-Skipped` trailer, and the log).
+- **What a line holds:** in `decurix` format, `messages`: a fixed system text, the request, then for each step labelled
+  `ok` that ran a command `COMMAND:\n<text>` and the result as soul shows it (`Command execution result:\n\nexit_code: N
+  \n\noutput:\n<output_head>`), each answered question as `HELP:\n<question>` and `The human replied: <answer>`, in time
+  order, and `DONE:\n<final reply>`. In `toolcall` format, `conversations` (`from`: system, human, gpt, tool) with
+  `<tool_call>{"name":"shell","arguments":{"command":...}}</tool_call>` and `<tool_response>{json}</tool_response>`.
+  `labels` (run, basis, by, person_verdict), `dropped_steps` (steps left out for their own label) and
+  `steps_without_command` (actions no command made) say what was kept.
+- **Never a summary:** the middle turns are the stored ones. A command's output is only what the trace keeps (2 KB);
+  a turn cut there says so. A run's call bodies are not used, so a local brain's run exports like a hosted one's.
+- **Secrets:** every string passes `withhold.Text` and `withhold.Known` again, and a secret answer is `[secret withheld]`
+  (`TestNoSecretReachesALine` plants a held value, a labelled password and a secret answer).
 
 ## decurix.verdict/v1
 

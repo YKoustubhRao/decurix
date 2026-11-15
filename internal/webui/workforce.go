@@ -17,6 +17,9 @@ type WorkforcePageData struct {
 	HasQueue     bool
 	HasHandoffs  bool
 	HasAccess    bool
+	// HasProposals says the list of what workers proposed, with Approve and Reject, is served here: the primary
+	// listener only, like every knowledge write (O-7).
+	HasProposals bool
 }
 
 // workforceTmpl is parsed once at start-up, as NewRenderer parses the rest.

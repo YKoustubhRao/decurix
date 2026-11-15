@@ -235,6 +235,41 @@ class HandoffToolTest(unittest.TestCase):
         self.assertEqual(out.count("\nworker "), handoff.MAX_WORKERS)
         self.assertIn("more workers not shown", out)
 
+    def test_a_contract_is_sent_and_the_checked_object_printed(self):
+        contract = '{"type": "object", "required": ["total"], "properties": {"total": {"type": "number"}}}'
+        done = _record("done", verified=True, report="Totalled.")
+        done["result"].update({"data": {"total": 12.5}, "schema_errors": [], "interrupted": False})
+        self.answers = [done]
+        code, out = self.run_cli("delegate", "--to", "w2", "--request", "Total it", "--schema", contract, "--wait", "0")
+        self.assertEqual(code, handoff.EXIT_DONE)
+        self.assertEqual(self.requests[0][2]["output_schema"], json.loads(contract))
+        self.assertIn('data: {"total": 12.5}', out)
+        self.assertNotIn("contract errors", out)
+
+    def test_a_contract_that_is_not_json_is_refused_before_anything_is_sent(self):
+        code, out = self.run_cli("delegate", "--to", "w2", "--request", "Total it", "--schema", "total: number")
+        self.assertEqual(code, handoff.EXIT_ERROR)
+        self.assertIn("--schema is not JSON", out)
+        self.assertEqual(self.requests, [])
+
+    def test_an_interrupted_receiver_reads_as_a_partial_result(self):
+        failed = _record("failed", report="(stopped part way; its last steps:)\nread 14 invoices")
+        failed["result"].update({"interrupted": True, "data": {"total": 4}, "schema_errors": []})
+        self.answers = [failed]
+        code, out = self.run_cli("delegate", "--to", "w2", "--request", "Total it", "--wait", "0")
+        self.assertEqual(code, handoff.EXIT_NOT_DONE)
+        self.assertIn("=== HANDOFF ho_1: FAILED ===", out)
+        self.assertIn("interrupted: yes", out)
+        self.assertIn("NOT verified done", out)
+
+    def test_contract_errors_are_listed(self):
+        nd = _record("not_done", report="Totalled.")
+        nd["result"]["schema_errors"] = ['key "total" is string, the contract says number']
+        self.answers = [nd]
+        code, out = self.run_cli("status", "ho_1")
+        self.assertEqual(code, handoff.EXIT_NOT_DONE)
+        self.assertIn('contract errors:\n  - key "total" is string', out)
+
 
 if __name__ == "__main__":
     unittest.main()

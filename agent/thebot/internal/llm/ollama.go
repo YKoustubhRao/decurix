@@ -237,7 +237,9 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := o.Client.Do(req)
+	// Through rateLimitedRequest, as the hosted providers' calls are: Ollama answers 503 when its queue is full and
+	// 429/5xx behind a proxy; each is waited out (its Retry-After honoured, capped) within the call's own deadline.
+	resp, err := rateLimitedRequest(o.Client, req)
 	if err != nil {
 		return Result{}, fmt.Errorf("ollama: request failed: %w", err)
 	}
@@ -258,6 +260,7 @@ func readOllamaStream(r io.Reader) (Result, error) {
 	var text strings.Builder
 	var final ollamaChatResponse
 	sawDone := false
+	var watch runawayWatch
 
 	scanner := bufio.NewScanner(r)
 	// A single chunk is tiny, but the default 64KB token limit is not worth
@@ -281,6 +284,13 @@ func readOllamaStream(r io.Reader) (Result, error) {
 		text.WriteString(chunk.Message.Content)
 		if chunk.Done {
 			final, sawDone = chunk, true
+			continue
+		}
+		if hit, keep := watch.check(text.String()); hit {
+			// A loop (runaway.go): stopped here - the caller closes the stream, and Ollama stops generating - and
+			// returned as a reply cut off, without the loop, which would only seed the next turn with it.
+			return Result{Text: strings.TrimRight(text.String()[:keep], " \t\r\n"), Truncated: true,
+				FinishReason: FinishRepetition}, nil
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -299,8 +309,12 @@ func readOllamaStream(r io.Reader) (Result, error) {
 		ResponseTokens: final.EvalCount,
 		DurationMs:     final.TotalDuration / 1_000_000,
 		Truncated:      final.DoneReason == "length",
+		FinishReason:   final.DoneReason,
 	}, nil
 }
+
+// Endpoint is where this provider sends its calls (RouteOf).
+func (o *OllamaProvider) Endpoint() string { return o.Host }
 
 func truncateForError(s string) string {
 	if len(s) <= 300 {

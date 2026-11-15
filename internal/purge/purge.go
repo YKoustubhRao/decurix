@@ -35,6 +35,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/llmrec"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/runs"
+	"github.com/YKoustubhRao/decurix/internal/runsearch"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
@@ -69,6 +70,8 @@ type Stores struct {
 	Concierge *concierge.Store
 	Notes     *querynotes.Store
 	Runs      *runs.Store
+	// Search is the index of past runs' text (internal/runsearch), which holds copies of the task records' text.
+	Search *runsearch.Index
 }
 
 // Counts is how many stored things held the value, per store.
@@ -85,11 +88,13 @@ type Counts struct {
 	QueryNotes int64 `json:"query_notes"`
 	// RunBundles is the bundles whose manifest was rewritten or which list a purged blob.
 	RunBundles int64 `json:"run_bundles"`
+	// RunSearch is the texts of the run search index that held it.
+	RunSearch int64 `json:"run_search"`
 }
 
 // Total is every count but the failures.
 func (c Counts) Total() int64 {
-	return c.Blobs + c.LLMCalls + c.Judgements + c.TaskRecords + c.Chat + c.QueryNotes + c.RunBundles
+	return c.Blobs + c.LLMCalls + c.Judgements + c.TaskRecords + c.Chat + c.QueryNotes + c.RunBundles + c.RunSearch
 }
 
 // Result is what a purge did. It never holds the value.
@@ -214,6 +219,13 @@ func (st Stores) Purge(ctx context.Context, value, reason string, actor tasks.Ac
 		res.Counts.QueryNotes = n
 		if err != nil {
 			problem("query notes")
+		}
+	}
+	if st.Search != nil {
+		n, err := st.Search.PurgeValue(forms, Mark)
+		res.Counts.RunSearch = n
+		if err != nil {
+			problem("run search index")
 		}
 	}
 	if st.DB != nil && res.Counts.Total() > 0 {

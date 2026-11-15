@@ -42,6 +42,10 @@ type Runner struct {
 
 	// now is the test seam - defaults to time.Now().UTC.
 	now func() time.Time
+
+	// started is when this runner first ticked (startedAt).
+	startOnce sync.Once
+	started   time.Time
 }
 
 // Run checks for due schedules every Interval until ctx is done.
@@ -100,6 +104,7 @@ func Concurrently[T any](items []T, limit int, fn func(T)) {
 
 func (r *Runner) tick(ctx context.Context) {
 	now := r.clock()
+	r.startedAt()
 
 	due, err := r.Store.Due(now)
 	if err != nil {
@@ -110,31 +115,61 @@ func (r *Runner) tick(ctx context.Context) {
 	Concurrently(due, fireConcurrency, func(sch Schedule) { r.fire(ctx, sch, now) })
 }
 
-// fire submits sch's request, with a TIME field recording when this run
-// triggered appended the same way on every trigger, and advances the
-// schedule to its next occurrence regardless of whether the submit itself
-// succeeded: a desktop that is unreachable this minute should not turn every
-// following tick into a retry of the same stale run - it should just wait for
-// the schedule's next one.
+// RanChecker is what a Submitter may also offer: whether the task records hold a request this schedule started at or
+// after since. It settles an occurrence a crash cut short between the send and the ledger: found, it was sent; not
+// found, it never reached the records and is sent again. Without it such an occurrence is never sent again.
+type RanChecker interface {
+	ScheduleRanSince(scheduleID string, since time.Time) (bool, error)
+}
+
+// reconcileGrace is how long after this runner started an occurrence a crash cut short waits before it is settled:
+// the control plane settles its own interrupted deliveries at start (httpapi's ReconcileDeliveries), and their task
+// records must be in before the schedule asks them.
+const reconcileGrace = 2 * time.Minute
+
+// fire runs one due occurrence of sch through its ledger row (occurrences.go), with a TIME field recording which
+// occurrence it is appended the same way on every trigger.
 //
-// The one exception is a desktop that is busy (the Submitter refuses with an
-// error that has a DesktopBusy method): the run is held, not sent and not
-// skipped, and tried again every tick until the desktop is free. Sent to an
-// agent waiting on a person, it would be taken as that person's answer.
+// The occurrence is written down before it is sent and settled together with the schedule's advance, so a crash
+// between the two never sends it twice: a row a crash left "sending" is settled from the task records (RanChecker),
+// and when they cannot say, it is marked unconfirmed and not sent again.
 //
-// TIME is the occurrence the run is for (the schedule's next run as stored),
-// not the moment the tick noticed it: a run held behind a busy desktop, or
-// caught up after the control plane was down, still says which run it is
-// (review 2026-11-03, B-28).
+// A desktop that is busy (the Submitter refuses with an error that has a DesktopBusy method) holds the run - not
+// sent and not skipped, tried again every tick until the desktop is free: sent to an agent waiting on a person, it
+// would be taken as that person's answer.
+//
+// A run that did not reach its desktop is tried again after 5, 15 and 30 minutes (retryBackoff) - the control plane
+// knows it was not delivered, so a retry cannot do the work twice - and given up, with its reason kept, after the
+// last try or when the schedule's next occurrence would come first. Before this a desktop that failed to start at
+// 09:00 lost that month's run of a monthly request.
+//
+// TIME is the occurrence the run is for (the schedule's next run as stored, or the occurrence a retry is for), not
+// the moment the tick noticed it: a run held behind a busy desktop, retried, or caught up after the control plane
+// was down still says which run it is (review 2026-11-03, B-28). Occurrences that passed while nothing ran them are
+// counted into one "missed" row (missedBetween).
 func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 	occurrence := sch.NextRunAt
+	retry := !sch.RetryOccurrence.IsZero()
+	if retry {
+		occurrence = sch.RetryOccurrence
+	}
 	if occurrence.IsZero() || occurrence.After(now) {
 		occurrence = now
 	}
-	occurrence = occurrence.In(ZoneLocation(sch.Zone))
-	content := sch.Content + timeField(occurrence)
+	loc := ZoneLocation(sch.Zone)
+	occurrence = occurrence.In(loc)
 
-	err := r.Submitter.Submit(ctx, sch.DesktopID, content, tasks.Origin{Kind: tasks.OriginSchedule, Ref: sch.ID})
+	prev, existed, err := r.Store.beginRun(sch.ID, occurrence, now)
+	if err != nil {
+		log.Printf("schedule: %v", err)
+		return
+	}
+	if existed && !r.settleInterrupted(sch, occurrence, prev, now) {
+		return
+	}
+
+	content := sch.Content + timeField(occurrence)
+	err = r.Submitter.Submit(ctx, sch.DesktopID, content, tasks.Origin{Kind: tasks.OriginSchedule, Ref: sch.ID})
 
 	var busy interface{ DesktopBusy() string }
 	if errors.As(err, &busy) {
@@ -142,6 +177,7 @@ func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 			log.Printf("schedule: holding %s until %s is free (%s)", sch.ID, sch.DesktopID, busy.DesktopBusy())
 		}
 
+		r.Store.holdRun(sch.ID, occurrence, existed && prev.State == RunRetrying)
 		r.Store.NoteWaiting(sch.ID, busy.DesktopBusy(), now)
 
 		return
@@ -149,18 +185,78 @@ func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 
 	if err != nil {
 		log.Printf("schedule: firing %s on %s: %v", sch.ID, sch.DesktopID, err)
-
 		why := "The run for " + occurrence.Format("2 Jan 15:04 MST") + " did not reach the desktop: " + clip(err.Error())
-		if err := r.Store.MarkRunFailed(sch.ID, now, why); err != nil {
+
+		attempts := prev.Attempts
+		if attempts < len(retryBackoff) {
+			retryAt := now.Add(retryBackoff[attempts])
+			if next, ok := nextAfter(sch, occurrence); !ok || retryAt.Before(next) {
+				why += "; trying again at " + retryAt.In(loc).Format("15:04 MST")
+				if err := r.Store.retryRun(sch.ID, occurrence, now, retryAt, why); err != nil {
+					log.Printf("schedule: %v", err)
+				}
+				return
+			}
+		}
+
+		if err := r.Store.settleRun(sch.ID, occurrence, now, RunFailed, why); err != nil {
 			log.Printf("schedule: advancing %s: %v", sch.ID, err)
 		}
 
 		return
 	}
 
-	if err := r.Store.MarkRun(sch.ID, now); err != nil {
+	if err := r.Store.settleRun(sch.ID, occurrence, now, RunSent, ""); err != nil {
 		log.Printf("schedule: advancing %s: %v", sch.ID, err)
 	}
+
+	if !retry && !sch.RunOnce {
+		if first, last, n := missedBetween(sch.CronExpr, occurrence, now, loc); n > 0 {
+			r.Store.noteMissed(sch.ID, first, last, n, now, loc)
+		}
+	}
+}
+
+// settleInterrupted decides an occurrence whose ledger row already existed: a retry goes ahead; one already sent,
+// given up or unconfirmed only advances the schedule; one a crash left "sending" is settled from the task records.
+// It reports whether the occurrence should be sent now.
+func (r *Runner) settleInterrupted(sch Schedule, occurrence time.Time, prev Run, now time.Time) bool {
+	switch prev.State {
+	case RunRetrying:
+		return true
+	case RunSending:
+	default:
+		if err := r.Store.settleRun(sch.ID, occurrence, now, prev.State, prev.Detail); err != nil {
+			log.Printf("schedule: advancing %s: %v", sch.ID, err)
+		}
+		return false
+	}
+
+	if now.Sub(r.startedAt()) < reconcileGrace {
+		return false // asked again on a later tick, once interrupted deliveries are settled
+	}
+
+	checker, ok := r.Submitter.(RanChecker)
+	if ok {
+		ran, err := checker.ScheduleRanSince(sch.ID, prev.StartedAt)
+		if err == nil && ran {
+			if err := r.Store.settleRun(sch.ID, occurrence, now, RunSent, "sent before the control plane stopped"); err != nil {
+				log.Printf("schedule: advancing %s: %v", sch.ID, err)
+			}
+			return false
+		}
+		if err == nil {
+			return true // it never reached the records: send it now
+		}
+	}
+
+	why := "The run for " + occurrence.In(ZoneLocation(sch.Zone)).Format("2 Jan 15:04 MST") +
+		" was being sent when the control plane stopped, and its desktop's records cannot say whether it arrived. " +
+		"It was not sent again; check the desktop's tasks."
+	if err := r.Store.settleRun(sch.ID, occurrence, now, RunUnconfirmed, why); err != nil {
+		log.Printf("schedule: advancing %s: %v", sch.ID, err)
+	}
+	return false
 }
 
 // timeField renders the marker appended to a schedule's content on every
@@ -178,6 +274,12 @@ func clip(s string) string {
 		return string(r[:200]) + "..."
 	}
 	return s
+}
+
+// startedAt is when this runner first ticked: occurrences a crash cut short wait reconcileGrace after it.
+func (r *Runner) startedAt() time.Time {
+	r.startOnce.Do(func() { r.started = r.clock() })
+	return r.started
 }
 
 func (r *Runner) clock() time.Time {

@@ -22,7 +22,9 @@ import (
 )
 
 var (
-	idPattern         = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	// classPattern is a case's failure class (Case.Class): a short slug.
+	classPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`)
 	collectionPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$`)
 	hostPattern       = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?$`)
 	isoDate           = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -221,6 +223,9 @@ func loadCase(s Suite, id string, files entries) (Case, Problems) {
 	}
 	if strings.TrimSpace(c.Kind) == "" || len(c.Kind) > 64 {
 		add("needs a kind (a short label for grouping).")
+	}
+	if c.Class != "" && !classPattern.MatchString(c.Class) {
+		add("the class %q is not a short slug (lower-case letters, digits and -, at most 48).", clipText(c.Class, 64))
 	}
 	if strings.TrimSpace(c.Request) == "" || len(c.Request) > MaxRequestBytes || !utf8.ValidString(c.Request) {
 		add("needs a request of at most %d bytes.", MaxRequestBytes)

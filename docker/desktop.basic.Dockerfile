@@ -185,6 +185,12 @@ COPY agent/gui /usr/local/bin/gui
 COPY agent/office /usr/local/bin/office
 COPY agent/lookup /usr/local/bin/lookup
 COPY agent/handoff /usr/local/bin/handoff
+# The read-only tool library for the worker's own Python scripts (agent/decurix_tools.py): `import decurix_tools` in
+# any python3 of the desktop, by a link from the system python's site folder (a dev loop's docker cp of /opt reaches it).
+COPY agent/decurix_tools.py /opt/decurix_tools.py
+RUN site="$(/usr/bin/python3 -c 'import site; print(site.getsitepackages()[0])')" && mkdir -p "$site" \
+    && ln -sf /opt/decurix_tools.py "$site/decurix_tools.py" && chmod 644 /opt/decurix_tools.py \
+    && cd / && /usr/bin/python3 -c "import decurix_tools"
 # TheBot harness's soul binary - built above from real source, started
 # conditionally by start_agent_terminal.sh only when AGENT_HARNESS=thebot.
 COPY --from=thebot-builder /soul /opt/soul

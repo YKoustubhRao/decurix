@@ -22,6 +22,8 @@ An arm is <model>[+expert][+soul][@<git-rev>], or oracle, nothing or ask:
   - +expert answers the worker's questions with the scripted expert;
   - +soul turns on every decision soul words and reads in place of Python (plan rule 3, phase 2: the final check's
     judge, the escalation ladder), so default+expert and default+expert+soul measure them before they default on;
+  - -<mechanism> switches one mechanism off (an ablation arm: default+expert-playbooks), by a switch the agent
+    already reads; the control plane lists the ones it can (playbooks, spot-judge, heal-model) and refuses the rest;
   - @<rev> runs the agent tree of that git revision (git archive of agent/decurix_agent), not the image's; it combines
     with +expert (default+expert@<rev>). An arm whose rev is not lower-case (HEAD, a branch) is named
     <model>[+expert]@<first 12 of its commit id>, which the control plane accepts and the table shows;
@@ -73,7 +75,8 @@ ORACLE_AT = re.compile(r"^oracle@(?P<rev>[A-Za-z0-9._/~^-]{1,80})$")
 
 # The control plane's own rule for an arm's name (eval.armName).
 ARM_NAME = re.compile(r"^[a-z0-9][a-z0-9+@._:-]{0,63}$")
-ARM = re.compile(r"^(?:(?P<provider>azure|claude):)?(?P<model>default|fast)(?P<expert>\+expert)?(?P<soul>\+soul)?(?:@(?P<rev>[A-Za-z0-9._/~^-]{1,80}))?$")
+ARM = re.compile(r"^(?:(?P<provider>azure|claude):)?(?P<model>default|fast)(?P<expert>\+expert)?(?P<soul>\+soul)?"
+                 r"(?:-(?P<off>[a-z][a-z0-9-]{0,39}))?(?:@(?P<rev>[A-Za-z0-9._/~^-]{1,80}))?$")
 
 
 class Usage(SystemExit):
@@ -98,13 +101,17 @@ def parse_arm(text):
         return {"name": text, "kind": "oracle", "expert": False, "agent_tree_rev": m.group("rev")}
     m = ARM.match(text)
     if not m:
-        raise Usage(f"--arm {text!r}: an arm is <model>[+expert][+soul][@<git-rev>] (model default or fast, optionally "
-                    "claude: before it), or oracle, nothing or ask")
+        raise Usage(f"--arm {text!r}: an arm is <model>[+expert][+soul][-<mechanism>][@<git-rev>] (model default or fast, "
+                    "optionally claude: before it), or oracle, nothing or ask")
     arm = {"name": text, "kind": "model", "provider": m.group("provider") or "azure", "model": m.group("model"),
            "expert": bool(m.group("expert"))}
     if m.group("soul"):
         # Every decision soul words and reads in place of Python (plan rule 3, phase 2), on for this arm only.
         arm["soul"] = True
+    if m.group("off"):
+        # An ablation arm: one mechanism switched off by a switch the agent already reads. The control plane knows
+        # which (eval.Mechanisms) and refuses one with no switch, saying which can be switched off.
+        arm["off"] = m.group("off")
     if m.group("rev"):
         arm["agent_tree_rev"] = m.group("rev")
     return arm
@@ -307,24 +314,31 @@ def suite_kinds(suite_dir):
 
 
 def curve_cell(rows):
-    """One case's point on the curve for one arm: medians over its valid rows, and how many rows were left out."""
+    """One case's point on the curve for one arm: medians over its valid rows, and how many rows were left out. A run
+    that errored (an error, a timeout, the token budget) counts in pass and false done, but its tokens and calls are
+    left out of the medians, as the table does (docs/evals.md, "Bookkeeping")."""
 
     valid = [r for r in rows if not r.get("invalid") and not r.get("infra")]
     n = len(valid)
-    tokens_in = sum(r.get("tokens_in") or 0 for r in valid)
+    finished = [r for r in valid if r.get("observed") not in ERRORED]
+    tokens_in = sum(r.get("tokens_in") or 0 for r in finished)
     return {
-        "n": n, "left_out": len(rows) - n,
+        "n": n, "left_out": len(rows) - n, "errored": n - len(finished),
         "pass": sum(1 for r in valid if r.get("passed")),
         "false_done": sum(1 for r in valid if r.get("false_done")),
         "q_required": sum(r.get("q_required") or 0 for r in valid) / n if n else 0,
         "q_other": sum(r.get("q_other") or 0 for r in valid) / n if n else 0,
         "q_declined": sum(r.get("q_declined") or 0 for r in valid) / n if n else 0,
-        "tokens_in": _median([r.get("tokens_in") or 0 for r in valid]),
-        "tokens_out": _median([r.get("tokens_out") or 0 for r in valid]),
-        "tokens": _median([(r.get("tokens_in") or 0) + (r.get("tokens_out") or 0) for r in valid]),
-        "calls": _median([r.get("calls") or 0 for r in valid]),
-        "cached_share": (sum(r.get("tokens_cached") or 0 for r in valid) / tokens_in) if tokens_in else 0.0,
+        "tokens_in": _median([r.get("tokens_in") or 0 for r in finished]),
+        "tokens_out": _median([r.get("tokens_out") or 0 for r in finished]),
+        "tokens": _median([(r.get("tokens_in") or 0) + (r.get("tokens_out") or 0) for r in finished]),
+        "calls": _median([r.get("calls") or 0 for r in finished]),
+        "cached_share": (sum(r.get("tokens_cached") or 0 for r in finished) / tokens_in) if tokens_in else 0.0,
     }
+
+
+# The observed outcomes of a run that errored: no answer, question or approval of the worker's own.
+ERRORED = ("error", "timeout", "budget")
 
 
 def curve(rows, order=None, kinds=None):

@@ -119,6 +119,9 @@ type Case struct {
 	OracleSecrets []string          `json:"oracle_secrets,omitempty"`
 	Budget        Budget            `json:"budget"`
 	Tags          []string          `json:"tags,omitempty"`
+	// Class names the failure class the case traps (a short slug, e.g. "date-order"): a fix names the class it moves
+	// and must move its trap cases, and the table reports results per class (docs/evals.md). "" is none.
+	Class string `json:"class,omitempty"`
 
 	// Filled by Load: the input files (by flat name) and the mock's start state.
 	Files   map[string][]byte `json:"-"`

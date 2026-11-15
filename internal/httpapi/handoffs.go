@@ -85,9 +85,20 @@ func (a handoffAdapter) TaskOutcome(taskID string) (handoff.TaskOutcome, error) 
 				o.OpenQuestions = append(o.OpenQuestions, iv.Request)
 			}
 		}
+		// The last steps it reported: a receiver that stopped part way hands these back marked interrupted.
+		steps := e.Steps
+		if len(steps) > handoffPartialSteps {
+			steps = steps[len(steps)-handoffPartialSteps:]
+		}
+		for _, st := range steps {
+			o.Partial = append(o.Partial, st.Text)
+		}
 	}
 	return o, nil
 }
+
+// handoffPartialSteps is how many of a receiver's last steps an interrupted handoff hands back.
+const handoffPartialSteps = 8
 
 // verdictEvidence is what a final check says it saw: its evidence lines, then each passing check's detail, at most 40.
 func verdictEvidence(v *tasks.GateVerdict) []string {

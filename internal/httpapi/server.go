@@ -12,6 +12,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/llmrec"
 	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"github.com/YKoustubhRao/decurix/internal/runs"
+	"github.com/YKoustubhRao/decurix/internal/runsearch"
 	"io"
 	"net/http"
 	"net/url"
@@ -145,6 +146,8 @@ type Server struct {
 	RunStore *runs.Store
 	// RunEvals labels a run record an eval case made (labels.eval, *eval.Store); assigned by main, nil labels none.
 	RunEvals runs.EvalSource
+	// RunSearch is the search over past runs (runsearch_routes.go); assigned by main, nil answers 503.
+	RunSearch *runsearch.Index
 	// buildRun stands in for runs.Build in tests.
 	buildRun func(ctx context.Context, execID string) (runs.Trajectory, error)
 	// agentTarget stands in for Desktops.AgentProxyTarget in agentProxyHandler, in tests.
@@ -302,6 +305,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
 	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)
 	mux.HandleFunc("/api/schedules/toggle", s.toggleScheduleHandler)
+	mux.HandleFunc("/api/schedules/runs", s.scheduleRunsHandler) // each occurrence's ledger row (schedule_ran.go)
 	// The email triggers: a person's mailbox, never an agent's to read or
 	// change (humansonly.go).
 	mux.HandleFunc("/triggers", s.humansOnly(s.triggersPageHandler))
@@ -520,8 +524,20 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// A person's judgements on the calling desktop's own tasks, for its agent to back a pick with (H-PY-18,
 	// desktop_judgements.go): this listener only.
 	mux.HandleFunc("/api/desktops/judgements", s.desktopJudgementsHandler)
+	// What a desktop's review pass proposes after a run (proposals.go): its callback, staged for a person; and the
+	// person's list, approve and reject, at this machine (O-7).
+	mux.HandleFunc("/api/desktops/proposals", s.desktopProposalsHandler)
+	mux.HandleFunc("/api/knowledge/proposals", s.humansOnly(s.proposalsListHandler))
+	mux.HandleFunc("/api/knowledge/proposals/approve", s.humansOnly(s.proposalsDecideHandler(true)))
+	mux.HandleFunc("/api/knowledge/proposals/reject", s.humansOnly(s.proposalsDecideHandler(false)))
 	// A run's record and bundle (plan R1, runs_routes.go): a person's, at this machine.
 	mux.HandleFunc("/api/runs/", s.humansOnly(s.runsHandler))
+	// Past runs searched by their stored text (runsearch_routes.go): any worker's for a person, and only its own for
+	// a desktop's agent (a callback, allowlisted read only in containerRoutes).
+	mux.HandleFunc("/api/runs/search", s.humansOnly(s.runSearchPersonHandler))
+	mux.HandleFunc("/api/agent/runs", s.runSearchDesktopHandler)
+	// The checked-done runs as a training set (training_export.go): a person's, at this machine.
+	mux.HandleFunc("/api/runs/training-export", s.humansOnly(s.trainingExportHandler))
 	// Where something is on a screenshot, for a desktop's `gui` (grounder.go).
 	mux.HandleFunc("/api/grounder", s.grounderStatusHandler)
 	mux.HandleFunc("/api/grounder/locate", s.grounderLocateHandler)

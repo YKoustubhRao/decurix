@@ -203,7 +203,8 @@ def _run(tool, args, drafts=None):
         except OSError as exc:
             return 126, f"it could not be run ({exc})"
         printed = ((done.stdout or "") + (("\n" + done.stderr) if done.returncode and done.stderr else "")).strip()
-        printed = printed.replace(str(copy), str(work))
+        # What it printed reaches the judge, the engine and the reply: never a secret that passed through.
+        printed = privacy.withhold_registered(printed.replace(str(copy), str(work)))
         if done.returncode != 0:
             # (What a failed run wrote stays in the scratch copy: the engine starts from the work folder as it was.)
             return done.returncode, printed
@@ -299,7 +300,7 @@ def _note(book, ok, failed=False, wrong=""):
     elif tool:
         tool["direct_failures"] = tool.get("direct_failures", 0) + 1 if failed else 0
     try:
-        playbooks.save(fresh)
+        playbooks.save(fresh, actor="run")
     except OSError as exc:
         log(f"Tool: could not count this run: {exc}")
 

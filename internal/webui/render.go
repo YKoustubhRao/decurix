@@ -99,6 +99,9 @@ type TasksPageData struct {
 	// Purge shows the "Purge a leaked secret" control (POST /api/privacy/purge): on the primary listener only, where
 	// that route is served.
 	Purge bool
+	// Search shows the "Search past runs" box (GET /api/runs/search): on the primary listener only, where that route
+	// is served, and only when the index is kept.
+	Search bool
 }
 
 // TaskPageData is the template data for one task record.

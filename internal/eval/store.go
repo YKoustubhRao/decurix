@@ -81,6 +81,14 @@ var schema = []string{
 	ALTER TABLE eval_runs ADD COLUMN worker_tree_sha TEXT NOT NULL DEFAULT '';`,
 	// Gate-signed approvals the case did not list, which the expert declined and the case went on (freeze 2.4).
 	`ALTER TABLE eval_rows ADD COLUMN q_declined INTEGER NOT NULL DEFAULT 0;`,
+	// The bookkeeping rules (docs/evals.md, "Bookkeeping"): why a row is invalid (a model change, or no model turn: ''
+	// reads as a model change, the only reason before), which attempt of its case run it is (a case run the model made
+	// no turn in is run again), and how many of its calls the provider failed or never got. A run keeps each case's
+	// failure class, so its table reports per class.
+	`ALTER TABLE eval_rows ADD COLUMN invalid_why TEXT NOT NULL DEFAULT '';
+	ALTER TABLE eval_rows ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE eval_rows ADD COLUMN provider_errors INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE eval_runs ADD COLUMN classes TEXT NOT NULL DEFAULT '{}';`,
 }
 
 // Blobs keeps a run's suite tar by content (*blobstore.Store), so a run can be read again later.
@@ -112,6 +120,9 @@ type Run struct {
 	FromWorker    string `json:"from_worker,omitempty"`
 	SnapshotSHA   string `json:"snapshot_sha,omitempty"`
 	WorkerTreeSHA string `json:"worker_tree_sha,omitempty"`
+	// Classes is each run case's failure class (Case.Class), for the table's per-class section; a case with none is
+	// not in it.
+	Classes map[string]string `json:"classes,omitempty"`
 
 	// snapshot is the state tar the run's cases start from (FromWorker's, else empty); never stored.
 	snapshot []byte
@@ -162,6 +173,24 @@ type Row struct {
 	// QDeclined is how many gate-signed approvals the case does not list the expert answered no, the case going on
 	// (counted apart from q_required and q_other).
 	QDeclined int `json:"q_declined"`
+	// InvalidWhy says why an invalid row is: InvalidModelChanged or InvalidNoTurn ("" on a row stored before it was
+	// kept, which reads as a model change).
+	InvalidWhy string `json:"invalid_why,omitempty"`
+	// Attempt is which run of its case run (arm, case, repeat) this row is: 1, or a rerun after no model turn.
+	Attempt int `json:"attempt"`
+	// ProviderErrors is how many of the case's model calls the provider answered with an error or never got.
+	ProviderErrors int `json:"provider_errors"`
+}
+
+// invalidWhy is a row's reason for being invalid, an old row's "" read as the one reason there was.
+func (r Row) invalidWhy() string {
+	if !r.Invalid {
+		return ""
+	}
+	if r.InvalidWhy == "" {
+		return InvalidModelChanged
+	}
+	return r.InvalidWhy
 }
 
 // Store keeps eval runs and their rows in SQLite.
@@ -233,11 +262,15 @@ func (s *Store) Create(r Run) error {
 		return err
 	}
 	cases, _ := json.Marshal(r.Cases)
+	classes := []byte("{}")
+	if len(r.Classes) > 0 {
+		classes, _ = json.Marshal(r.Classes)
+	}
 	_, err = s.db.Exec(`INSERT INTO eval_runs (id, created_ns, suite_name, suite_sha, suite_blob, arms, cases, repeats, status, note, started_ns, ended_ns, carry_state,
-		from_worker, snapshot_sha, worker_tree_sha)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+		from_worker, snapshot_sha, worker_tree_sha, classes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
 		r.ID, sqlitedb.ToNS(r.CreatedAt), r.SuiteName, r.SuiteSHA, r.SuiteBlob, string(arms), string(cases), r.Repeats, RunRunning, r.Note,
-		sqlitedb.ToNS(r.StartedAt), r.CarryState, r.FromWorker, r.SnapshotSHA, r.WorkerTreeSHA)
+		sqlitedb.ToNS(r.StartedAt), r.CarryState, r.FromWorker, r.SnapshotSHA, r.WorkerTreeSHA, string(classes))
 	return err
 }
 
@@ -277,11 +310,11 @@ func (s *Store) AddRow(r Row) error {
 	}
 	_, err := s.db.Exec(`INSERT INTO eval_rows (run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done,
 		done_unchecked_wrong, q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns,
-		invalid, infra, trajectory_id, calls, q_declined)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		invalid, infra, trajectory_id, calls, q_declined, invalid_why, attempt, provider_errors)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.Arm, r.Repeat, r.CaseID, r.TaskID, r.Observed, r.Checked, r.Passed, r.FalseDone, r.DoneUncheckedWrong,
 		r.QRequired, r.QOther, r.TokensIn, r.TokensCached, r.TokensOut, r.Minutes, string(deps), string(checks), string(probs),
-		sqlitedb.ToNS(r.At), r.Invalid, r.Infra, r.TrajectoryID, r.Calls, r.QDeclined)
+		sqlitedb.ToNS(r.At), r.Invalid, r.Infra, r.TrajectoryID, r.Calls, r.QDeclined, r.invalidWhy(), max(r.Attempt, 1), r.ProviderErrors)
 	return err
 }
 
@@ -314,7 +347,7 @@ func (s *Store) List(limit int) ([]Run, error) {
 
 func (s *Store) query(where string, args ...any) ([]Run, error) {
 	rows, err := s.db.Query(`SELECT id, created_ns, suite_name, suite_sha, suite_blob, arms, cases, repeats, status, note, started_ns, ended_ns,
-		carry_state, from_worker, snapshot_sha, worker_tree_sha
+		carry_state, from_worker, snapshot_sha, worker_tree_sha, classes
 		FROM eval_runs `+where, args...)
 	if err != nil {
 		return nil, err
@@ -324,11 +357,12 @@ func (s *Store) query(where string, args ...any) ([]Run, error) {
 	for rows.Next() {
 		var r Run
 		var created, started, ended int64
-		var arms, cases string
+		var arms, cases, classes string
 		if err := rows.Scan(&r.ID, &created, &r.SuiteName, &r.SuiteSHA, &r.SuiteBlob, &arms, &cases, &r.Repeats, &r.Status, &r.Note, &started, &ended,
-			&r.CarryState, &r.FromWorker, &r.SnapshotSHA, &r.WorkerTreeSHA); err != nil {
+			&r.CarryState, &r.FromWorker, &r.SnapshotSHA, &r.WorkerTreeSHA, &classes); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal([]byte(classes), &r.Classes)
 		r.CreatedAt, r.StartedAt = sqlitedb.FromNS(created), sqlitedb.FromNS(started)
 		if ended > 0 {
 			r.EndedAt = sqlitedb.FromNS(ended)
@@ -344,7 +378,7 @@ func (s *Store) query(where string, args ...any) ([]Run, error) {
 func (s *Store) Rows(runID string) ([]Row, error) {
 	rows, err := s.db.Query(`SELECT run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done, done_unchecked_wrong,
 		q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns, invalid, infra,
-		trajectory_id, calls, q_declined
+		trajectory_id, calls, q_declined, invalid_why, attempt, provider_errors
 		FROM eval_rows WHERE run_id=? ORDER BY rowid`, runID)
 	if err != nil {
 		return nil, err
@@ -357,7 +391,7 @@ func (s *Store) Rows(runID string) ([]Row, error) {
 		var at int64
 		if err := rows.Scan(&r.RunID, &r.Arm, &r.Repeat, &r.CaseID, &r.TaskID, &r.Observed, &r.Checked, &r.Passed, &r.FalseDone,
 			&r.DoneUncheckedWrong, &r.QRequired, &r.QOther, &r.TokensIn, &r.TokensCached, &r.TokensOut, &r.Minutes, &deps, &checks, &probs, &at,
-			&r.Invalid, &r.Infra, &r.TrajectoryID, &r.Calls, &r.QDeclined); err != nil {
+			&r.Invalid, &r.Infra, &r.TrajectoryID, &r.Calls, &r.QDeclined, &r.InvalidWhy, &r.Attempt, &r.ProviderErrors); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(deps), &r.Deployments)

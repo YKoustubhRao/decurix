@@ -35,6 +35,9 @@ func (l *limitedProvider) Name() string { return l.inner.Name() }
 
 func (l *limitedProvider) IsReachable(ctx context.Context) bool { return l.inner.IsReachable(ctx) }
 
+// Unwrap is the provider Limited wraps (RouteOf).
+func (l *limitedProvider) Unwrap() Provider { return l.inner }
+
 // Chat waits for a free slot, honouring cancellation while it waits, then
 // delegates.
 func (l *limitedProvider) Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {

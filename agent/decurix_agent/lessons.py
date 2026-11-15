@@ -49,7 +49,7 @@ SECRET_ASKED = re.compile(
     r"\b(password|passcode|passphrase|" + privacy.PIN_WORD + r"|otp|one[- ]time (?:code|password)|verification code|security code|"
     r"2fa|cvv|api key|secret|token)\b", re.IGNORECASE)
 
-DISTILL_SYSTEM ="""A computer worker stopped during a task to ask the person it works for a question, and the person answered. Decide what, if anything, the worker should remember from this for future tasks, and write it as one instruction.
+DISTILL_SYSTEM ="""A computer worker stopped during a task to ask the person it works for a question, and the person answered. Decide what, if anything, the worker should remember from this for future tasks, and write it as one statement of fact.
 
 Keep a lesson when the answer tells the worker how the person wants things done, in a way that will hold again: a preference or rule ("when several match, take the first"), how something works here (where a thing is found, what a field means, which account or format to use), a correction of a mistake it made, a fact about the person's systems or people that it will need again.
 
@@ -57,7 +57,9 @@ Keep nothing when: the answer only settles this one run (a bare yes or no, an ap
 
 An answer often does both: it says what to do NOW to get this run back on its feet, and it gives a rule that will hold again. Keep only the rule. What belongs to this run alone is never part of a lesson: how to recover (discard this, close that, leave, start over, try again, carry on, nothing more to do), what state this run is in (it was or was not saved, it is already correct, it is finished), and anything that names one particular record, document or item of this run - its number or reference, its name, its amounts, which choice was right for it. A lesson that mentions one of those would be read on every later task as if it were still true (found live: "the record is 00030 and already correct, do nothing more" was kept, and so was "close the window and choose Leave"). If the answer holds only such things, keep nothing. A particular case may be used as the example of a rule only when the person gave it as an example.
 
-Write the lesson so it stands on its own, without the question: say when it applies and what to do, in the person's terms, in one or two sentences. Generalise only as far as the person's words allow - "always" from them means always; an answer about one case stays about that kind of case. Do not add advice of your own.
+Write the lesson so it stands on its own, without the question, as a fact about the person or their work, not an order: "the person wants the first match taken when several people share a name", not "always take the first". One rule, when it applies, and at most one short clause of why, in the person's terms. Generalise only as far as the person's words allow - "always" from them means always; an answer about one case stays about that kind of case. Do not add advice of your own.
+
+Never keep: a way that failed as if it were a way that works; a claim that a tool, app or command does not work; a failure of this machine or its connection; a date, a run or task number, or a quoted log or error message.
 
 Reply with JSON only: {"keep": true, "title": "<3-8 words>", "lesson": "<the instruction>", "said": "<the part of the person's answer the lesson comes from, copied word for word, without anything about this run alone>"} or {"keep": false, "why": "<a few words>"}"""
 

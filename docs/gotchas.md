@@ -1058,3 +1058,23 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A VM's Chrome was never signed in to anything because Chrome 127+ cookies and tokens (v20, app-bound) open only from the profile's own folder - no copy can work, so a browser runs in place from the person's own profile; Chrome's own log said so after three builds that only changed how the copy was made
 - [part-6.md](gotchas/part-6.md): A browser run out of sight on a private desktop took the person's own Chrome from them (one process per profile, on one desktop) - the VM now gets one invisible window of their own Chrome; what keeps it painting, why nothing may wait on its busy UI thread, and why a cold start must not be minimised
 - [part-6.md](gotchas/part-6.md): A VM got a Chrome profile whose Google sign-in had lapsed because the app list knew only shortcut files; every profile is now an app from Local State. A borrowed window types only while held active, and a click on it took the person's foreground: its keyboard is lent, the person's keys held and played back
+- [part-6.md](gotchas/part-6.md): `failing_check | tail -5` exited 0 and was verified - a pipe reports only its last program; bash now writes PIPESTATUS through a BASH_ENV EXIT trap and the hidden failure is the result
+- [part-6.md](gotchas/part-6.md): A schedule occurrence was sent twice after a crash and a failed one was consumed - each occurrence now has a ledger row, settled with the advance, retried only while it never reached the desktop
+- [part-6.md](gotchas/part-6.md): The schema-step guard reads only the literal []string a Migrate call names; an append()-built slice hides its steps
+- [part-6.md](gotchas/part-6.md): Parallel agents writing through Git Bash heredocs broke three files (a regex panicking at init, a raw newline in a Python string) - Edit/Write only, build every touched package first
+- [part-6.md](gotchas/part-6.md): An eval arm the worker can tell apart is biased even by a desktop-name index; one practice id per run
+- [part-6.md](gotchas/part-6.md): Locking a skill must not drop its run verdicts, or a failing locked skill stays trusted
+- [part-6.md](gotchas/part-6.md): An FTS5 external-content index holds copies of record text; a purge must rewrite it too
+- [part-6.md](gotchas/part-6.md): Element refs kept by path alone let a gone control hand its ref to another
+- [part-6.md](gotchas/part-6.md): A provider fact learned at run time must be keyed by provider, model and endpoint
+- [part-6.md](gotchas/part-6.md): `docker compose up --build` failed at `go generate .` since CODE_MAP is generated (git ls-files, no .git in the build context); the image runs only the packer now
+- [part-6.md](gotchas/part-6.md): Eval oracle steps that curl the mock failed since each run's mock got its own name; MOCK_ROUTE now names it - calibrate after any change to how a case's environment is named
+- [part-6.md](gotchas/part-6.md): normalize_role is not idempotent ("text" -> "textbox"); comparing observed roles through it moved a gone field's ref onto a label and typed into the focused button
+- [part-6.md](gotchas/part-6.md): The terminal skill took the words describing a command as the command; a command named after a colon is what follows it
+- [part-6.md](gotchas/part-6.md): A reasoning brain spends a small budget thinking; every call that parses an answer retries once with room
+- [part-6.md](gotchas/part-6.md): A WSL distro with no wsl.exe attached reboots and takes the dev control plane with it; hold a `sleep infinity` open
+- [part-6.md](gotchas/part-6.md): boundary.sh run as a normal user hands the container's /etc to that user (its tar's etc entry); run it as root
+- [part-6.md](gotchas/part-6.md): A report the final gate writes itself goes out gated; ungated, the "NOT checked" report was judged again forever
+- [part-6.md](gotchas/part-6.md): Two texts each cut at a length are compared through one cut-and-trim function; a cut ending on a space split them
+- [part-6.md](gotchas/part-6.md): An operator step's retry stays the operator's; a shell line with a URL was classified web and searched for
+- [part-6.md](gotchas/part-6.md): Review points left open are no checked done; a cut report lost them and a saved-not-filed return went out checked

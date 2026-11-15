@@ -938,3 +938,125 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     restart is refused after it. Said in gate-boundary.md.
   - Done: soul's step text (`Running: gui type e3 "<value>"`) withholds a job's secret values in every written form
     the agent's `approval.written_forms` gives (H-PY-9, 99d7962).
+
+## Hermes adoption: what is owed (2026-11-15, uncommitted on koustubh/vm-host-chrome)
+
+Techniques taken from nousresearch/hermes-agent after a file-by-file read of both codebases: pipe exit status, operator loop
+guards, model-layer guards and compaction, gui action outcomes, exact-bytes secret scrubbing, a read-only tool library for
+scripts, the learned-artefact ledger/lock/usage, run search, a training export, typed handoff results, schedule occurrences,
+eval forensics and bookkeeping, and a post-task review pass staged for a person. Every part has unit tests. Live testing
+(2026-11-15, a dev control plane in the Ubuntu WSL distro, Azure Kimi-K2.6) is below.
+
+**Checked live (2026-11-15)**
+- Pipe status through the operator; `decurix_tools` (import, run search, a refused writing verb); exact-bytes scrubbing
+  (glued secrets, a numeric secret only as a whole token); gui outcome lines; the stale-ref refusal; run search and the
+  training export over the API; a schedule retried from `retrying` to `sent` with its original TIME; the review pass
+  (trigger, retry with room, proposals staged and scoped, an approve recorded with its author, the Workforce page);
+  `bench/skills/e2e.py` OK; oracle calibration core-v2 6/6 and core-v1 12/12.
+- Fixed while testing, each with a test that fails without it: soul's terminal skill took "run exactly this shell command
+  once" as the command; a gone field's ref moved onto a label (`normalize_role` is not idempotent) and typing could reach a
+  non-field; the review pass got nothing from a reasoning brain at 1,200 tokens; the eval oracle's `MOCK_ROUTE` named the
+  bare mock alias; the control-plane image ran `go generate .` (codemap needs git). Core cases gained `approves` for their
+  save (written before the gate asked for it; the expert declined every save, 0/6 on both arms).
+- Two bugs on main (788187d0, 2026-11-10), found here and fixed: the final gate's "NOT checked: N record(s) ... not read
+  back" report went out without `gated=True`, so it was judged again and written again until the eval's 15 minutes ran out
+  (4 of 6 core-v2 cases, records correctly saved); and `records.saved_unread` called a record declared and read back whole
+  "not read back" when its 300-character change text was cut on a space (`_save_key`). The four cases then passed 4/4 in
+  1-4 minutes instead of timing out.
+- Matrix results: see "Eval results" below.
+
+**Found on the baseline too, the owner's to decide** (each the same on a `git archive HEAD` copy)
+- `bench/recordings`: 4 FAILs, each the gate's per-press approval for an unreviewed recording - the bench predates it.
+- `bench/security` boundary, the gate_flow row "a yes is taken once": stale against the dual take of 2026-11-08 (the
+  double-use property itself still holds). I was not allowed to change a failing security check; it is left as it is.
+- The final gate marks shell-only answers "Not checked": `evidence.observed` leaves shell output out.
+- The accetto base image (`latest`, unpinned) leaves `/usr`, `/usr/bin` and TigerVNC's files owned 984:980 mode 775; uid
+  1001 cannot use it today, but pinning the base image would stop it changing under us.
+- The ERPNext demo does not start (its frontend cannot resolve `backend`); untouched.
+- A judge answer holding two JSON objects is "the check could not be made" (verify._parse); the person is then asked, which
+  is the safe outcome - left as it is.
+- Fixed (soul, needs the next image build): a failed operator step's retry, a shell line that read a page by URL, was
+  classified "web" and the command line itself went to a search engine (baseline arm, ticket-filter-then-edit).
+  `scheduler.retryKind` keeps an operator step's retry the operator's.
+- Fixed (Python, not in the running GST matrices: their arms run the image's agent and 9bc6f7a7): a FALSE DONE on
+  office-gstr1-books og-1 (branch arm). The request was to file the return; the worker saved it to the portal, never
+  filed it (no OTP asked, no ARN), left a receiver unvalidated, and reported "successfully filed". soul's review had
+  four points open and carried them at the end of the report; the judge's prompt cut the report at 4000 characters,
+  never saw them, and said done (0.95), reading "saved" as the filing. `verify.claim_for_judge` keeps the open block;
+  `final_gate` sends any judged done that carries open review points out NOT checked (`test_review_open.py`). The
+  judge reading "saved" as "filed" is the model's; with the points in view it no longer stands alone.
+  Checked live (run efd500acc83da426b, arm `default+expert@0e0fc8ad19d7`: the working tree's agent with the fix, a
+  dangling commit): og-1 the judge, now seeing the points, said "not done yet", and the worker went on to file with
+  EVC (ARN, return graded right); og-2 saved and not filed as before, now reported NOT checked. Left: og-1 still went
+  out checked with the receivers' register names not taken into FilePrep (a step of the app the demonstration teaches;
+  the review and the judge both missed it, no code check can say it without naming the app).
+- Owner's call: after a record was saved and read back, soul's judgement review asked about an optional extra (line items
+  in Notes); the expert said no to the extra save, and the worker ended "Stopped, as you said" - an error row although
+  the record itself was right (branch arm, bill-needs-centre-custom; no false done). A refusal of an amendment after the
+  work is done could end as done-with-the-amendment-not-made instead; left as it is (it is the conservative outcome).
+
+**Owner decisions**
+
+| ID | Decision | State |
+|---|---|---|
+| O-12 | May a kept script (`tool_task`, run in the sandbox with no model) read the screen or the web through `decurix_tools`? `unshare` alone leaves the gui daemon's socket reachable | **Open.** The library offers reading verbs only; the fence (`ungated_effect`) does not see its reads |
+| O-13 | Tell the operator about the new reading tools (`gui recall --runs`, `handoff --schema`, `decurix_tools`): a change to soul's cached contract | **Open:** needs an eval A/B (rule 1) before it ships; until then the tools exist and are not offered in the prompt |
+| O-14 | A "person holds the screen" state: `computer/control.py` fences gui work by a control epoch, but nothing takes or gives back control (no take-over feature exists) | **Open:** wire it to a take-over in the screen page if one is wanted; in broker mode its file must live where the worker cannot write |
+
+**Eval results** (Azure Kimi-K2.6, scripted expert; branch = the image's agent, baseline = `9bc6f7a7`, a dangling commit
+of HEAD plus only the two final-gate fixes above, so the A/B measures the adoption and not those fixes; both arms run the
+image's soul)
+
+| Suite (run) | Arm | Pass | False done | Tokens/run (median, p90; cached) | Minutes (median) |
+|---|---|---|---|---|---|
+| core-v2 (e4bafb206185c268c), 6 cases x 5 | branch | 29/30 (lo 0.83) | 0/30 | 245.7k, 373.3k; 67% | 3.7 |
+| | baseline | 28/30 (lo 0.79) | 0/30 | 270.9k, 447.6k; 71% | 4.1 |
+| core-v1 | both | not run: cancelled for time, owed | | | |
+| office-books-v1 (e613c6a70510130cd), cases 1-4 x 1, untaught | branch | 0/4 | 0/4 | 8.0M, 5.0M-8.0M (3 over budget) | 60-96 |
+| | baseline | stopped by the owner before a row | | | |
+| office-gstr1-books-v1 (e75bab0847306d86e) | branch | 0/4 | **3/4** (saved, never filed, "filed" reported) | 1.1M-6.4M | 22-70 |
+| | baseline | 0/1 (og-1: filed, NOT checked) | 0/1 | 6.5M | 88 |
+| office-gstr1-chat-v1 (ea9d35bf872e2d505) | branch | 0/4 | 0/4 (3 over budget, nil month stopped honestly) | 10M x3, 0.3M | 6-116 |
+| | baseline | 0/1 (oc-1 over budget; it changed an input workbook) | 0/1 | 10M | 84 |
+| office-gstr1-books-v1 og-1, og-2 (efd500acc83da426b) | branch + review-open fix (`0e0fc8ad`) | 0/2 | 1/2 (og-1 filed, register names not taken in) | 7.0M, 3.5M | 87, 63 |
+
+- core-v2: no case worse on the branch; the three errors are the two shared-code findings above (the optional Notes
+  amendment refused, once per arm; the retry sent to a search engine, baseline). The branch caches a smaller share of
+  its input (67% against 71%) at about 9% fewer tokens per run; bill-entry-month-first's p90 (1.34M) is one 11-minute run.
+
+- GST suites (2026-11-15, stopped by the owner part way): untaught, nothing passes on either arm; the branch's
+  three false dones are the review-open bug above (fixed, checked live). Owed: the baseline half, core-v1, and the
+  learning curves (cases 1-8 in order, `--carry-state`, ideally from a worker taught case 1 by a person's
+  demonstration, `evals/run.py teach`). Older taught runs (2026-11-09/10) showed no clean downward token or time trend
+  and almost no passes. Parallel runs need one control plane each (one practice slot per control plane): a second
+  one beside the dev one was safe (own container, volume and port; each sweeps only what it made), four at once hit
+  the practice memory guard (2560 MB) and the Azure key's 429s.
+
+**Eval matrices owed (rule 1: a case and a 5-repeat matrix before each is trusted)**
+- The operator's cycle stop now comes at round 4 (it was round 8) and the cut-off-command guard sends a command back twice.
+- gui's outcome line, the repeat refusal after an unconfirmed effect, refs that hold for one look, and the window-mismatch refusal.
+- The reworded lesson and kept-facts prompts (declarative facts, no dead ends, no negative tool claims).
+- The post-task review pass: how often it proposes, how often a person accepts, its tokens per run.
+- The compaction additions (UNVERIFIED notes, the exact-identifier list) on a long hosted goal.
+
+**Live checks still owed**
+- `/skill lock` then a run, and everything above in broker mode (`DECURIX_SCREEN_USER=1`).
+- `import decurix_tools` in the script sandbox (not on this host: it needs unshare or bubblewrap).
+- AT-SPI `set_text`/Value on real GTK and LibreOffice fields; `cdp.set_value` on a framework-built form; `_keyboard_in` with a
+  real window manager and modal dialogs; DOM `backendNodeId` stability across looks.
+- A Claude brain through the proxy: the cached share rises across a goal, and 4 breakpoints are accepted on image and tool
+  messages. An Ollama run: the runaway cut never fires on legitimate output.
+- Run search over a real database (backfill time); `gui recall --runs` in broker mode; one typed handoff with its retry turn;
+  a training export over hosted and local runs.
+- A schedule whose desktop cannot start: retried at +5/+15/+30 min with its own TIME; a control-plane restart mid-send.
+- Two eval arms on one practice id (no container-name collision); an ablation switch reaching the gui daemon; the forensics
+  lanes on a real copy of decurix.db.
+
+**Not built, and why**
+- Telegram/WhatsApp reach (owner: hardening only this quarter).
+- A 1-hour cache TTL for goals waiting on a person: no clean signal at call time.
+- Pixels sent to a vision model are not scrubbed (text only).
+- Skill usage does not reach the control plane's registry, so the Workforce page shows no stale badge yet; schedules and
+  mail triggers do not yet pass the skills they run as `referenced`.
+- Hermes' approval model (session/always grants, an LLM that approves), autonomous skill writing, Honcho user modelling,
+  tool deferral and multi-cloud sandboxes were read and deliberately not taken: each breaks an invariant here.

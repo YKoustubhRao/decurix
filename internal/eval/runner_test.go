@@ -248,7 +248,8 @@ func (f *fakeSandbox) CreatePractice(_ context.Context, spec desktop.PracticeSpe
 	if f.onCreate != nil {
 		f.onCreate(len(f.specs))
 	}
-	id := "c-" + spec.RunID
+	// Docker gives every container its own id, even under a name an earlier arm's desktop had.
+	id := fmt.Sprintf("c-%s-%d", spec.RunID, len(f.specs))
 	f.live[id] = true
 	return desktop.PracticeDesktop{ContainerID: id, Name: f.desktopID, IP: fakePracticeIP}, nil
 }
@@ -618,7 +619,8 @@ func TestMatrixTwoArmsTwoRepeatsThreeCases(t *testing.T) {
 	if len(sb.specs) != 2 || sb.specs[0].AgentTree != nil || !bytes.Equal(sb.specs[1].AgentTree, tree) {
 		t.Fatalf("agent trees: %d specs", len(sb.specs))
 	}
-	if sb.specs[1].Brain != "azure" || sb.specs[1].Model != "fast" || sb.specs[0].RunID == sb.specs[1].RunID {
+	// Both arms' desktops are made under the one practice run id: nothing the worker reads tells the arms apart.
+	if sb.specs[1].Brain != "azure" || sb.specs[1].Model != "fast" || sb.specs[0].RunID != sb.specs[1].RunID {
 		t.Fatalf("specs: %+v", sb.specs[1])
 	}
 	arms := run.Arms
@@ -667,6 +669,9 @@ func TestCalibrationArms(t *testing.T) {
 			return 3, nil // no ledger
 		}
 		line := argv[len(argv)-1]
+		if argv[0] == "/bin/bash" && len(argv) > 6 {
+			line = argv[6] // oracleArgv: /bin/bash -c PRELUDE oracle TASK DIR LINE MOCKHOST
+		}
 		switch {
 		case strings.Contains(line, "number=B-1"):
 			sb.addRecord("bills", map[string]any{"number": "B-1"})
@@ -705,7 +710,9 @@ func TestCalibrationArms(t *testing.T) {
 			oracle = argv
 		}
 	}
-	if len(oracle) != 7 || oracle[4] == "" || oracle[5] != desktop.PracticeWorkDir+"/office" || oracle[6] != "echo 3 > out.txt" {
+	// ...and with the run's own mock name (oracle_mock_test.go).
+	if len(oracle) != 8 || oracle[4] == "" || oracle[5] != desktop.PracticeWorkDir+"/office" || oracle[6] != "echo 3 > out.txt" ||
+		!strings.HasPrefix(oracle[7], desktop.PracticeMockAlias+"-") {
 		t.Fatalf("oracle argv: %q", oracle)
 	}
 	if len(sb.requests) != 0 {

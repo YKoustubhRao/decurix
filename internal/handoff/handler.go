@@ -120,6 +120,8 @@ func (h *Handler) handoffs(w http.ResponseWriter, r *http.Request) {
 			Inputs     map[string]string `json:"inputs"`
 			Files      []string          `json:"files"`
 			Expected   string            `json:"expected"`
+			// OutputSchema is the contract the result is held to (schema.go).
+			OutputSchema json.RawMessage `json:"output_schema"`
 		}
 		if !decode(w, r, &req) {
 			return
@@ -132,6 +134,7 @@ func (h *Handler) handoffs(w http.ResponseWriter, r *http.Request) {
 			FromWorker: from, FromTask: req.FromTask,
 			ToWorker: req.ToWorker, ToRole: req.ToRole, ToSkill: req.ToSkill,
 			Request: req.Request, Inputs: req.Inputs, Files: req.Files, Expected: req.Expected,
+			OutputSchema: req.OutputSchema,
 		})
 		if err != nil {
 			writeError(w, err)

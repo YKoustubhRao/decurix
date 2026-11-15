@@ -45,6 +45,42 @@ class SavedUnread(unittest.TestCase):
     def test_nothing_saved_is_nothing_unread(self):
         self.assertEqual(self.run_with([]), [])
 
+    def test_a_long_save_cut_on_a_space_is_still_the_records(self):
+        # Found live (2026-11-15): the 300-character cut ended on a space; the event kept it and the ledger lost it.
+        long = SAVED + "; " + "x" * (299 - len(SAVED) - 2) + " (+8 more)"
+        self.assertEqual(" ".join(long.split())[:300][-1], " ")
+        stored = [{"key": "Hampi Residency", "saved_at": 1.0, "saved": " ".join(long.split())[:300],
+                   "readback": {"seen": ["Name"], "absent": []}}]
+        self.assertEqual(self.run_with(stored, long), [])
+
+
+class TheReportIsNotCheckedAgain(unittest.TestCase):
+    """Found live (2026-11-15, core-v2): the "NOT checked" report went back through the final gate, which judged it done
+    again and wrote it again - 63 judge calls until the task's time ran out. The gate settled it: it goes out gated."""
+
+    def test_judged_done_with_a_save_unread_goes_out_once_not_checked(self):
+        from decurix_agent import final_gate, skill_task, verify
+        judged = []
+        with mock.patch.object(skill_task.guidance, "get",
+                               lambda: {"mode": "engine", "run": None, "task": "Enter the bill", "attempt": 1}), \
+                mock.patch.object(final_gate, "_did_screen_work", lambda: True), \
+                mock.patch.object(final_gate, "_saved_unread", lambda: ["http://records.example.test/bills/3"]), \
+                mock.patch.object(skill_task.produced, "files", lambda *a, **k: []), \
+                mock.patch.object(skill_task.produced, "drafts", lambda: []), \
+                mock.patch.object(skill_task.guidance, "refused", lambda: None), \
+                mock.patch.object(skill_task.guidance, "end", lambda: None), \
+                mock.patch.object(skill_task.source_guard, "changed_sources", lambda *a: []), \
+                mock.patch.object(skill_task.source_guard, "tidy_own_backups", lambda *a: None), \
+                mock.patch.object(skill_task.source_guard, "resaved", lambda *a: []), \
+                mock.patch.object(skill_task.verify, "judge", lambda *a, **k: judged.append(1) or {
+                    "verdict": verify.DONE, "confidence": 1.0, "seen": "Saved.", "why": "saved"}), \
+                mock.patch.object(skill_task, "write_final_reply") as sent:
+            self.assertTrue(skill_task._gate("Saved bill HS-0318.", "final", "thebot"))
+        self.assertEqual(len(judged), 1)
+        self.assertTrue(sent.call_args.kwargs.get("gated"), sent.call_args)
+        self.assertFalse(sent.call_args.kwargs["checked"])
+        self.assertIn("NOT checked", sent.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

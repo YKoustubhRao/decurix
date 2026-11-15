@@ -360,6 +360,8 @@ window.Triggers = (function(){
     if(lastRun && !fired){ meta.appendChild(el("span", "", "Last ran " + lastRun)); }
     /* Why the last run did not reach its desktop (B-28): a failed run is never consumed without a trace. */
     if(sch.last_error){ meta.appendChild(el("span", "err", "Last run failed: " + sch.last_error)); }
+    /* Occurrences that came due while nothing could send them: counted once, never silently dropped. */
+    if(sch.missed){ meta.appendChild(el("span", "err", sch.missed)); }
     main.appendChild(meta);
     row.appendChild(main);
 

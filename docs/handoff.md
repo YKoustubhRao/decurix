@@ -20,8 +20,10 @@ command, wrapper `agent/handoff`), `agent/thebot/internal/skills/handoff_result.
 | `depth` | how many handoffs led to this one (`MaxDepth` 3) |
 | `status` | `queued`, `running`, `done`, `not_done`, `failed`, `cancelled` |
 | `reason` | why it is where it is, in words a worker can act on |
-| `task_id` | the receiving task, in the ordinary task records |
-| `result` | `report`, `verified`, `evidence[]`, `files[]`, `open_questions[]` |
+| `task_id` | the receiving task, in the ordinary task records (the retry turn's, once one is sent) |
+| `output_schema` | the contract a `delegate`'s result is held to (below); empty for none |
+| `schema_retries` | retry turns that re-sent the contract (0 or 1) |
+| `result` | `report`, `verified`, `evidence[]`, `files[]`, `open_questions[]`, `data` (the checked result object), `schema_errors[]`, `interrupted`, `tasks[]` (every receiving task, in order) |
 
 Stored in SQLite (`handoffs`, component `handoff`, append-only `Migrate` steps).
 
@@ -55,7 +57,11 @@ The sender cannot see the receiver's screen, so the only evidence that the work 
 - `done` with `verified: true` only when the receiving task ended `done` **and** its execution's `checked` is true.
 - A task that ended `done` without `checked` (no gate ran, the check could not settle it, an older image that does not
   say) is `not_done`, `verified: false`. The report is kept so the sender can see what was claimed, never counted.
-- A receiving task that ended `error` or `abandoned` is `failed`.
+- A receiving task that ended `error` is `failed`. One that stopped part way (`abandoned`: its desktop restarted;
+  `query`: it stopped while waiting on a person; or it ran past its time limit) is `failed` with `interrupted: true`:
+  `report` is its last report, or its last 8 steps when it wrote none, and `data` its last result object as it was.
+  Never verified.
+- A `done` and checked report that is empty (and has no contract) is `failed`: an empty result is not a result.
 - A receiver waiting on a person stays `running`; its unanswered questions are in `open_questions`.
 - `evidence` is what the receiver's gate wrote it saw (its `Checked ...:` lines and its "Values read from" block).
   `files` are the files the receiver saved in `~/handoffs/<id>/out/`, copied back to the sender under
@@ -66,6 +72,28 @@ On the sender, the `handoff` command prints one fixed block (`=== HANDOFF <id>: 
 HANDOFF <id> ===`). Anything but `DONE (verified)` tells the model not to report that part as done. The soul's report
 review (`handoffIssues`) raises a Work point for every handed-back result that was not verified unless the report names
 the handoff and says it is not done. The sender's own final gate still judges the sender's whole report as before.
+
+## Typed results
+
+A `delegate` may carry `output_schema`, a small subset of JSON Schema (`internal/handoff/schema.go`): `{"type":
+"object", "required": [...], "properties": {key: {"type": string|number|integer|boolean|array|object|null, "items":
+{"type": ...}}}}`, at most 40 keys and 4000 bytes. Anything outside the subset is refused when the handoff is made
+(400), so a contract never silently checks less than it says. The request tells the receiver to end its report with
+`RESULT JSON:` and one object matching the contract (a ```json fence is allowed).
+
+- Only a report the receiver's gate confirmed (`done`, checked) is held to the contract; an unchecked one is
+  `not_done` as before, and no retry is spent on it.
+- The object after the last `RESULT JSON:` is checked in code: required keys there, each key of its type, an integer
+  is a number, an array's items of their type. An empty object, or none, never matches.
+- A match is `done`, `verified`, with the object as `result.data`. A mismatch keeps the errors in `schema_errors` and
+  sends **one retry turn** to the same worker: a new task that re-sends the contract with what was wrong and says not to
+  do the work again (`ClaimRetry` takes the turn so two collects never send two; a busy worker gives it back and it is
+  sent when the worker is free). The retry's own report must again be done and checked and match; otherwise the
+  handoff is `not_done` ("did not match the contract after one retry"). There is never a third turn.
+- The gate's verdict still travels with the result (`evidence`); `verified` is true only for a gate-confirmed report
+  whose object matched. `tasks` lists the work's task and the retry's.
+- `handoff delegate ... --schema JSON` (or `--schema-file PATH`) sends a contract; the block prints `data: {...}`,
+  `contract errors:` and `interrupted: yes` lines. The soul's report review reads the block's first line as before.
 
 ## Asking a worker before a person
 
@@ -80,7 +108,7 @@ count as a result. It can save a person a question; it never stands in for check
 ## The `handoff` command
 
 `handoff delegate --to WORKER|--role ROLE|--skill SKILL --request TEXT [--input k=v]... [--file PATH]... [--expect
-TEXT] [--wait SECONDS]` (default wait 1800 s), `handoff ask --skill SKILL [--wait SECONDS] QUESTION`, `handoff status
+TEXT] [--wait SECONDS] [--schema JSON|--schema-file PATH]` (default wait 1800 s), `handoff ask --skill SKILL [--wait SECONDS] QUESTION`, `handoff status
 ID`, `handoff cancel ID`, `handoff who`. Request, inputs, expectation and question are withheld of the task's secrets
 (`privacy.withhold_known`) before they leave the desktop. Exit codes: 0 verified done, 1 not done, 2 still running when
 the wait ran out, 3 not sent.

@@ -296,6 +296,54 @@ phone or the tunnel cannot drive the worker through soul.
   characters is refused. A desktop cannot call it, so a worker cannot erase what it was seen doing.
   (docs/trajectory.md, "Purging a leaked secret".)
 
+## Exact bytes of every secret that passed through (2026-11-15)
+
+Word hashes miss a secret that does not stand as a word between `_WORD`'s separators: `pass:Hunter2!`, a passphrase
+with spaces, a value glued into a longer token. While its task ran, the literal store caught these. Once
+`clear_literals` let the values go, nothing did. hermes-agent registers each secret's exact bytes and scrubs every
+model-facing output against them (`agent/redact.py`, `register_vault_redaction_value`). Ours keeps hashes, since this
+store outlives the task:
+- **Registered.** `privacy.remember_exact` is called from `remember_secrets` (a request's), `remember_value` (a value
+  typed into a secret field, a secret reply), `remember_literals` (a task's values, raw, before they are cleaned) and
+  `remember_marked`.
+- **Forms kept.** Each value is kept as it came, trimmed, with CR/LF taken out, both of those, and with whitespace
+  collapsed.
+- **Storage.** Each form becomes one line `x<bytes>.<mode>.<crc32>.<sha256>` in `withheld-secrets`, the same file as
+  the word hashes. That way broker mode's screen side receives it with no new plumbing. The file holds at most 200
+  entries of each kind.
+- **Matching.** A text is checked by sliding a window of each kept length over its UTF-8 bytes. CRC-32 finds a
+  candidate and SHA-256 confirms it, about 0.3 µs a window: 200 KB with 5 lengths takes 0.3 s. The longest match wins,
+  and a match never overlaps a `[withheld]` already in the text.
+- **Where it runs.** `_withhold_known` runs it right after the literal pass, so it covers every writer, `scrub` and
+  `safe_text`. `known_secret_in` and `credential_in` use it too.
+- **The floor.** A form shorter than 4 characters is never kept. A form of letters and spaces only that is shorter
+  than 12 is never kept either (no common word: "ask" once withheld every "ask"). Nothing longer than 512 is kept.
+- **Modes.** A value that has no letter (a PIN or a code) is withheld only where it stands as a whole token, and so is
+  a passphrase of letters and spaces. A value mixing letters with digits or marks is withheld wherever it stands.
+  `WHOLE_TOKEN` words of a marked message stay whole-token.
+
+**What a tool prints for the worker** goes through `privacy.withhold_registered`. It applies the tasks' literal
+values, the exact entries and the word hashes, with no shape rule, so an OTP a page shows is still the worker's to
+read. It fails closed to `HELD_BACK`. The paths:
+
+| Path | Before | Now |
+|---|---|---|
+| gui stdout (observe, read/OCR, CDP and AT-SPI reads, recordings, skills, approval marker) | only secret fields masked (`core._withhold_secret_values`) | `cli._Kept.write` |
+| `office` stdout (read, OCR of pictures) | raw | `privacy.WithheldOutput` around `office.main` |
+| a kept tool's output (`tool_task._run`: reply, judge, engine note) | raw at source, writers later | at source |
+| a failed proof's output back to the distilling model (`playbooks._run_in_copy`) | raw | withheld |
+| the escalation ladder's prompt and evidence (screen text, OCR) | raw | withheld; the decision is read against the original |
+| soul's full-output files (`keepOutput`, `/tmp/thebot-outputs-*`) | raw | `withholdFor("")` (job values and what soul knows) |
+| writers of desktop state, logs | `write_scrubbed`, `scrub`, `log` | unchanged, now with exact entries |
+| `lookup` | web text, its question checked before it leaves | unchanged |
+
+A changed behaviour: the model no longer reads back on screen a value the task was given as a secret. It sees
+`[withheld]` and acts by ref. Tests: `agent/tests/test_exact_secrets.py`,
+`agent/thebot/internal/skills/spill_withheld_test.go`.
+
+Not covered: pixels. A screenshot shown to a vision model can show a secret that a page displays in plain text.
+Saved frames mask only the boxes of secret fields.
+
 ## Next: the input broker (built; on by default for new desktops since 2026-11-08)
 
 The gate decides whether a yes exists; nothing yet stands between the worker and the screen. The worker's Linux user

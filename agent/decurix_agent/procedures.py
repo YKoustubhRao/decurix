@@ -97,6 +97,8 @@ def kept():
 
     out = []
     for path in DIR.glob("*.json") if DIR.is_dir() else []:
+        if path.name.startswith("."):
+            continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -112,11 +114,18 @@ def _save(name, applies_when, procedure, said, task_id):
     record = {"name": name, "applies_when": applies_when, "procedure": procedure, "said": _squash(said, MAX_PROCEDURE_CHARS),
               "task_id": task_id, "updated": time.time()}
     path = DIR / f"{_slug(name)}.json"
-    from decurix_agent.computer import privacy
-    privacy.write_scrubbed(path, record, json_kw={"indent": 1, "ensure_ascii": False})
+    from decurix_agent import learned
+    # On the store's ledger (learned.write): one a person locked is not changed (learned.Locked, an OSError).
+    learned.write("procedure", path.stem, path, record, actor="relearn" if path.exists() else "learner",
+                  task_id=task_id or None, json_kw={"indent": 1, "ensure_ascii": False})
+    # The oldest beyond MAX_KEPT make room - never one a person locked or pinned; each kept on the ledger.
     for old in kept()[MAX_KEPT:]:
+        stem = Path(old["file"]).stem
+        held = learned.status("procedure", stem)
+        if held["locked"] or held["pinned"]:
+            continue
         try:
-            (DIR / old["file"]).unlink()
+            learned.remove("procedure", stem, DIR / old["file"], actor="retire")
         except OSError:
             pass
     return record
@@ -181,7 +190,9 @@ def match(request):
 
     if sets_procedure(request):
         return None
-    procedures = kept()
+    from decurix_agent import learned
+    aside = learned.archived("procedure")
+    procedures = [p for p in kept() if Path(p["file"]).stem not in aside]  # (set aside by a person: not offered)
     if not procedures:
         return None
     words = attachments.text(request or "")
@@ -222,6 +233,8 @@ def apply(request):
     if not found:
         return request
     log(f"procedures: request follows the kept procedure {found['name']!r}")
+    from decurix_agent import learned
+    learned.note_use("procedure", Path(found["file"]).stem)
     words, paths = attachments.split(request)
     return (f"{words}\n\nThis is the recurring work \"{found['name']}\". {APPLIED} - follow it in full, every deliverable included (files with their names and layout, emails); where this "
             f"request says something different, this request wins:\n{found['procedure']}"

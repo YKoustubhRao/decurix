@@ -114,6 +114,16 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .filters a.chip:hover{background:var(--surface-3);color:var(--text)}
 
+.runsearch{padding:14px 18px;margin-bottom:16px}
+.runsearch-form{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.runsearch-form .input{flex:1 1 240px;min-width:0}
+.runsearch-form select{flex:0 0 auto}
+.runsearch-hits{margin-top:12px;display:grid;gap:10px}
+.runsearch-hit{border-top:1px solid var(--line);padding-top:10px;min-width:0}
+.runsearch-hit .meta{font-size:12px;color:var(--text-2);display:flex;gap:10px;flex-wrap:wrap}
+.runsearch-hit .snip,.runsearch-hit .msg{font-size:13px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.runsearch-hit .msg b{font-weight:600;color:var(--text-2)}
+.runsearch-hit .snip mark{background:var(--accent-soft);color:inherit}
 .purge{padding:14px 18px}
 .purge summary{cursor:pointer;font-weight:600}
 .purge .hint{margin:10px 0 14px;max-width:72ch;line-height:1.55}
@@ -176,6 +186,22 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
       </a>
     </div>
   </div>
+
+{{if .Search}}
+  <section id="runsearch" class="panel runsearch" aria-label="Search past runs">
+    <form id="runsearch-form" class="runsearch-form" role="search" autocomplete="off">
+      <input class="input" id="runsearch-q" name="q" type="search" maxlength="400" placeholder="Search past runs: what was asked, the steps, the answers people gave" aria-label="Words to search for">
+      <select class="input" name="after" aria-label="Since">
+        <option value="">Any time</option>
+        <option value="24h">Last day</option>
+        <option value="7d">Last week</option>
+        <option value="30d">Last month</option>
+      </select>
+      <button class="btn btn-default btn-sm" type="submit">Search</button>
+    </form>
+    <div id="runsearch-hits" class="runsearch-hits" hidden></div>
+  </section>
+{{end}}
 
 {{if not $report.Totals.Tasks}}
   <div class="empty">
@@ -459,6 +485,66 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   "use strict";
 
   Decurix.relativeTimes();
+
+  // Search past runs (GET /api/runs/search): stored text only, each hit one task; the top one shows the texts around
+  // its match. Text is set as text, never as markup; the [[ ]] the index puts round a match becomes a <mark>.
+  var searchForm = document.getElementById("runsearch-form");
+  if(searchForm){
+    var snippet = function(text){
+      var p = Decurix.node("div", "snip");
+      String(text || "").split(/(\[\[|\]\])/).reduce(function(inMark, part){
+        if(part === "[["){ return true; }
+        if(part === "]]"){ return false; }
+        p.appendChild(inMark ? Decurix.node("mark", "", part) : document.createTextNode(part));
+        return inMark;
+      }, false);
+      return p;
+    };
+    searchForm.addEventListener("submit", async function(ev){
+      ev.preventDefault();
+      var out = document.getElementById("runsearch-hits");
+      var q = searchForm.elements.q.value.trim();
+      if(!q){ out.hidden = true; return; }
+      var url = "/api/runs/search?q=" + encodeURIComponent(q) + "&limit=10";
+      if(searchForm.elements.after.value){ url += "&after=" + encodeURIComponent(searchForm.elements.after.value); }
+      Decurix.busy(true);
+      try{
+        var res = await Decurix.getJSON(url);
+        var items = [];
+        (res.hits || []).forEach(function(hit){
+          var box = Decurix.node("div", "runsearch-hit");
+          var meta = Decurix.node("div", "meta");
+          var link = Decurix.node("a", "", hit.task_id);
+          link.href = "/tasks/" + encodeURIComponent(hit.task_id);
+          meta.appendChild(link);
+          meta.appendChild(Decurix.node("span", "", hit.worker_id));
+          meta.appendChild(Decurix.node("span", "", hit.outcome || hit.status));
+          meta.appendChild(Decurix.node("span", "", hit.automated ? "automated (" + hit.origin + ")" : "started by a person"));
+          meta.appendChild(Decurix.node("span", "", new Date(hit.created_at).toLocaleString()));
+          box.appendChild(meta);
+          if(hit.messages && hit.messages.length){
+            hit.messages.forEach(function(m){
+              var line = Decurix.node("div", "msg");
+              line.appendChild(Decurix.node("b", "", m.kind + ": "));
+              line.appendChild(document.createTextNode(m.text + (m.cut ? " [" + m.cut + " more characters in the task record]" : "")));
+              box.appendChild(line);
+            });
+          }else{
+            box.appendChild(snippet(hit.snippet));
+          }
+          items.push(box);
+        });
+        if(!items.length){ items.push(Decurix.node("p", "hint", "No past run has those words.")); }
+        if(res.note){ items.push(Decurix.node("p", "hint", res.note)); }
+        out.replaceChildren.apply(out, items);
+        out.hidden = false;
+      }catch(err){
+        Decurix.toast(err.message, "error");
+      }finally{
+        Decurix.busy(false);
+      }
+    });
+  }
 
   // Purge a leaked secret (POST /api/privacy/purge): the value leaves the field as soon as it is sent.
   var form = document.getElementById("purge-form");

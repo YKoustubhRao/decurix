@@ -663,3 +663,22 @@ func TestSchedulerDoesNotRetryAFailureMarkedFatal(t *testing.T) {
 		t.Error("Meta[needsUserInput] not preserved - the user has to be told this needs them")
 	}
 }
+
+// Found live (2026-11-15, core-v2): an operator step failed, its retry was a shell line that read a page by URL, and
+// Classify called that web - the whole command line went to a search engine. An operator step's retry stays the
+// operator's; another kind's retry is still reclassified from what it says.
+func TestAnOperatorStepsRetryStaysTheOperators(t *testing.T) {
+	retry := `python3 -c "import urllib.request; print(urllib.request.urlopen('http://records.example.test/tickets?page=2').read())"`
+	if got := atomizer.Classify(retry); got != "web" {
+		t.Fatalf("the case no longer shows the bug: Classify says %q", got)
+	}
+	if got := retryKind("operator", retry); got != "operator" {
+		t.Fatalf("retryKind(operator) = %q, want operator", got)
+	}
+	if got := retryKind("rag-query", "search the web for badge printers"); got != "web" {
+		t.Fatalf("retryKind(rag-query) = %q, want web: another kind's retry is still reclassified", got)
+	}
+	if got := retryKind("terminal", "python3 -c \"print(1)\" && echo done"); got != "terminal" {
+		t.Fatalf("retryKind(terminal) = %q, want terminal: no positive match keeps the original", got)
+	}
+}

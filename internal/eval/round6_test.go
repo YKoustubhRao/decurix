@@ -90,7 +90,7 @@ func TestARowNamesItsTrajectoryOnceTheBundleIsPulled(t *testing.T) {
 	refs, resets := b.refs, b.reset
 	b.mu.Unlock()
 	sb.mu.Lock()
-	containers := map[string]string{"oracle": "c-" + sb.specs[1].RunID, "default": "c-" + sb.specs[2].RunID} // made in arm order
+	containers := map[string]string{"oracle": "c-" + sb.specs[1].RunID + "-2", "default": "c-" + sb.specs[2].RunID + "-3"} // made in arm order
 	sb.mu.Unlock()
 	model := 0
 	for _, r := range rows {

@@ -303,10 +303,29 @@ internal/schedule  — recurring or one-time-future requests set up from the
                       through the Submitter interface once its next-run time
                       has arrived, appending "\n\nTIME:{<RFC3339 in its zone>}" to the
                       request text so the agent knows when that run
-                      triggered; a recurring schedule always advances to its
-                      next occurrence after firing (success or not), so a
-                      control-plane outage causes one catch-up run on
-                      restart, never a backlog - a RunOnce schedule instead
+                      triggered. Every occurrence has a row in a ledger
+                      (occurrences.go, `schedule_runs`, GET /api/schedules/runs?id=):
+                      written down as `sending` before it is sent and settled
+                      in one transaction with the schedule's advance, so a
+                      crash between the two never sends it twice - a row a
+                      crash left `sending` is settled from the task records
+                      (Submitter's optional RanChecker: an execution with this
+                      schedule as its origin, after a 2-minute grace for
+                      ReconcileDeliveries), sent now when they say it never
+                      arrived, and marked `unconfirmed` (not sent again, the
+                      reason kept as LastError) when nothing can say. A run that
+                      did not reach its desktop is `retrying` after 5, 15 and
+                      30 minutes, still carrying its own TIME, unless the
+                      schedule's next occurrence would come first; then it is
+                      `failed` and the schedule moves on with the reason. A
+                      busy desktop still holds a run (`waiting`) without
+                      spending a try. Occurrences that came due while nothing
+                      could send them are one `missed` row and a note beside
+                      the schedule ("N more run(s) came due ..."): one catch-up
+                      run, never a backlog, never silent. Pausing gives up a
+                      pending retry. Techniques from hermes-agent's cron
+                      (occurrence slots, missed runs, retry only when nothing
+                      started). A RunOnce schedule
                       disables itself after its one firing, the same
                       terminal state a cron schedule reaches when it runs out
                       of matches. Depends on nothing internal but sqlitedb
@@ -599,7 +618,7 @@ Control plane → desktop communication happens over Docker bridge networks, nev
 - **No cross-site writes.** `GuardPrimary` and `GuardGated` refuse any method but GET/HEAD/OPTIONS, and any WebSocket, unless it is same-origin (`Origin` equals the `Host`, or the tunnel's `X-Forwarded-Host` on the gated listener) or carries no `Origin` at all (a script, the Electron main process, an agent's urllib). `Sec-Fetch-Site: cross-site`/`same-site` and `Origin: null` are refused.
 - **No DNS rebinding.** The primary listener serves only Host names it is known by: an IP address, `localhost`/`*.localhost`, `host.docker.internal`, a single-label name (`decurix`, a container name), or one listed in `DECURIX_ALLOWED_HOSTS` (comma-separated). Anything else gets 421.
 - **On the primary listener only the host is a person** (third round, 2026-11-03; `desktop.NetView`, `Manager.Networks`, `httpapi.origin`). A person is loopback or the gateway the host comes in through: decurix-network's, from Docker (`dockerNetworks`), since the ports compose publishes are on decurix-network and Docker's proxy hands them over from its gateway. Not the default bridge's, not a desktop network's, never the practice network's. Only while Docker has named none does the control plane's own network's default-route gateway count (`/proc/net/route`, no Docker needed). Every bridge network's range is a container range, and an address in no known range is unknown. On the primary listener, anything that is not the host is held to the desktops' callbacks below and must be a desktop's own address there: verified live in the second round, a container on a network someone else made read the access code and the backup, and created a DAG and a desktop. The gated listener has a login of its own and refuses only a known container address, so a phone or a LAN laptop reaches the login even while Docker answers nothing. What the interfaces say (the control plane's own network in compose; the Docker bridges docker0/br-* on a Linux host) keeps a desktop refused there too. The network view and the address-to-desktop map are each fetched by one call at a time and shared (`desktop.refreshed`). A known address is answered without waiting for Docker. An unknown one makes Docker be asked again at most every 2 s, and the address map is dropped whenever a desktop is made or removed here.
-- **A desktop gets its callbacks and nothing else.** A request from anyone but the host (`fromContainer`) may use only the routes in `containerRoutes` (the model proxy, grounder, agent events, query notes, its own memory, outbox drafts, org knowledge and skills read-only, handoffs, host-file checks, the signed host bridge and host-GUI views). Everything else is 403: sending requests (a worker answering its own approval), creating desktops, the LAN access code, verdicts, DAG/cron jobs, the tunnel link, Claude login, settings. Adding a callback means adding it to that list on purpose; `TestContainerRoutesAreServed` checks each entry is a real route.
+- **A desktop gets its callbacks and nothing else.** A request from anyone but the host (`fromContainer`) may use only the routes in `containerRoutes` (the model proxy, grounder, agent events, query notes, its own memory, its own past runs searched (read only), outbox drafts, org knowledge and skills read-only, handoffs, host-file checks, the signed host bridge and host-GUI views). Everything else is 403: sending requests (a worker answering its own approval), creating desktops, the LAN access code, verdicts, DAG/cron jobs, the tunnel link, Claude login, settings. Adding a callback means adding it to that list on purpose; `TestContainerRoutesAreServed` checks each entry is a real route.
 - **A desktop is who its address says.** `Manager.DesktopAt` maps a container's address on its desktop network (its own, or `decurix-network` for an older desktop; `desktopEndpoint`) to its desktop ID, and the guard puts it in the request (`requestDesktop`). `actingAs` makes every callback act as that desktop and refuses a body naming another one (memory, agent events, query text, outbox, host files, the host bridge's token desktop); the handoff routes do the same through `handoff.Handler.Caller`. An address in the network that is no desktop's gets nothing (403). When Docker cannot be asked (`Manager.CallerAt` returns `ErrCallersUnread`), a caller the last map names is still served only while that map is younger than `callerTTL` and of the current desktop list; any other caller gets 503 "try again" with a `Retry-After`, never a 403 a worker would take as final, and is never let through.
 - **The gated listener serves no container at all.** It refuses every address inside a known Docker network. A desktop that hairpins through Docker's proxy on a port published on every address arrives from the gateway, indistinguishable from the host, and the Windows app publishes the port on loopback only for that reason. A checkout's compose still publishes it everywhere for the LAN; there the hairpin shares the gateway's lockout bucket.
 - **What a desktop serves through the control plane is sandboxed.** `/desktop/<id>/...` (noVNC's own page) and `/agent/<id>/...` (TheBot's page) come from inside a container but would run as the control plane's origin; they now carry `Content-Security-Policy: sandbox ...`, so their scripts have an opaque origin the guard refuses. The screen a person uses is the control plane's own page with its own noVNC (`screen.go`) and is unaffected.
@@ -767,6 +786,11 @@ Docker's `CopyFromContainer`/`CopyToContainer` run as root and resolve parent fo
   (`executions.verdict`) and what each execution ran (origin, skill, resolved model).
 - `internal/runs` pulls a run's bundle off its desktop when the run ends and before the desktop is deleted, and builds
   `decurix.trajectory/v1` (docs/trajectory.md).
-- All of it is host-only: `/api/llm/calls`, `/api/llm/blobs/`, `/api/judgements`, `/api/tasks/pass-rates` and
-  `/api/runs/` are on the primary listener behind `humansOnly`; `/api/desktops/learned` is a desktop's callback there.
+- `internal/runsearch` is an FTS5 index of the task records' stored text, searched by `/api/runs/search` (a person's)
+  and `/api/agent/runs` (a desktop's callback, read only, its own runs only: `actingAs`); `internal/sftexport` writes
+  the checked-done runs as a training set (`/api/runs/training-export`, `decurix --export-training`). Chat (docs/chat.md),
+  trajectory.md "Training export".
+- All of it is host-only: `/api/llm/calls`, `/api/llm/blobs/`, `/api/judgements`, `/api/tasks/pass-rates`,
+  `/api/runs/`, `/api/runs/search` and `/api/runs/training-export` are on the primary listener behind `humansOnly`;
+  `/api/desktops/learned` and `/api/agent/runs` are desktops' callbacks there.
   The gated listener forwards no soul route but its read-only health (`/agent/<id>/api/health`).

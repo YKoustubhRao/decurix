@@ -97,13 +97,16 @@ def _path(name):
     return ROOT / f"{name}.json"
 
 
-def save(skill):
-    """Write a skill, whole and atomically."""
+def save(skill, actor=None, task_id=None):
+    """Write a skill, whole and atomically, on the store's ledger (learned.write: `actor` is who changed it, said by
+    the caller - learned.ACTORS). Raises learned.Locked when a person locked it and `actor` is not a person's."""
 
+    from decurix_agent import learned
     path = _path(skill["name"])
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    recording.write_whole(path, skill, json_kw={"ensure_ascii": False, "indent": 1})
+    learned.write("skill", skill["name"], path, skill, actor=actor, task_id=task_id, atomic=True,
+                  json_kw={"ensure_ascii": False, "indent": 1})
 
     return skill
 
@@ -117,8 +120,11 @@ def load(name):
         raise FileNotFoundError(f"no skill {name}") from exc
 
 
-def delete(name):
-    _path(name).unlink(missing_ok=True)
+def delete(name, actor=None, task_id=None):
+    """Remove a skill's file, on the ledger (its last version kept: learned.rollback brings it back)."""
+
+    from decurix_agent import learned
+    learned.remove("skill", name, _path(name), actor=actor, task_id=task_id)
 
 
 def all_skills():
@@ -254,9 +260,12 @@ def places(skill, limit=3):
 
 
 def search(query="", limit=8):
-    """Ready skills for `query`, best first; with no words in it, every ready skill."""
+    """Ready skills for `query`, best first; with no words in it, every ready skill. A skill a person set aside
+    (archived, learned.py) is not offered; it still runs when named exactly (find)."""
 
-    ready = [s for s in all_skills() if s.get("status") == READY]
+    from decurix_agent import learned
+    aside = learned.archived("skill")
+    ready = [s for s in all_skills() if s.get("status") == READY and s["name"] not in aside]
 
     if not (query or "").strip():
         return ready[:limit]
@@ -691,6 +700,13 @@ def summary(skill, detail=False):
                    for p in required(skill)],
     }
 
+    # How much it is used and whether it went stale or was set aside (learned.status: worked out now, never stored).
+    try:
+        from decurix_agent import learned
+        shown["usage"] = learned.status("skill", skill["name"])
+    except Exception:  # noqa: BLE001 - a listing never fails on its bookkeeping
+        shown["usage"] = None
+
     if detail:
         shown["outline"] = [
             {"n": s["n"], "summary": s["summary"], "kind": s["kind"], "consequential": bool(s.get("consequential")),
@@ -711,7 +727,7 @@ def note_run(name):
         return
 
     skill["runs"] = skill.get("runs", 0) + 1
-    save(skill)
+    save(skill, actor="run")
 
 
 def required(skill):

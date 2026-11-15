@@ -198,7 +198,7 @@ class OneSecretFact(SecretFirst):
         guided = {"run": {"skill": {"name": "s"}, "one_off": False}, "asked": "Which password?"}
         with mock.patch.object(guidance, "get", lambda: guided), \
                 mock.patch.object(skills, "load", lambda name: {"name": "s", "version": 1}), \
-                mock.patch.object(skills, "save", lambda sk: store.update(sk)), \
+                mock.patch.object(skills, "save", lambda sk, **_: store.update(sk)), \
                 mock.patch.object(messaging, "post_learned", lambda *a, **k: self.fail("posted a secret")):
             skill_task.learn_answer(VALUE, secret=True, judgement_id="j_0123456789abcdef")
         self.assertNotIn(VALUE, json.dumps(store))

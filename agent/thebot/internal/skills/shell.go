@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"thebot/internal/hostshell"
@@ -68,6 +69,8 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration, e
 	cmd.Stderr = &out
 	hostshell.OwnGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
+	pipes := hostshell.TrackPipeStatus(cmd)
+	defer pipes.Close()
 
 	if err := cmd.Start(); err != nil {
 		return shellResult{ExitCode: -1, Output: "could not start " + hostshell.Name + ": " + err.Error()}
@@ -104,6 +107,14 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration, e
 		res.ExitCode = -1
 		if res.Output == "" {
 			res.Output = err.Error()
+		}
+	}
+	// A pipe's exit code is its last program's: `failing_check | tail -5` exits 0. The failure it hid is the
+	// result, said so, so neither the model nor a check downstream reads it as a success.
+	if !timedOut {
+		if f := hiddenPipeFailure(command, pipes.Statuses(), res.ExitCode); f != nil {
+			res.ExitCode = f.Status
+			res.Output = strings.TrimRight(res.Output, "\n") + "\n" + f.note()
 		}
 	}
 	if timedOut {

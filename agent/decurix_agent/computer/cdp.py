@@ -2133,6 +2133,45 @@ def set_number(page, object_id, text):
     return None if result is None else str(result.get("value") or "")
 
 
+# A text field's value set whole, as the last way in when no typed character reached it (core.act: "none landed"):
+# through the element's own value setter, so a framework that watches the property sees it, then the input and change
+# events a person's typing ends with. Only a plain text-like <input> or a <textarea> that is not read-only or disabled;
+# never a password (nothing secret is set this way), a date, a number or a file control, which have their own ways.
+SET_VALUE = """function(text) {
+  const tag = this.tagName;
+  const proto = tag === 'TEXTAREA' ? HTMLTextAreaElement.prototype : tag === 'INPUT' ? HTMLInputElement.prototype : null;
+  if (!proto || this.readOnly || this.disabled) return null;
+  const kind = (this.type || '').toLowerCase();
+  if (tag === 'INPUT' && !['', 'text', 'search', 'email', 'tel', 'url'].includes(kind)) return null;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+  this.focus();
+  setter.call(this, text);
+  this.dispatchEvent(new Event('input', {bubbles: true}));
+  this.dispatchEvent(new Event('change', {bubbles: true}));
+  return {value: this.value};
+}"""
+
+
+def set_value(element, text):
+    """Set a page's text field to `text` as a whole value (SET_VALUE); its value read back afterwards, or None when the
+    field cannot be set that way (not a plain text field, read-only, or the page could not be asked)."""
+
+    try:
+        page = _page_for(element)
+    except (ComputerError, OSError):
+        return None
+    try:
+        result = page.call("Runtime.callFunctionOn", {
+            "objectId": _object(page, element["handle"]["backend_id"]), "returnByValue": True,
+            "functionDeclaration": SET_VALUE, "arguments": [{"value": text}],
+        }).get("result", {}).get("value")
+    except (ComputerError, KeyError, TypeError, OSError):
+        return None
+    finally:
+        page.close()
+    return None if not isinstance(result, dict) else str(result.get("value") or "")
+
+
 def same_number(a, b):
     """Whether two written numbers are the same number ("24" and "24.0"), to their last digit (values.parse_number,
     never float: W0.3); anything else compared as text."""

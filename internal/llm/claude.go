@@ -313,19 +313,36 @@ func toClaudeParams(req openAIRequest, model string) (anthropic.MessageNewParams
 // for a tenth of the price. Measured (2026-10-20): an operator turn re-sends about 8,000-10,000 tokens of contract,
 // rules and stage request before any output, so a 15-turn stage paid for them 15 times. Nothing in the request
 // changes: the marks only say where a cached prefix may end.
+//
+// The marks are the system prompt and the last cacheBreakpointMessages messages (four in all, the most the API
+// takes), not the last message alone: the operator rewrites its newest message (a note appended) and its maintenance
+// rewrites older ones, and a prefix ending one or two messages earlier is then still found (Hermes
+// agent/prompt_caching.py, "system_and_3"). A one-shot call - one message, no tools - is not marked: a cache write
+// costs more than reading the prompt once, and nothing would read it.
 func markCacheable(params *anthropic.MessageNewParams) {
+	if len(params.Messages) <= 1 && len(params.Tools) == 0 {
+		return
+	}
 	if n := len(params.System); n > 0 {
 		params.System[n-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
 	}
-	if n := len(params.Messages); n > 0 {
-		blocks := params.Messages[n-1].Content
-		if k := len(blocks); k > 0 {
-			if cc := blocks[k-1].GetCacheControl(); cc != nil {
-				*cc = anthropic.NewCacheControlEphemeralParam()
-			}
+	for i := max(0, len(params.Messages)-cacheBreakpointMessages); i < len(params.Messages); i++ {
+		blocks := params.Messages[i].Content
+		k := len(blocks)
+		if k == 0 {
+			continue
+		}
+		if text := blocks[k-1].OfText; text != nil && text.Text == "" {
+			continue // an empty text block cannot carry a mark
+		}
+		if cc := blocks[k-1].GetCacheControl(); cc != nil {
+			*cc = anthropic.NewCacheControlEphemeralParam()
 		}
 	}
 }
+
+// cacheBreakpointMessages is how many of the newest messages markCacheable marks beside the system prompt.
+const cacheBreakpointMessages = 3
 
 // contentBlocks reads an OpenAI message content - a string or a list of
 // parts - as plain text and as Claude blocks (images only when allowed).

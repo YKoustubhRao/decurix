@@ -24,6 +24,12 @@ var (
 	// fail every time with "could not determine a real command to run"
 	// while the plan itself looked perfect.
 	cmdLeadRe = regexp.MustCompile(`(?i)\b(?:run|execute)\b(?:\s+the)?(?:\s+(?:command|shell command|script))?\s*:?\s+(.+)$`)
+	// "Run exactly this shell command once and tell me whether it succeeded: ls x | tail -1" - the request names the
+	// command after a colon, and the words between "run" and the colon describe it. cmdLeadRe alone took the
+	// description ("exactly this shell command once") as the command (found live, 2026-11-15; bash said "command not
+	// found" and the operator took over). The text after the first colon that follows a "run ... command|script"
+	// phrase on the same line is the command.
+	colonCmdRe = regexp.MustCompile(`(?i)\b(?:run|execute)\b[^:\n]{0,120}\b(?:command|script)\b[^:\n]{0,120}:\s*(.+)$`)
 	// Strips a sentence-ending period only. A blanket TrimRight(".") turned
 	// "go test ./..." into "go test ./" - the dots there are the argument.
 	sentencePeriodRe = regexp.MustCompile(`([A-Za-z0-9])\.$`)
@@ -119,6 +125,16 @@ func extractCommand(step string) (command, source string) {
 	}
 	if m := inlineRe.FindStringSubmatch(step); m != nil {
 		return strings.TrimSpace(m[1]), "explicit (backticks in the request)"
+	}
+	// A command named after a colon ("run this command and tell me if it worked: X"): what follows the colon.
+	if m := colonCmdRe.FindStringSubmatch(step); m != nil {
+		candidate := stripWrappingQuotes(strings.TrimSpace(m[1]))
+		candidate = trailingCommentRe.ReplaceAllString(candidate, "")
+		candidate = stripWrappingQuotes(strings.TrimSpace(trailingProseRe.ReplaceAllString(candidate, "")))
+		candidate = sentencePeriodRe.ReplaceAllString(candidate, "$1")
+		if looksLikeCommand(candidate) {
+			return candidate, "named after 'run the command:' in the request"
+		}
 	}
 	// Only after the explicit forms, and only when what follows really
 	// looks like a command.
@@ -235,6 +251,8 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	cmd.Env = hostshell.ChildEnv()
 	var outBuf, errBuf hostshell.CappedBuffer
 	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
+	pipes := hostshell.TrackPipeStatus(cmd)
+	defer pipes.Close()
 	start := time.Now()
 	err := cmd.Run()
 	stdout := outBuf.Bytes()
@@ -373,6 +391,30 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}, nil
 	}
 
+	// Exit 0 from a pipe is its last program's: a failure earlier in it (`failing_check | tail -5`) is the result,
+	// never verified (hermes-agent's exit-status attribution). The gate's stop on screen counts there too.
+	if f := hiddenPipeFailure(command, pipes.Statuses(), 0); f != nil {
+		if reason := screenApprovalReason(command, shellResult{ExitCode: f.Status, Output: string(stdout)}); reason != "" {
+			rc.Logf("terminal", "approval needed on screen - %s", reason)
+			return NeedsApproval(subtask, t.Name(), command, reason, nil), nil
+		}
+		rc.Logf("terminal", "exit code: 0 from the pipe's last program, %d from program %d of %d - not a success", f.Status, f.Position, f.Of)
+		out := fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: %d (not a success)\n%s", command, cwd, f.Status, f.note())
+		if len(stdout) > 0 {
+			out += "\n\nStdout:\n" + string(stdout)
+		}
+		if stderr := errBuf.String(); strings.TrimSpace(stderr) != "" {
+			out += "\n\nStderr:\n" + stderr
+		}
+		return Result{
+			Subtask: subtask, SkillName: t.Name(), Output: out, Verified: false,
+			Meta: map[string]any{"command": command, "source": source, "exitCode": f.Status, "cwd": cwd, "fatal": true,
+				"pipeStatuses":     pipes.Statuses(),
+				"failureReasoning": fmt.Sprintf("`%s` exited 0 only because its last program did; %s", command, f.note())},
+			DurationMs: duration,
+		}, nil
+	}
+
 	rc.Logf("terminal", "exit code: 0")
 	out := fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: 0 (success)", command, cwd)
 	if len(stdout) > 0 {
@@ -405,25 +447,5 @@ func negativeAnswer(command string, exitCode int) string {
 	if len(segs) == 0 {
 		return ""
 	}
-	words := strings.Fields(segs[len(segs)-1].Text)
-	for len(words) > 0 {
-		w := words[0]
-		switch {
-		case strings.Contains(w, "=") && !strings.HasPrefix(w, "="):
-			words = words[1:] // FOO=bar grep ...
-			continue
-		case w == "env" || w == "command" || w == "builtin" || w == "time" || w == "nice" || w == "exec":
-			words = words[1:]
-			continue
-		}
-		break
-	}
-	if len(words) == 0 {
-		return ""
-	}
-	w := words[0]
-	if i := strings.LastIndexByte(w, '/'); i >= 0 && w != "/" {
-		w = w[i+1:]
-	}
-	return negativeAnswers[w]
+	return negativeAnswers[programWord(segs[len(segs)-1].Text)]
 }

@@ -1217,3 +1217,73 @@ explains the one thing Windows cannot do - virtualization off in the firmware. T
   yes and something else ends up in front); and a background thread can join another's input only after it has a message queue
   (`PeekMessage` first). UI Automation's places are as of the browser's last layout: a window just moved back from off the screen reported
   its address bar at -31794,-31936 - use places relative to the window from the same answer.
+- A pipe's exit code is its last program's: soul ran `bash -c` with no `pipefail`, so `failing_check | tail -5` exited 0
+  and the terminal skill marked the step `Verified` without seeing the check pass, and the operator accepted a bare DONE
+  after it (found reading the code against hermes-agent, 2026-11-12). Now bash writes `PIPESTATUS` through a `BASH_ENV`
+  EXIT trap (`hostshell.TrackPipeStatus`) and the hidden failure is the result. Two traps on the way: `eval "$line"`
+  followed by `PIPESTATUS` reports only eval's own status, and text appended to the line is swallowed by an unclosed
+  here-document. Lesson: an exit code is evidence only for the program the shell reports it for.
+- A schedule's occurrence was sent twice after a crash between the send and MarkRun (the delivery record settled the send,
+  the schedule never heard), and a run whose desktop could not start was consumed - a monthly request lost until next month
+  (found reading the code against hermes-agent's cron, 2026-11-15). Each occurrence now has a ledger row written before the
+  send and settled in the same transaction as the advance; a crash-left row is settled from the task records, and a run that
+  never reached the desktop is retried 5/15/30 minutes later. Lesson: "advance even on failure" and "retry" are both wrong
+  alone; the occurrence needs its own record.
+- The schema-step guard (`migrations_test.go`) reads the literal `[]string` a `sqlitedb.Migrate` call names. A slice built with
+  `append(schema, more...)` hides its steps from it ("recorded but its Migrate call is gone"). Add new steps to the literal.
+- Seven agents edited one tree through Git Bash heredocs and three files came out broken: a regex lost a backslash and panicked
+  at package init (no test in the package could run), a Python `"\n"` became a raw newline (SyntaxError in every importer).
+  Write Go and Python with the Edit/Write tools; after parallel edits, build and import every touched package before
+  reading any test result.
+- An A/B arm the worker can tell apart is biased even by an index: eval desktops were named `<run>-a1`/`-a2`, visible in the
+  hostname, `DESKTOP_ID` and the mock host. Every arm now runs on one id (`<run>-w`), one after another.
+- Locking a skill must not drop its run verdicts: a locked skill that kept failing would have stayed trusted. A run's write to a
+  locked artefact keeps only how the run went.
+- An FTS5 external-content index holds copies of record text; a secret purge must rewrite it through its update trigger, not
+  only the source tables.
+- Element refs kept by path alone let a control that had gone ("[2]" of two alike) or a renumbered row hand its ref to another
+  control. A ref now holds only for the same control (same node, or same path, role, name and count of alike).
+- A fact a provider teaches at run time (a refused field, an image's price) must be keyed by provider, model and endpoint; one
+  process-wide flag outlived a change of brain.
+- `docker compose up --build` from a checkout (Linux, Mac, CLAUDE.md's "just the control plane") failed at `go generate .`
+  since CODE_MAP.md became generated (2026-11-07): the generator runs `git ls-files`, and .git is not in the build context
+  (found live 2026-11-15). The control-plane image runs only the packer (`go run embed_gen.go`); the apps were never hit,
+  because they compile on the host. Lesson: a generator added to `go generate .` runs wherever that line runs.
+- Every eval oracle step that `curl`s the case's mock failed with "Could not resolve host: practice-mock" since each run's
+  mock got its own name (2026-11-09): MOCK_ROUTE still named the bare alias. Found 2026-11-15 by an oracle calibration
+  that passed 3 of 6; the oracle now gets the run's mock name. Lesson: calibrate (oracle arm) after any change to how a
+  case's environment is named, before reading any model arm.
+- `normalize_role` is not idempotent: a page's static text is kept as "text", and "text" normalised again is AT-SPI's
+  editable field, "textbox". Comparing two observed roles through it re-bound a gone textbox's ref to the label beside it,
+  and `gui type` sent the keys to the focused button (found live 2026-11-15). Compare observed roles as stored; a page's
+  static text is never typed into (selecting.NOT_A_FIELD).
+- "Run exactly this shell command once and tell me whether it succeeded: ls x | tail -1" had soul's terminal skill take
+  "exactly this shell command once" as the command (found live 2026-11-15; bash said "command not found"). A command
+  named after a colon, behind a "run ... command|script" phrase, is what follows the colon.
+- A post-task model call with a small budget gets nothing from a reasoning brain: the review pass asked for 1,200 tokens
+  and Kimi-K2.6 spent them thinking (found live 2026-11-15). Every call that parses an answer repeats llm_client's rule:
+  cut off at the limit is no answer - once more, with room.
+- A WSL distro other than the app's own (Ubuntu here) reboots when no `wsl.exe` holds it: the control plane was restarted
+  mid-eval and a practice desktop "could not be created" (2026-11-15). Hold one `wsl -d <distro> -- sleep infinity` open
+  for a live session; its containers with a restart policy come back on every boot (a crash-looping one with them).
+- bench/security/boundary.sh writes the gate key with `tar ... etc | docker cp - container:/`, and the tar's `etc` entry
+  carries the uid of whoever runs it: run as a normal user it made the container's /etc that user's ("FAIL /etc"). Run it
+  as root, as its docs say.
+- A report the final gate writes itself must go out `gated=True` (or `checked=True`): `write_final_reply` sends any
+  other through the gate again. The "NOT checked: N record(s) ... not read back" report (final_gate, 788187d0) had
+  neither, so it was judged done again, landed in the same branch, and was written again - 63 judge calls until the
+  eval's 15 minutes ran out, with the record correctly saved (found live 2026-11-15, core-v2). A report meant to be
+  checked again (a re-check after a person's answer) is capped by its own counter.
+- Two texts compared after each was cut must be cut and trimmed by one function: `records.readback` keeps a save's
+  change normalized and cut at 300 characters; `saved_unread` normalized it again, which drops a trailing space the
+  cut left, while the event's side kept it - so a record declared and read back whole was called "not read back"
+  (found live 2026-11-15; `records._save_key`).
+- A failed step's retry must not move an operator step to a narrower skill. The failure-reasoning model wrote the retry
+  as a shell line that read a page by its URL; `atomizer.Classify` called that web (the URL), and the whole command line
+  was sent to DuckDuckGo and Bing (found live 2026-11-15, core-v2, ticket-filter-then-edit). The operator has the shell,
+  the screen and the web; `scheduler.retryKind` keeps its retry the operator's.
+- Points an independent review left open are no checked done, and they must reach the judge. soul's operator carries
+  them at the END of its report ("Still open after an independent review ..."); the judge's prompt cut the report at
+  4000 characters, so a long GSTR-1 report lost them, and the judge said done on a return that was saved, never filed,
+  with a receiver never validated (found live 2026-11-15, office-gstr1-books og-1, a false done). `verify.claim_for_judge`
+  keeps the block when it cuts; `final_gate` sends a judged done that carries open points out NOT checked, gated.

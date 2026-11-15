@@ -258,6 +258,12 @@ td.actions{white-space:nowrap;text-align:right}
   <!-- ======================= Knowledge ======================= -->
   <section class="wf-section" id="sec-knowledge" data-section="knowledge" hidden>
     <p class="wf-note" id="knowledgeNote">What workers are told, by scope, each with where it came from. A change replaces an item; nothing is edited in place.</p>
+{{if .HasProposals}}
+    <div class="rule"><span class="eyebrow">Proposed by workers</span></div>
+    <p class="wf-muted" style="margin:0 0 8px">After a run checked done, a worker may propose something it should know from then on, with the words it rests on. No worker is given it until you approve it; a rejection is kept.</p>
+    <div id="proposalList" style="display:grid;gap:12px"><p class="wf-muted">Loading…</p></div>
+    <div class="rule"><span class="eyebrow">Given to workers</span></div>
+{{end}}
     <div id="knowledgeList" style="display:grid;gap:12px"><p class="wf-muted">Loading…</p></div>
 
     <div class="rule"><span class="eyebrow">For one task</span></div>
@@ -1022,7 +1028,73 @@ td.actions{white-space:nowrap;text-align:right}
     return panel;
   }
 
+{{if .HasProposals}}
+  /* What workers proposed after a run: nothing is given out until a person approves it here. */
+  function proposalItem(p, request){
+    var div = node("div", "k-item");
+    div.dataset.row = "1";
+    div.appendChild(node("div", "wf-text", p.text));
+    if(p.why){ div.appendChild(node("div", "wf-muted", "Why: " + p.why)); }
+    (p.evidence || []).forEach(function(e){
+      div.appendChild(node("div", "wf-muted", (e.where === "person" ? "The person said: " : "The run showed: ") + "“" + e.quote + "”"));
+    });
+    if(p.replaces_text){ div.appendChild(node("div", "wf-muted", "Replaces: " + p.replaces_text)); }
+    var meta = node("div", "k-meta");
+    meta.appendChild(chip(p.kind === "app_note" ? "app note" : "lesson"));
+    meta.appendChild(node("span", null, "from " + workerName(p.worker) + " · task " + p.task_id + (request ? " · " + request : "")));
+    meta.appendChild(when(p.created_at));
+    div.appendChild(meta);
+
+    var acts = node("div", "k-actions");
+    var scope = null, role = null;
+    if(!p.replaces_text){
+      scope = node("select", "select");
+      [["worker", "For this worker"], ["role", "For a role"], ["org", "For everyone"]].forEach(function(o){
+        var opt = node("option", null, o[1]);
+        opt.value = o[0];
+        scope.appendChild(opt);
+      });
+      scope.setAttribute("aria-label", "Who is given it");
+      role = node("input", "input");
+      role.placeholder = "Role"; role.hidden = true; role.setAttribute("aria-label", "Role");
+      scope.addEventListener("change", function(){ role.hidden = scope.value !== "role"; });
+      acts.appendChild(scope);
+      acts.appendChild(role);
+    }
+    acts.appendChild(action("Approve", "btn-quiet", async function(){
+      var body = {id: p.id};
+      if(scope){ body.scope = scope.value; body.scope_key = scope.value === "role" ? role.value.trim() : ""; }
+      await send("/api/knowledge/proposals/approve", body);
+      return "Approved: workers are given it from their next task.";
+    }));
+    acts.appendChild(action("Reject", "btn-quiet btn-danger", async function(){
+      var why = window.prompt("Reject this proposal? Say why if you like (kept with it).", "");
+      if(why === null){ return; }
+      await send("/api/knowledge/proposals/reject", {id: p.id, note: why.trim()});
+      return "Rejected.";
+    }));
+    div.appendChild(acts);
+    return div;
+  }
+
+  async function loadProposals(){
+    var data = await getJSON("/api/knowledge/proposals");
+    var host = $("proposalList");
+    if(editing(host)){ return; }
+    clear(host);
+    var items = data.proposals || [];
+    if(!items.length){ host.appendChild(node("p", "wf-muted", "Nothing waiting.")); return; }
+    var panel = node("div", "panel k-group");
+    panel.appendChild(node("div", "wf-label", "Waiting for you · " + items.length));
+    items.forEach(function(p){ panel.appendChild(proposalItem(p, (data.requests || {})[p.task_id])); });
+    host.appendChild(panel);
+  }
+{{end}}
+
   loaders.knowledge = async function(){
+{{if .HasProposals}}
+    await loadProposals();
+{{end}}
     var asks = [getJSON("/api/knowledge")].concat(desktops.map(function(d){ return getJSON("/api/knowledge?worker=" + enc(d.id)); }));
     var answers = await Promise.all(asks);
     var seen = {}, groups = {}, order = [];

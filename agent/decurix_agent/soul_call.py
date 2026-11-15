@@ -39,6 +39,9 @@ CALL_PATH = "/api/llm/call"
 JUDGE_PATH = "/api/llm/judge"
 # The escalation ladder's questions, decided by soul from their evidence (cmd/soul escalation.go).
 ESCALATION_PATH = "/api/llm/escalation"
+# The review pass after a task checked done, made by soul from the run it kept (cmd/soul review.go; review_pass.py).
+REVIEW_PATH = "/api/llm/review"
+REVIEW_PURPOSE = "py.learn.review"
 # Soul writes its call key here at start (agent/thebot cmd/soul llmcall.go: callKeyPath), 0600, the worker's own.
 KEY_FILE = "soul-call.key"
 # After soul was found not running, how long calls go their own way before soul is tried again (it may start later).
@@ -65,7 +68,8 @@ class Failed(Exception):
         self.headers = headers
 
 
-_state = {"down_until": 0.0, "absent": False, "noted": False, "judge_absent": False, "escalation_absent": False}
+_state = {"down_until": 0.0, "absent": False, "noted": False, "judge_absent": False, "escalation_absent": False,
+          "review_absent": False}
 
 
 def in_gate():
@@ -204,6 +208,33 @@ def escalation(brain, evidence, *, purpose, max_tokens, timeout, temperature=Non
     payload.update({"temperature": temperature, "response_format": None, "stop": list(stop or []),
                     "evidence": evidence})
     answer = _post(ESCALATION_PATH, payload, timeout, "escalation_absent")
+    if not isinstance(answer.get("decision"), dict):
+        raise Failed(502, f"soul answered no decision: {json.dumps(answer)[:200]}")
+    return answer
+
+
+def review(task_id, secrets, *, notes="", max_tokens, timeout, model=None):
+    """
+    The review pass of a finished task, made by soul (review_pass.py): soul sends the run it kept of `task_id` - its
+    last transcript, or its jobs' logs with `notes` (the person's words on the task) when the transcript is gone - with
+    one review instruction appended, and reads the answer. Answers as call() does plus "decision": {"proposals":
+    [{"kind", "text", "why", "evidence", "replaces", "in_run"}], "dropped", "error"?, "source"}. The task and its secret
+    values are given, not read from task_context: the review runs after the task let go of both. Raises as call() does;
+    Unusable when soul keeps nothing of the task or has no such route (an older soul: not asked again this process).
+    """
+
+    if _state["review_absent"]:
+        raise Unusable("soul has no review route")
+    if in_gate():
+        raise Unusable("the approval gate never asks soul")
+    if not credential():
+        raise Unusable("no agent token or soul call key")
+    payload = {"brain": "hosted", "purpose": REVIEW_PURPOSE, "task": str(task_id or ""), "turn": "",
+               "model": model or "", "max_tokens": int(max_tokens), "timeout_ms": int(timeout * 1000),
+               "secrets": list(secrets or ()), "temperature": None, "response_format": None, "stop": [],
+               "notes": str(notes or "")}
+    # (Only a 404 or 405 marks the route absent: a 409, "nothing kept of that task", is about this task.)
+    answer = _post(REVIEW_PATH, payload, timeout, "review_absent")
     if not isinstance(answer.get("decision"), dict):
         raise Failed(502, f"soul answered no decision: {json.dumps(answer)[:200]}")
     return answer

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from decurix_agent import config, filelock, progress
 from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, identity, launchers, privacy, screen, session, xinput
-from decurix_agent.computer import screen_call
+from decurix_agent.computer import control as turns, outcome, screen_call
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ActedError, ComputerError
 from decurix_agent.computer import selecting, sheets
@@ -210,7 +210,7 @@ def observe(remember=True, frame=None):
 
     with _state_lock():
         previous = _load_state()
-        next_ref = el.assign_refs(found, previous)
+        next_ref = el.assign_refs(found, previous, groups)
         gone = _gone(previous, found, groups)
 
         behind = [g for g in groups if g.get("behind")]
@@ -2933,6 +2933,7 @@ def _type_with_keys(element, text, append):
     keys. Returns the backend."""
 
     _focus_window(element)
+    _keyboard_in(element)
     cdp.click(element)
     time.sleep(0.3)
     if not append:
@@ -3098,6 +3099,7 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
 
         if element is not None:
             _focus_window(element)
+            _keyboard_in(element)
             center = el.center(element)
             # Inside a document (a Writer table cell, a paragraph) focus is
             # not the caret: the caret is placed through the Text interface,
@@ -3161,6 +3163,7 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             xinput.normalize_combo(combo)
         if element is not None:
             _focus_window(element)
+            _keyboard_in(element)
             if element["source"] != "cdp":
                 atspi.grab_focus(element)
         if any(xinput.normalize_combo(c).lower() in ("up", "down", "page_up", "page_down", "prior", "next")
@@ -3354,6 +3357,91 @@ def _typing_lost(field, text):
     if re.fullmatch(numeric, wanted) and re.fullmatch(numeric, shown):
         return decimal.Decimal(wanted.replace(",", "")) != decimal.Decimal(shown.replace(",", ""))
     return True
+
+
+# An app's fields whose value the accessibility interface can set when typed keys do not reach them.
+ATSPI_SETTABLE = ("textbox", "searchbox", "spinbutton")
+
+
+def _none_landed(element, field, text):
+    """Whether not one character of `text` reached the field: it reads back exactly what it held before typing, and
+    that is not the text. (A field already holding the text took nothing, and needed nothing.)"""
+
+    now = field.get("value") or ""
+    return now == (element.get("value") or "") and not outcome.holds_text(now, text)
+
+
+def _others_changed(before, after, element):
+    """Whether a field other than `element` holds another value after the action: the keys went there instead."""
+
+    then = {e.get("path"): e.get("value") or "" for e in before.get("elements") or [] if e.get("path")}
+    return any(e.get("path") != element.get("path") and e.get("path") in then
+               and (e.get("value") or "") != then[e.get("path")]
+               for e in after.get("elements") or [])
+
+
+def _aimed_elsewhere():
+    """
+    (the window holding the keyboard now, the window this task's engine last saw in front or brought there) when they
+    differ, else None. Keys aimed at no control go where the keyboard is; a window that came forward since the engine's
+    last look (a dialog that opened late, another app) is not where it meant them (FRONT_FILE: _note_front, written at
+    every look and action an engine is shown, and by gui front and gui open). No task, no note, or a note older than
+    FRONT_KEEP_SECONDS: nothing to compare with.
+    """
+
+    task = _task_now()
+    if not task:
+        return None
+    try:
+        note = json.loads(FRONT_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(note, dict) or note.get("task") != task or time.time() - float(note.get("at") or 0) > FRONT_KEEP_SECONDS:
+        return None
+    try:
+        front = next((w for w in screen.windows() if w.get("active")), None)
+    except Exception:  # noqa: BLE001 - cannot tell: the other checks stand
+        return None
+    if front is None or front.get("id") == note.get("id"):
+        return None
+    return front.get("title") or "an untitled window", note.get("title") or "an untitled window"
+
+
+# How long keys wait for their window to take the keyboard after it was brought forward.
+KEYBOARD_WAIT = 0.6
+
+
+def _keyboard_in(element):
+    """
+    Raise unless the window holding the keyboard is the element's own, once it was brought forward (_focus_window):
+    keys follow the keyboard, not the element. Found by reading (2026-11-12): activation that did not take - a modal
+    dialog of the app in front of it, a window that refuses focus - sent the keys to whatever held it. When it cannot be
+    told (no window says it is active, the windows cannot be read) the keys go as before.
+    """
+
+    if not element or not element.get("window_title"):
+        return
+    try:
+        wanted = _window_id_for(element)
+    except Exception:  # noqa: BLE001
+        return
+    if wanted is None:
+        return
+    deadline = time.monotonic() + KEYBOARD_WAIT
+    while True:
+        try:
+            front = next((w for w in screen.windows() if w.get("active")), None)
+        except Exception:  # noqa: BLE001
+            return
+        if front is None or front.get("id") == wanted:
+            return
+        if time.monotonic() >= deadline:
+            raise ComputerError(
+                f"the keys are for {el.describe(element)} in {el._quote(element['window_title'], 60)}, but the keyboard "
+                f"is in {el._quote(front.get('title') or 'an untitled window', 60)}, which stayed in front - nothing was "
+                "typed or pressed. If that is a dialog the app opened, deal with it first (gui observe); otherwise "
+                "bring the window forward (gui front) and try again.")
+        time.sleep(0.1)
 
 
 # What the browser says when the node an action was aimed at is no longer the one on the page.
@@ -3718,17 +3806,20 @@ def _refuse_files_that_may_not_leave(files):
 @screen_call.routed("core.act")
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
         text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None,
-        see=None, replace_all=False, named=False, keys_from_task=False, cell=None, check_form=False, ids=None):
+        see=None, replace_all=False, named=False, keys_from_task=False, cell=None, check_form=False, ids=None,
+        look_first=False):
     """
     Do one thing on the screen and report what changed. `end` is the point a
     drag drops at. `see` describes the target in words for the grounding model
     to find on the screen (grounder.py), when nothing in the element list is it.
     `ids` are the identifiers (a tax number, an account number, an email) a
     select looks for first: an entry holding one is the record, whatever its name.
+    `look_first` (an engine's door): the same input on the same target as an earlier action whose effect was not
+    confirmed is refused until the screen is looked at again (outcome.py), and this action's effect is kept for that.
 
     Returns a dict: status ("done" | "needs_approval"), text (one
     paragraph for the engine), element, change, observation (the "after"
-    observation, or the "before" one when nothing ran).
+    observation, or the "before" one when nothing ran), and for a done action its effect and decision (outcome.py).
     """
 
     # One field per typing action. A Tab inside the text moves focus to the next
@@ -3743,6 +3834,24 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if text is not None and ("[withheld" in str(text) or "[held back" in str(text)):
         raise ComputerError("Not typed: the text holds a withheld mark ([withheld]), not the value it stands for. "
                             "Ask the person for this value (HELP:), and type what they give.")
+
+    # The turn this action belongs to (control.py): refused while a person holds the screen, and discarded - never
+    # recorded, never shown - when control changes hands before it is done.
+    epoch = turns.admit()
+    sent = []  # set once input has gone to the screen: after that, a change of hands is an action that may have happened
+
+    def fenced():
+        try:
+            turns.fence(epoch)
+        except ComputerError as exc:
+            if sent:
+                raise ActedError(str(exc)) from None
+            raise
+
+    def recorded(*args, **kwargs):
+        # Every record this action makes goes through the fence first.
+        fenced()
+        return audit.record(*args, **kwargs)
 
     before = observe()
     # A save no look had answered is answered by this one, or let go: from here on another press may move the page.
@@ -3970,12 +4079,24 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         # (W0.3 probe, 2026-11-05: four refused saves left no trace in the task's events).
         entry.update({"outcome": "refused", "guard": guard, "reason": str(reason),
                       "summary": f"{described} - refused ({guard}): {reason}"})
+        fenced()  # a look taken in a person's turn is not recorded, refusal or not
         try:
             audit.record(entry, before=before["frame"], masks=masks, observation=before)
         except Exception as exc:  # noqa: BLE001 - the refusal stands whether or not it could be recorded
             from decurix_agent.logging_utils import log
             log(f"Could not record a refused action: {exc}")
         raise ComputerError(str(reason))
+
+    # No blind repeat (outcome.py): the very input an earlier action of this task put on this target, whose effect was
+    # not confirmed, waits for a look at the screen. Only for an engine's door: a replay checks its own steps.
+    aim = given = None
+    if look_first:
+        aim = outcome.target_key(element, point=point, cell=cell,
+                                 window=before.get("active_title") if element is None and point is None else None)
+        given = outcome.input_key(kind, text=text, keys=keys, option=option, direction=direction, files=files)
+        repeat = outcome.repeat_refusal(kind, aim, given)
+        if repeat:
+            refused("look_first", repeat)
 
     try:
         _refuse_number_arrows(kind, point)
@@ -4072,7 +4193,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         # said to the engine with the gate's reason - nothing waits on a person (review round 3, R2-B3).
         entry.update({"outcome": "refused", "reason": decision.reason,
                       "summary": f"{described} - refused by the approval gate: {decision.reason}"})
-        audit.record(entry, before=before["frame"], masks=masks, observation=before)
+        recorded(entry, before=before["frame"], masks=masks, observation=before)
         raise ComputerError(f"Not done: {decision.reason or 'the approval gate refused this action'}.")
 
     if not decision.allowed:
@@ -4082,7 +4203,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             "reason": decision.reason,
             "summary": f"{described} - paused for approval: {decision.reason}",
         })
-        audit.record(entry, before=before["frame"], masks=masks, observation=before)
+        recorded(entry, before=before["frame"], masks=masks, observation=before)
         return {
             "status": "needs_approval",
             "text": "NEEDS_APPROVAL: " + text,
@@ -4111,10 +4232,23 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                 "forward first (gui front \"a few words of its title\") or act on something in it by its ref; "
                 "otherwise bring forward the window you are working in (gui open FILE brings an open document "
                 "forward).")
+    if keys_from_task and untargeted and kind in ("key", "type"):
+        # Keys aimed at no control go where the keyboard is: only into the window the engine last saw in front or
+        # brought there (_aimed_elsewhere), never into one that came forward since (Hermes' _input_target_mismatch).
+        elsewhere = _aimed_elsewhere()
+        if elsewhere:
+            now_in, meant = elsewhere
+            refused("window", f"the keys would go to {el._quote(now_in, 80)}, which has the keyboard now, but the "
+                              f"window you last looked at or brought forward is {el._quote(meant, 80)} - nothing was "
+                              f"typed or pressed. If {el._quote(now_in, 60)} is where they belong (it came forward "
+                              "since your last look), gui observe first; otherwise bring yours back (gui front \"a few "
+                              "words of its title\") or type into a field by its ref.")
 
     # Heard from the browser while the action runs: whether it began a download (_downloads_note).
     download_watch = _watch_downloads(element) if downloads_before is not None else None
     typing_later = []
+    fenced()  # nothing is sent to a screen a person has taken since this action was admitted
+    sent.append(True)
     try:
         if relayed_block:
             if relayed_cell:
@@ -4157,7 +4291,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             "reason": str(exc),
             "summary": f"{described} - failed: {exc}",
         })
-        audit.record(entry, before=before["frame"], masks=masks, observation=before)
+        recorded(entry, before=before["frame"], masks=masks, observation=before)
         raise
     except OSError as exc:
         if download_watch is not None:
@@ -4168,7 +4302,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         reason = (f"the connection to the app broke while acting ({type(exc).__name__}: {exc}) - it may or may not "
                   "have happened; observe before doing anything again")
         entry.update({"outcome": "failed", "reason": reason, "summary": f"{described} - failed: {reason}"})
-        audit.record(entry, before=before["frame"], masks=masks, observation=before)
+        recorded(entry, before=before["frame"], masks=masks, observation=before)
         raise ActedError(reason) from exc
 
     performed_at = time.time()
@@ -4181,6 +4315,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # The settled frame is the after-look's picture: the screen stopped changing on it, and a second full grab at once
     # is the same screen again (resource plan P1 #5: one full grab an action fewer).
     after = observe(frame=settled)
+    fenced()  # a look taken after a person took the screen is theirs: nothing of it is kept or shown
     _note_front()
     if not untargeted:
         _adopt_front()
@@ -4208,9 +4343,23 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             after = observe(frame=settled)
             retyped = True
 
+    set_directly = None
     if kind == "type" and element is not None and text and not append and element.get("role") == "textbox" \
-            and not relayed and not typed_keys:
+            and element.get("source") == "cdp" and not relayed and not typed_keys:
         retained = _same_field(element, after)
+        if retained is not None and _typing_lost(retained, text) and _none_landed(element, retained, text) \
+                and not getattr(decision, "approved", False):
+            # Not one character landed, through every way of typing (keys, inserted text, real keys, once more): the
+            # field drops typed input at its source. Its value is set directly, with the input and change events a
+            # person's typing makes, and read back (Hermes' set_value rung).
+            fenced()
+            if cdp.set_value(element, text) is not None:
+                settled = _wait_for_settle(before["frame"])
+                after = observe(frame=settled)
+                fenced()
+                retained = _same_field(element, after)
+                if retained is not None and not _typing_lost(retained, text):
+                    set_directly, backend = "cdp", "cdp:set-value"
         if retained is not None and _typing_lost(retained, text):
             reason = (f"{target} did not retain the requested text after retrying. Observe the field again and "
                       "commit it or use its picker; do not assume the value was entered.")
@@ -4218,9 +4367,26 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                 download_watch.close()
             entry.update({"outcome": "failed", "backend": backend, "reason": reason,
                           "summary": described + " - failed: " + reason})
-            audit.record(entry, before=before["frame"], after=after["frame"] or settled,
-                         masks=masks + privacy.secret_boxes(after["elements"]), observation=before)
+            recorded(entry, before=before["frame"], after=after["frame"] or settled,
+                     masks=masks + privacy.secret_boxes(after["elements"]), observation=before)
             raise ActedError(reason)
+    elif kind == "type" and element is not None and text and element.get("source") == "atspi" and not typed_keys \
+            and element.get("role") in ATSPI_SETTABLE and not privacy.secret_field(element) \
+            and not getattr(decision, "approved", False):
+        # An app's field the keys did not reach, while no other field changed (they did not land elsewhere either):
+        # set through the accessibility interface (EditableText, or Value for a number box) and read back.
+        field = outcome.same_element(element, after)
+        if field is not None and _none_landed(element, field, text) and not _others_changed(before, after, element):
+            wanted = (element.get("value") or "") + text if append else text
+            fenced()
+            how = atspi.set_text(element, wanted)
+            if how:
+                settled = _wait_for_settle(before["frame"])
+                after = observe(frame=settled)
+                fenced()
+                field = outcome.same_element(element, after)
+                if field is not None and outcome.holds_text(field.get("value"), text):
+                    set_directly, backend = "atspi", f"atspi:{how}"
 
     block_note, unverified = "", []
     if block is not None and backend == "xdotool:sheet-block":
@@ -4259,11 +4425,18 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     change_text = summarize(change)
     # A save the first look caught on its way (its Save only disabled) is watched until it is answered (_await_save_answer).
     after, change, change_text = _await_save_answer(kind, element, keys, before, after, change, change_text)
-    if _nothing_typed(kind, element, text, change_text, after) and not before.get("behind"):
+    went_nowhere = _nothing_typed(kind, element, text, change_text, after) and not before.get("behind")
+    if went_nowhere:
         # Found live (2026-10-17): after PowerPoint's Insert Table the table is selected, not being edited, and four
         # typings in a row (with Tab between) went nowhere; each said only "nothing visible changed - check ...", and
         # the run ended with the table empty. Typing that changes nothing was not typed.
         change_text += " " + NOTHING_TYPED_NOTE
+
+    # What the two looks show of the action's effect, and what that leaves the engine to do (outcome.py).
+    effect = outcome.classify(kind, element, before, after, change, text=text, option=option,
+                              taken=_selected.get("name") if kind == "select"
+                              and backend in ("cdp", "cdp:custom", "relayed:chosen") else None, unverified=unverified,
+                              untargeted_typing_lost=went_nowhere, set_directly=set_directly)
 
     entry.update({
         "outcome": "done",
@@ -4272,6 +4445,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "change": change_text,
         "expect": expectations(change),
         "summary": described + (" (approved)" if decision.approved else "") + f" - {change_text}",
+        "effect": effect["effect"],
+        "decision": effect["decision"],
     })
     if kind == "select" and backend == "cdp:custom" and _selected["name"]:
         # Which entry was taken is the fact of this action: the record of the task says so.
@@ -4292,8 +4467,10 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         if isinstance(offered, list) and 0 < len(offered) <= MAX_OFFERED_KEPT:
             entry["offered"] = [" ".join(str(o).split())[:200] for o in offered]
 
-    audit.record(entry, before=before["frame"], after=after["frame"] or settled,
-                 masks=masks + privacy.secret_boxes(after["elements"]), observation=before)
+    recorded(entry, before=before["frame"], after=after["frame"] or settled,
+             masks=masks + privacy.secret_boxes(after["elements"]), observation=before)
+    if look_first:
+        outcome.remember(effect, kind, aim, given)
 
     verb = {
         "click": "Clicked", "double_click": "Double-clicked", "right_click": "Right-clicked",
@@ -4425,9 +4602,12 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         note += _downloads_note(downloads_before, since=None if nothing_seen else performed_at, watch=download_watch,
                                 acted=performed_at, remember=True)
 
+    fenced()  # what is told to the engine is the worker's turn only
     return {
         "status": "done",
-        "text": f"{summary}.\nWhat changed: {change_text}{note}{block_note}",
+        "text": f"{summary}.\nWhat changed: {change_text}{note}{block_note}\n{outcome.line(effect)}",
+        "effect": effect["effect"],
+        "decision": effect["decision"],
         "element": element,
         "change": change,
         "observation": after,
@@ -4695,6 +4875,7 @@ def open_target(target, new_tab=False, reuse=False):
 
     _clear_pending_save()  # a page opened by its address is no answer to a save pressed before it
     session.ensure()
+    epoch = turns.admit()  # not while a person holds the screen; nothing kept if they take it meanwhile (control.py)
     before = screen.grab()
     wanted = (target or "").strip()
     entry = {
@@ -4708,6 +4889,7 @@ def open_target(target, new_tab=False, reuse=False):
         summary = _open(target, new_tab, reuse)
     except ComputerError as exc:
         entry.update({"outcome": "failed", "reason": str(exc), "summary": f"open {entry['target']} - failed: {exc}"})
+        turns.fence(epoch)
         audit.record(entry, before=before)
         raise
 
@@ -4723,6 +4905,7 @@ def open_target(target, new_tab=False, reuse=False):
         "screen": [after.width, after.height],
         "expect": {"active_window": privacy.kept_text(active) or None},
     })
+    turns.fence(epoch)
     audit.record(entry, before=before, after=after)
 
     return summary
@@ -4922,6 +5105,7 @@ def bring_to_front(title):
     xinput.activate(found[0]["id"])
     time.sleep(0.4)
     _adopt_front()
+    _note_front()  # where keys aimed at no control now belong (_aimed_elsewhere)
     return f"Brought {el._quote(found[0]['title'], 80)} to the front."
 
 

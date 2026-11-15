@@ -91,6 +91,23 @@ def parse_skill(content):
     return ("" if query.lower() == "list" else query), params
 
 
+# What a person does to what this desktop learned (learned.py): "/skill <verb> <target>". Each verb takes a target, so
+# "/skill history" alone still runs a skill named "history"; with one, the verb is the command.
+MANAGE_VERBS = ("history", "rollback", "lock", "unlock", "pin", "unpin", "archive", "unarchive", "learned")
+MANAGE_RE = re.compile(r"^/skills?\s+(" + "|".join(MANAGE_VERBS) + r")\s+(\S+)\s*$", re.IGNORECASE)
+
+
+def parse_manage(content):
+    """(verb, target) of a "/skill <verb> <target>" request about what this desktop learned, or None. The target is
+    a skill's name, "<kind>:<name>" (learned.KIND_WORDS), a ledger entry's id (rollback), or a kind or "all"
+    (learned)."""
+
+    match = MANAGE_RE.match((content or "").strip().split("\n", 1)[0].strip())
+    if not match or "=" in match.group(2):
+        return None
+    return match.group(1).lower(), match.group(2)
+
+
 def skill_context(content):
     """What follows a "/skill" request's command line: the documents and email of this run."""
 

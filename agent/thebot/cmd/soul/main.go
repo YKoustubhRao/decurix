@@ -25,6 +25,7 @@ import (
 	"thebot/internal/atomizer"
 	"thebot/internal/config"
 	"thebot/internal/feedback"
+	"thebot/internal/learnreview"
 	"thebot/internal/llm"
 	"thebot/internal/memory"
 	"thebot/internal/migrate"
@@ -275,6 +276,8 @@ type server struct {
 	secrets secretSet
 	// callKey opens /api/llm/call and nothing else (llmcall.go's newCallKey); "" for none.
 	callKey string
+	// reviews keeps each task's last operator transcript for the review pass after it (review.go).
+	reviews *learnreview.Keeper
 }
 
 // pausedJobTTL is how long a paused job waits for its reply before the next
@@ -283,7 +286,8 @@ const pausedJobTTL = 24 * time.Hour
 
 // newServer is soul's server, with the paused jobs kept on disk read back (paused.go).
 func newServer(cfg config.Config, provider llm.Provider, ws *workspace.Workspace, sched *scheduler.Scheduler) *server {
-	s := &server{cfg: cfg, provider: provider, ws: ws, sched: sched, sessions: session.NewStore(), jobs: map[string]*jobRecord{}}
+	s := &server{cfg: cfg, provider: provider, ws: ws, sched: sched, sessions: session.NewStore(), jobs: map[string]*jobRecord{},
+		reviews: learnreview.NewKeeper()}
 	if ws != nil {
 		s.pausedDisk = newPausedStore(ws.Root(), cfg.AgentToken)
 	}
@@ -666,6 +670,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	job.TaskID = taskID
 
 	jobCtx := withheld.With(trace.WithWriter(llm.WithTags(context.Background(), tags), s.tracer), job.secrets)
+	jobCtx = learnreview.With(jobCtx, s.reviews) // the operator keeps its transcript there (review.go)
 	ctx, cancel := context.WithCancel(jobCtx)
 	ctx, used := llm.WithUsage(ctx)
 	job.mu.Lock()
@@ -899,6 +904,7 @@ func (s *server) mux() http.Handler {
 	mux.HandleFunc(llmCallPath, s.handleLLMCall)
 	mux.HandleFunc(llmJudgePath, s.handleLLMJudge)
 	mux.HandleFunc(llmEscalationPath, s.handleLLMEscalation)
+	mux.HandleFunc(llmReviewPath, s.handleLLMReview)
 	// The UI itself - embedded in the binary (see web/embed.go), served at
 	// "/". This is the ONLY thing this loopback server exists to serve to
 	// a browser; everything else is the JSON/SSE API the UI's own JS calls.

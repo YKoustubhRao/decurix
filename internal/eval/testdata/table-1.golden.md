@@ -5,9 +5,10 @@
 - Suite: `sample`, SHA-256 `abc123`
 - Date: 2026-11-04 09:30 UTC; repeats: 1; status: done
 - State: reset to the snapshot before every case (independent samples)
+- Bookkeeping: a case run whose model made no turn (every call failed at the provider) is invalid and run again, at most 2 more times, by one rule for every arm; a case run left out of one model arm is left out of every model arm; a run that errored (error, timeout, token budget) counts 0 in pass and is left out of tokens and minutes; efficiency is compared in tokens, never in money
 - Arms:
-  - `default`: azure default → big-1; no expert; agent tree image; image sha256:0123456789ab; served by big-1
-  - `fast+expert`: azure fast → small-1; with the expert (big-1); agent tree eb15981 (feedfacecafe); image sha256:0123456789ab; served by small-1
+  - `default`: azure default → big-1; no expert; agent tree image; image sha256:0123456789ab; served by big-1; provider errors 0; no-turn reruns 0
+  - `fast+expert`: azure fast → small-1; with the expert (big-1); agent tree eb15981 (feedfacecafe); image sha256:0123456789ab; served by small-1; provider errors 0; no-turn reruns 0
 
 ## Pass (k/n, Wilson 95% lower bound)
 
@@ -33,7 +34,7 @@
 | two | 1.0 / 0.0 / 0.0 | 1.0 / 0.0 / 0.0 |
 | **total** | **0.5 / 0.0 / 0.0** | **0.5 / 0.5 / 0.0** |
 
-## Tokens per run (median, p90; cached share of input)
+## Tokens per run (median, p90; cached share of input), runs that errored left out
 
 | case | default | fast+expert |
 |---|---|---|
@@ -41,11 +42,11 @@
 | two | 306.0k, 306.0k; 33% | 102.5k, 102.5k; 50% |
 | **total** | **255.0k, 306.0k; 50%** | **97.2k, 102.5k; 58%** |
 
-## Minutes per run (median); rows left out: invalid, infrastructure
+## Minutes per run (median, runs that errored left out); rows left out: invalid, infrastructure, no model turn, paired
 
 | case | default | fast+expert |
 |---|---|---|
-| one | 4.0; 0, 0 | 2.0; 0, 0 |
-| two | 5.0; 0, 0 | 4.0; 0, 0 |
-| **total** | **4.5; 0, 0** | **3.0; 0, 0** |
+| one | 4.0; 0, 0, 0, 0 | 2.0; 0, 0, 0, 0 |
+| two | 5.0; 0, 0, 0, 0 | 4.0; 0, 0, 0, 0 |
+| **total** | **4.5; 0, 0, 0, 0** | **3.0; 0, 0, 0, 0** |
 

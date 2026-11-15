@@ -161,6 +161,6 @@ def install(bundle, version=None, sha=None, replace=False):
     for key in LOCAL_FIELDS:
         saved.pop(key, None)
     saved["installed_from"] = {"version": version, "sha": sha, "at": int(time.time()), **_marks(saved)}
-    skills.save(saved)
+    skills.save(saved, actor="install")
 
     return skills.summary(saved)

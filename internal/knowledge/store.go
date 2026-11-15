@@ -90,6 +90,29 @@ var schema = []string{
 	)`,
 	`CREATE INDEX knowledge_items_scope ON knowledge_items (scope, scope_key, superseded_by, created_ns)`,
 	`CREATE INDEX knowledge_items_superseded ON knowledge_items (superseded_by)`,
+	// What workers proposed after a run (proposals.go): staged for a person, never given out while proposed.
+	`CREATE TABLE knowledge_proposals (
+		id            TEXT PRIMARY KEY,
+		worker        TEXT NOT NULL,
+		task_id       TEXT NOT NULL,
+		kind          TEXT NOT NULL,
+		text          TEXT NOT NULL,
+		why           TEXT NOT NULL,
+		evidence      TEXT NOT NULL,
+		replaces_id   TEXT NOT NULL,
+		replaces_text TEXT NOT NULL,
+		call_id       TEXT NOT NULL,
+		model         TEXT NOT NULL,
+		created_ns    INTEGER NOT NULL,
+		state         TEXT NOT NULL,
+		decided_ns    INTEGER NOT NULL DEFAULT 0,
+		decided_by    TEXT NOT NULL DEFAULT '',
+		decided_name  TEXT NOT NULL DEFAULT '',
+		note          TEXT NOT NULL DEFAULT '',
+		item_id       TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX knowledge_proposals_state ON knowledge_proposals (state, created_ns)`,
+	`CREATE INDEX knowledge_proposals_run ON knowledge_proposals (worker, task_id)`,
 }
 
 // Source is where an item came from. Ref names it in its own terms (a

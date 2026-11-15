@@ -37,14 +37,17 @@ def refuse(kind, ref=None, keys=None, text=None):
 
 
 def act(kind, **kwargs):
-    """core.act behind refuse(), the way every door calls it: a press on a named control by its ref (named), and keys
-    or typing aimed at no control checked against the window the task works in (keys_from_task)."""
+    """core.act behind refuse(), the way every door calls it: a press on a named control by its ref (named), keys
+    or typing aimed at no control checked against the window the task works in (keys_from_task), and no blind repeat
+    of an input that was not confirmed (look_first)."""
 
     refuse(kind, ref=kwargs.get("ref"), keys=kwargs.get("keys"), text=kwargs.get("text"))
     if kind in PRESSES:
         kwargs.setdefault("named", True)
     if kind in ("type", "key"):
         kwargs.setdefault("keys_from_task", True)
+    # An engine does not repeat blind an input whose effect was not confirmed (outcome.py).
+    kwargs.setdefault("look_first", True)
     return core.act(kind, **kwargs)
 
 

@@ -2189,6 +2189,14 @@ def listing(task_id=None):
     return out
 
 
+def _save_key(text):
+    """A save's change text as saved_unread matches it: spaces made one, cut where readback cuts it (300), and trimmed.
+    Found live (2026-11-15): a cut that ended on a space kept it on the event's side and lost it on the ledger's, so
+    a record declared and read back whole was reported "not read back"."""
+
+    return " ".join(str(text or "").split())[:300].strip()
+
+
 def saved_unread(task_id=None, events=None):
     """
     The new records this task saved that nothing read back against a source, each as where it was saved (the page or
@@ -2206,7 +2214,7 @@ def saved_unread(task_id=None, events=None):
     for r in load(task_id):
         rb = r.get("readback") or {}
         if r.get("saved_at") and rb.get("seen") and not rb.get("absent") and not _rows_unread(r):
-            read.add(" ".join(str(r.get("saved") or "").split())[:300])
+            read.add(_save_key(r.get("saved")))
     out, new_page = [], False
     for event in events or []:
         if event.get("outcome") not in (None, "done"):
@@ -2216,7 +2224,7 @@ def saved_unread(task_id=None, events=None):
             new_page = True
         if event.get("kind") in ("click", "key") and core._saved(change) and new_page:
             new_page = False
-            if " ".join(change.split())[:300] not in read:
+            if _save_key(change) not in read:
                 moved = re.search(r"page is now (\S+)", change)
                 out.append(moved.group(1).rstrip(";,") if moved else str(event.get("window") or "a form"))
             continue
