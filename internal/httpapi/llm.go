@@ -318,6 +318,9 @@ func (s *Server) desktopBrain(harness, brain string) (desktop.Brain, error) {
 	}
 
 	switch kind := strings.ToLower(strings.TrimSpace(brain)); kind {
+	case desktop.BrainNone:
+		// Only the VM: no agent, no model, nothing to set up.
+		return desktop.Brain{Kind: desktop.BrainNone}, nil
 	case "", desktop.BrainOllama:
 		return desktop.Brain{Kind: desktop.BrainOllama}, nil
 	case desktop.BrainClaude, desktop.BrainAzure, desktop.BrainOpenAI:
@@ -327,6 +330,6 @@ func (s *Server) desktopBrain(harness, brain string) (desktop.Brain, error) {
 		st := s.LLM.Status()[kind]
 		return desktop.Brain{Kind: kind, Model: st.Model, Vision: st.Vision}, nil
 	default:
-		return desktop.Brain{}, errBrain("brain must be ollama, claude, azure or openai")
+		return desktop.Brain{}, errBrain("brain must be none, ollama, claude, azure or openai")
 	}
 }

@@ -23,11 +23,13 @@ import (
 // when one answers on 6901; a desktop that runs none is bridged all the same and the log says so (screenStreamBridged),
 // so turning the bridge off never leaves a screen that cannot connect.
 
-// Keepalive and idle for a bridged screen: the browser answers each ping, so a screen someone has open never idles
-// out, and one whose browser went away is found within the idle time.
+// Keepalive and idle for a bridged screen: the browser answers each ping (its network stack does, even in a hidden
+// tab), so a screen someone has open never idles out, and one whose browser can no longer be reached is found within
+// the idle time. That is also how long a window that went away without closing keeps the screen from the next one
+// (screenholders.go), so it is kept short: three missed pings.
 const (
-	screenPing = 30 * time.Second
-	screenIdle = 2 * time.Minute
+	screenPing = 10 * time.Second
+	screenIdle = 30 * time.Second
 	// screenDial bounds reaching the desktop's Xvnc before the WebSocket is accepted.
 	screenDial = 5 * time.Second
 )
@@ -81,6 +83,15 @@ func (s *Server) bridgeScreen(w http.ResponseWriter, r *http.Request, rawID stri
 	if err != nil {
 		return false, err
 	}
+	// One window at a time (screenholders.go): refused before the desktop is dialled, held until the stream ends.
+	kicked, kick := context.WithCancel(context.Background())
+	defer kick()
+	release, ok := s.screens.take(desktopID, screenHolderToken(r), kick)
+	if !ok {
+		refuseScreenInUse(w)
+		return true, nil
+	}
+	defer release()
 	tcp, err := net.DialTimeout("tcp", addr, screenDial)
 	if err != nil {
 		s.Desktops.InvalidateProxyTarget(desktopID)
@@ -93,6 +104,12 @@ func (s *Server) bridgeScreen(w http.ResponseWriter, r *http.Request, rawID stri
 		tcp.Close()
 		return true, nil
 	}
+	// The same window reconnected: this, its older stream, ends.
+	stop := context.AfterFunc(kicked, func() {
+		_ = tcp.Close()
+		_ = c.Close()
+	})
+	defer stop()
 	done := make(chan struct{})
 	defer close(done)
 	go s.keepScreenViewed(desktopID, done)

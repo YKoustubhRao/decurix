@@ -73,6 +73,11 @@ func TestNewDesktopsRunTheBotWithTheBrainTheyAskFor(t *testing.T) {
 	if _, err := s.desktopBrain("", "gpt"); err == nil {
 		t.Fatal("an unknown brain was accepted")
 	}
+
+	// Only the VM needs nothing set up.
+	if b, err := s.desktopBrain("", "none"); err != nil || !b.VMOnly() || b.Hosted() {
+		t.Fatalf("VM-only brain = %+v, %v", b, err)
+	}
 }
 
 func TestSettingsAreSavedOnlyWhenTheModelAnswers(t *testing.T) {

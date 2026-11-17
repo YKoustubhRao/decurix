@@ -645,6 +645,38 @@
 .brain-status{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12.5px;color:var(--text-2)}
 .brain-status span{flex:1;min-width:0}
 .brain-status[hidden],.brain-setup[hidden],.brain-setup [hidden]{display:none}
+/* What runs in a desktop: one card per choice, a real radio under each. */
+.brain-choices{display:grid;gap:6px}
+.brain-opt{display:block;position:relative;cursor:pointer;min-width:0}
+.brain-opt input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.brain-opt-body{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px 12px;
+  border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface);
+  transition:border-color .12s ease,background .12s ease,box-shadow .12s ease}
+.brain-opt:hover .brain-opt-body{border-color:var(--line-2);background:var(--surface-2)}
+.brain-opt-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;background:var(--surface-2);
+  color:var(--text-2);transition:background .12s ease,color .12s ease}
+.brain-opt-text{display:grid;gap:1px;min-width:0}
+.brain-opt-name{display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:13px;font-weight:600;color:var(--text)}
+.brain-opt-desc{font-size:12px;line-height:1.4;color:var(--text-3);overflow-wrap:anywhere}
+.brain-opt-tag,.brain-opt-badge{font-size:10.5px;font-weight:600;letter-spacing:.02em;padding:1px 7px;border-radius:999px;
+  background:var(--surface-3);color:var(--text-2)}
+.brain-opt-badge.ready{background:var(--accent-soft);color:var(--accent)}
+.brain-opt-badge[hidden]{display:none}
+.brain-opt-radio{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line-2);background:var(--surface);
+  transition:border-color .12s ease,box-shadow .12s ease}
+.brain-opt input:checked + .brain-opt-body{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 1px var(--accent)}
+.brain-opt input:checked + .brain-opt-body .brain-opt-icon{background:var(--accent);color:var(--surface)}
+.brain-opt input:checked + .brain-opt-body .brain-opt-radio{border-color:var(--accent);box-shadow:inset 0 0 0 3.5px var(--surface);background:var(--accent)}
+.brain-opt input:focus-visible + .brain-opt-body{outline:2px solid var(--accent);outline-offset:2px}
+.create-grid .hint,.brain-setup,.brain-status{min-width:0;overflow-wrap:anywhere}
+#brainHint[hidden],.brain-detail[hidden]{display:none}
+/* Opens under the chosen card, joined to it by a line, and slides in. */
+.brain-detail{display:grid;gap:10px;min-width:0;margin:0 0 4px 17px;padding:2px 0 2px 16px;border-left:2px solid var(--accent);
+  animation:brain-detail-in .18s ease-out}
+.brain-detail > *{margin-top:0}
+@keyframes brain-detail-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.brain-detail{animation:none}}
+.brain-setup label,.brain-setup .input{min-width:0}
 .brain-setup{display:grid;gap:10px;margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2)}
 .brain-setup .row{display:grid;gap:10px;grid-template-columns:1fr 1fr}
 @media (max-width:520px){.brain-setup .row{grid-template-columns:1fr}}
@@ -985,7 +1017,7 @@
             </span>
 
             <span class="chip">
-              TheBot · {{if eq .Brain "claude"}}Claude{{else if eq .Brain "azure"}}Azure{{else if eq .Brain "openai"}}OpenAI{{else}}Ollama{{end}}
+              {{if eq .Brain "none"}}VM only{{else}}TheBot · {{if eq .Brain "claude"}}Claude{{else if eq .Brain "azure"}}Azure{{else if eq .Brain "openai"}}OpenAI{{else}}Ollama{{end}}{{end}}
             </span>
           </div>
         </div>
@@ -1335,13 +1367,51 @@
 
       <div class="field">
         <span class="field-label">Model</span>
-        <div class="segmented" role="radiogroup" aria-label="The model TheBot reasons with">
-          <label class="seg"><input type="radio" name="brain" value="ollama" checked><span>Ollama (local)</span></label>
-          <label class="seg"><input type="radio" name="brain" value="claude"><span>Claude</span></label>
-          <label class="seg"><input type="radio" name="brain" value="azure"><span>Azure OpenAI</span></label>
-          <label class="seg"><input type="radio" name="brain" value="openai"><span>OpenAI / compatible</span></label>
+        <div class="brain-choices" role="radiogroup" aria-label="What runs in this desktop">
+          <label class="brain-opt">
+            <input type="radio" name="brain" value="none" checked>
+            <span class="brain-opt-body">
+              <span class="brain-opt-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
+              <span class="brain-opt-text"><span class="brain-opt-name">VM only</span><span class="brain-opt-desc">Just the desktop. No agent and no model: you use it at its screen.</span></span>
+              <span class="brain-opt-radio" aria-hidden="true"></span>
+            </span>
+          </label>
+          <label class="brain-opt">
+            <input type="radio" name="brain" value="ollama">
+            <span class="brain-opt-body">
+              <span class="brain-opt-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
+              <span class="brain-opt-text"><span class="brain-opt-name">Ollama <span class="brain-opt-tag">local</span></span><span class="brain-opt-desc">A worker on this computer's own model. Free, but slower.</span></span>
+              <span class="brain-opt-radio" aria-hidden="true"></span>
+            </span>
+          </label>
+          <label class="brain-opt">
+            <input type="radio" name="brain" value="claude">
+            <span class="brain-opt-body">
+              <span class="brain-opt-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9.5 4.25 4.25 0 0 1 17.5 18H7z"/></svg></span>
+              <span class="brain-opt-text"><span class="brain-opt-name">Claude <span class="brain-opt-badge" data-brain-badge="claude" hidden></span></span><span class="brain-opt-desc">A worker on Anthropic's Claude, billed to your account.</span></span>
+              <span class="brain-opt-radio" aria-hidden="true"></span>
+            </span>
+          </label>
+          <label class="brain-opt">
+            <input type="radio" name="brain" value="azure">
+            <span class="brain-opt-body">
+              <span class="brain-opt-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9.5 4.25 4.25 0 0 1 17.5 18H7z"/></svg></span>
+              <span class="brain-opt-text"><span class="brain-opt-name">Azure OpenAI <span class="brain-opt-badge" data-brain-badge="azure" hidden></span></span><span class="brain-opt-desc">A worker on your own Azure AI deployments.</span></span>
+              <span class="brain-opt-radio" aria-hidden="true"></span>
+            </span>
+          </label>
+          <label class="brain-opt">
+            <input type="radio" name="brain" value="openai">
+            <span class="brain-opt-body">
+              <span class="brain-opt-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9.5 4.25 4.25 0 0 1 17.5 18H7z"/></svg></span>
+              <span class="brain-opt-text"><span class="brain-opt-name">OpenAI-compatible <span class="brain-opt-badge" data-brain-badge="openai" hidden></span></span><span class="brain-opt-desc">OpenAI, OpenRouter, or a model box on your network.</span></span>
+              <span class="brain-opt-radio" aria-hidden="true"></span>
+            </span>
+          </label>
         </div>
-        <div class="hint" id="brainHint">Every desktop runs TheBot, and TheBot adapts to the model: one that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR. With Ollama it thinks on this machine's own model, free but slower. Claude, Azure OpenAI or an OpenAI-compatible server (OpenAI itself, OpenRouter, a model box on your own network) think faster and better, billed to your account; their keys stay in the control plane and never enter a desktop.</div>
+        <!-- Opens under the chosen card (syncBrain moves it there): what to know about the model, and its key. -->
+        <div class="brain-detail" id="brainDetail" hidden>
+        <div class="hint" id="brainHint" hidden>TheBot adapts to the model: one that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR. Hosted models think faster and better; their keys stay in the control plane and never enter a desktop.</div>
 
         <div class="brain-status" id="brainStatus" hidden>
           <span id="brainStatusText"></span>
@@ -1369,6 +1439,7 @@
             <button type="button" class="btn btn-quiet btn-sm" id="brainForgetBtn" hidden>Remove</button>
             <button type="button" class="btn btn-default btn-sm" id="brainSaveBtn">Check &amp; save</button>
           </div>
+        </div>
         </div>
       </div>
 
@@ -1761,6 +1832,22 @@
     var hosted = isHosted(p);
     var info = providerInfo(p);
 
+    /* The hosted choices say whether they are ready; the note on how TheBot uses a model is for those that run it. */
+    document.querySelectorAll("[data-brain-badge]").forEach(function(badge){
+      var ready = !!providerInfo(badge.dataset.brainBadge).configured;
+      badge.hidden = !modelInfo;
+      badge.textContent = ready ? "Set up" : "Needs a key";
+      badge.classList.toggle("ready", ready);
+    });
+    document.getElementById("brainHint").hidden = p === "none";
+
+    /* What belongs to the chosen model - the note, its status, its key - opens right under its card. */
+    var detail = document.getElementById("brainDetail");
+    var card = createForm.querySelector("input[name=brain]:checked");
+    card = card && card.closest(".brain-opt");
+    detail.hidden = p === "none";
+    if(card && card.nextElementSibling !== detail){ card.after(detail); }
+
     if(!hosted){
       status.hidden = true;
       setup.hidden = true;
@@ -1875,6 +1962,11 @@
     input.addEventListener("change", function(){
       brainEditing = false;
       syncBrain();
+      /* A model that still needs its key: the cursor goes straight to it. */
+      var setup = document.getElementById("brainSetup");
+      var detail = document.getElementById("brainDetail");
+      if(!detail.hidden){ detail.scrollIntoView({block: "nearest", behavior: "smooth"}); }
+      if(!setup.hidden){ document.getElementById("brainKey").focus({preventScroll: true}); }
     });
   });
 
@@ -2139,7 +2231,7 @@
     card.dataset.desktopId = info.id;
 
     var profileLabel = info.profile === "ai" ? "AI Developer" : (info.profile === "developer" ? "Developer" : "Basic");
-    var harnessLabel = "TheBot · " + ({claude: "Claude", azure: "Azure", openai: "OpenAI"}[info.brain] || "Ollama");
+    var harnessLabel = info.brain === "none" ? "VM only" : "TheBot · " + ({claude: "Claude", azure: "Azure", openai: "OpenAI"}[info.brain] || "Ollama");
     var cpusLabel = info.cpus == 1 ? "1 core" : (info.cpus + " cores");
     var url = "/desktop/" + encodeURIComponent(info.id) + "/";
 
