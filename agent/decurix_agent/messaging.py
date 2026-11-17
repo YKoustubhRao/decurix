@@ -988,6 +988,20 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
 
     checked, verdict = _settle_verdict(reply, kind, checked, gated, verdict, stopped)
 
+    # Each part of a taught task this task ran is settled by how the task ended (part_record): only a checked done
+    # proves a part. Decoration for the learning: never stops the report.
+    if not interrupted:
+        try:
+            from decurix_agent import verdict as verdicts
+            from decurix_agent.computer import choices, part_record
+            done = (kind == "final" and bool(checked) and not stopped and isinstance(verdict, dict)
+                    and verdict.get("verdict") == verdicts.DONE)
+            part_record.settle(task_id or task_context.current(), done)
+            # (A pick chosen at its step is remembered for its party only from a task checked done: choices.py.)
+            choices.settle(task_id or task_context.current(), done)
+        except Exception as exc:  # noqa: BLE001
+            log(f"Could not settle this task's taught parts: {exc}")
+
     # The run now has an outcome: its evidence is kept until the control plane has pulled it (retention.py, W0.8).
     # Before the report is sent, so the control plane's pull, which the report starts, finds the mark.
     from decurix_agent import retention

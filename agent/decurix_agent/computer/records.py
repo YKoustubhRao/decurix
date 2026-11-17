@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from decurix_agent import config, task_context, values
-from decurix_agent.computer import identity
+from decurix_agent.computer import approval, identity
 from decurix_agent.computer.errors import ComputerError
 
 LEDGER_DIR = config.DECURIX_DIR / "computer" / "evidence"
@@ -608,6 +608,9 @@ def _pick_of(event, host=""):
             "taken": " ".join(str(event.get("taken") or "").split()),
             "offered": list(offered) if isinstance(offered, list) and offered else None,
             "by_id": event.get("resolved_by") == "identifier",
+            # A page's own <select> takes the option asked or, when none is that, the one named in "taken": the entry
+            # it holds is one of the application's, either way (core._not_picked).
+            "native": event.get("backend") == "cdp",
             "host": _page_of(event.get("url"))[0] or host}
 
 
@@ -721,12 +724,28 @@ def _org_text(task_id=None):
         return ""
 
 
-def _answers_text(task_id=None):
-    """This task's replies the control plane confirms as the person's (person_record.answers), in its own text."""
+def _answers_text(task_id=None, approved=True):
+    """This task's replies the control plane confirms as the person's (person_record.answers), in its own text - and,
+    for a reply that is a plain yes and nothing else, the question it said yes to (as the control plane recorded it):
+    a value the worker wrote in a plan or a question and the person approved as written is the person's to back.
+    Found in the learning curves (2026-11-16): the person said "Yes, go ahead." to a plan listing each bill's
+    sales_ledger="Sales@18%"; the saved vouchers held that value, and the final check refused all four as "a value
+    no declaration backs" - a correct month ended not done. A yes with anything more (a change, a condition) backs
+    only its own words.
+
+    approved=False: the person's own words only, never the question a yes approved - for what only they can say (that a
+    missing bill is expected: the worker's "1079 is missing" in a plan they said yes to answers nothing about it).
+    Found live (2026-11-16): with the plan's words counted, a month's missing bill was taken as settled and never
+    asked for."""
 
     try:
         from decurix_agent import person_record
-        return "\n".join(a["text"] for a in person_record.answers(task_id))
+        out = []
+        for a in person_record.answers(task_id):
+            out.append(a["text"])
+            if approved and a.get("asked") and approval.plain_yes(a["text"]):
+                out.append(a["asked"])
+        return "\n".join(out)
     except Exception:  # noqa: BLE001 - what cannot be confirmed backs nothing
         return ""
 
@@ -1059,6 +1078,14 @@ def option_backed(option, given, offered=None):
     option = " ".join(str(option or "").split())
     if not option or not given:
         return False
+    # An option written as alternatives ("Unregistered/Consumer") names one choice by either: one alternative picked
+    # out whole is the option (found in the learning curves, 2026-11-16: the person taught "Unregistered", and a correct
+    # ledger was refused because "Consumer" stood nowhere).
+    alternatives = [a.strip() for a in option.split("/")]
+    if len(alternatives) > 1 and all(alternatives) and any(
+            option_backed(a, given, None if offered is None else [o for o in offered if o != option] + [a])
+            for a in alternatives):
+        return True
     words = _option_words(option)
     mine = set(words)
     if not mine:

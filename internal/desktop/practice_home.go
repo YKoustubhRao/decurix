@@ -66,3 +66,22 @@ func (h PracticeHome) WriteTar(ctx context.Context, id, dir string, archive io.R
 	defer done()
 	return h.M.execTarIn(ctx, target, clean, archive, "--no-overwrite-dir")
 }
+
+// PersistMemoryFile is Manager.PersistMemoryFile for practice desktop id: what the worker keeps in its memory reaches
+// its next case, as it would on its own desktop. Found in the learning curves (2026-11-16): the broker dropped every
+// lesson, so each case asked the expert the same questions again.
+func (h PracticeHome) PersistMemoryFile(ctx context.Context, id, filename, content string) error {
+	buf, err := memoryTar(filename, content)
+	if err != nil {
+		return err
+	}
+	if err := h.practiceOnly(ctx, id); err != nil {
+		return err
+	}
+	target, done, err := h.M.homeAccessOf(ctx, id, id)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return h.M.persistMemoryTar(ctx, target, id, buf)
+}

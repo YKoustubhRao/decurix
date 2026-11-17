@@ -55,7 +55,7 @@ class SavedUnread(unittest.TestCase):
 
 
 class TheReportIsNotCheckedAgain(unittest.TestCase):
-    """Found live (2026-11-15, core-v2): the "NOT checked" report went back through the final gate, which judged it done
+    """Found live (2026-11-15, an eval run): the "NOT checked" report went back through the final gate, which judged it done
     again and wrote it again - 63 judge calls until the task's time ran out. The gate settled it: it goes out gated."""
 
     def test_judged_done_with_a_save_unread_goes_out_once_not_checked(self):
@@ -75,7 +75,7 @@ class TheReportIsNotCheckedAgain(unittest.TestCase):
                 mock.patch.object(skill_task.verify, "judge", lambda *a, **k: judged.append(1) or {
                     "verdict": verify.DONE, "confidence": 1.0, "seen": "Saved.", "why": "saved"}), \
                 mock.patch.object(skill_task, "write_final_reply") as sent:
-            self.assertTrue(skill_task._gate("Saved bill HS-0318.", "final", "thebot"))
+            self.assertTrue(skill_task._gate("Saved bill AB-1234.", "final", "thebot"))
         self.assertEqual(len(judged), 1)
         self.assertTrue(sent.call_args.kwargs.get("gated"), sent.call_args)
         self.assertFalse(sent.call_args.kwargs["checked"])

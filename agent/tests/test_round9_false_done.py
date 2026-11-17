@@ -161,7 +161,7 @@ class TheFinalGate(ts.TeachingBase):
 
     def test_a_not_backed_item_is_not_done(self):
         with mock.patch.object(skill_task, "_ledger_faults",
-                               lambda reply="": [f"the report itself says: {i}"
+                               lambda reply="", run=None: [f"the report itself says: {i}"
                                                  for i in skill_task.not_backed_items(reply)]):
             self.assertTrue(skill_task._gate(NOT_BACKED_REPORT, "final", "thebot"))
         self.assertEqual(self.finals, [])
@@ -203,6 +203,8 @@ class B_ACutOffCheck(unittest.TestCase):
 
 def _retries(message, finish_reason, max_tokens):
     """Whether llm_client.chat asks again for this answer (its own condition, run on a stand-in transport)."""
+
+    llm_client.forget_roomy()  # (a model that once needed room starts with it: each case here starts from none)
 
     answers = [{"choices": [{"message": message, "finish_reason": finish_reason}], "usage": {}},
                {"choices": [{"message": {"content": "again"}, "finish_reason": "stop"}], "usage": {}}]

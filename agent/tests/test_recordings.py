@@ -384,6 +384,12 @@ class Replay(unittest.TestCase):
         self.assertFalse(replay.title_matches("LibreOffice Writer", "Untitled 3 - LibreOffice Calc"))
         self.assertTrue(replay.url_matches("http://shop.test/invoices/*", "http://shop.test/invoices/1044/"))
         self.assertFalse(replay.url_matches("http://shop.test/invoices/*", "http://shop.test/login"))
+        # A record's id in the path is another client's company, the same page (learning curves, 2026-11-16).
+        self.assertTrue(replay.url_matches("http://books.test/company/1/gstr1", "http://books.test/company/2/gstr1"))
+        self.assertFalse(replay.url_matches("http://books.test/company/1/gstr1", "http://books.test/company/2/export"))
+        self.assertFalse(replay.url_matches("http://books.test/company/1/gstr1", "http://books.test/company/two/gstr1"))
+        self.assertTrue(replay.url_matches("http://portal.test/gstr1/2026-10/b2cs", "http://portal.test/gstr1/2026-11/b2cs"))
+        self.assertFalse(replay.url_matches("http://portal.test/gstr1/2026-10", "http://portal.test/gstr1/2026"))
 
     def test_a_target_is_found_by_path_then_role_and_name_and_never_guessed(self):
         replay.core = FakeScreen([])

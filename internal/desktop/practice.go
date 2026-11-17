@@ -746,6 +746,14 @@ func tarOf(files map[string][]byte, mode int64, uid int) io.Reader {
 	return &buf
 }
 
+// PracticeAddress is practice container id's address on the practice network now. A reset stops and starts the
+// container, and the address it had may have gone to another container meanwhile: found in the learning curves
+// (2026-11-17), the control plane asked the old address for four minutes while the agent was up at its new one, and the
+// run ended "could not be reset between cases".
+func (m *Manager) PracticeAddress(ctx context.Context, id string) (string, error) {
+	return m.practiceIP(ctx, id)
+}
+
 // practiceIP is practice container id's address on the practice network (practiceEndpoint).
 func (m *Manager) practiceIP(ctx context.Context, id string) (string, error) {
 	inspect, err := m.client.ContainerInspect(ctx, id)

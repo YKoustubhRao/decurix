@@ -117,7 +117,7 @@ class ATaughtRunsLedgerFindingIsSaidAsOne(ts.TeachingBase):
         run = {"skill": {"name": "enter-bill", "steps": []}, "values": {}}
         fault = records.finding(ledger_checks.UNBACKED_PICK, "Cost centre: 'General' was chosen from the list")
         with mock.patch.object(skill_task, "_read_back", lambda run, text: ([], [])), \
-                mock.patch.object(skill_task, "_ledger_faults", lambda reply="": [fault]), \
+                mock.patch.object(skill_task, "_ledger_faults", lambda reply="", run=None: [fault]), \
                 mock.patch.object(skill_task, "_own_run"), mock.patch.object(skill_task, "_record_verdict"), \
                 mock.patch.object(skill_task, "write_final_reply",
                                   lambda text, kind="final", engine=None, **k: sent.append(text)):

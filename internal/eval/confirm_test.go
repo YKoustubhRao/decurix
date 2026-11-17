@@ -186,3 +186,15 @@ func TestTheExpertApprovesAnUnquotedAskToPressAnApprovedControl(t *testing.T) {
 		t.Fatalf("a question that only names Verify was answered: %q", reply)
 	}
 }
+
+func TestAnApprovalThatAlsoAsksForAValueGetsBoth(t *testing.T) {
+	yes := true
+	c := Case{Approves: []Approval{{Control: "Verify"}},
+		Facts: []Fact{{ID: "otp", About: "the one-time password", Answer: "The OTP is 604217.", RefersTo: []string{"otp"}, Required: &yes}}}
+	if got := approvalWithFact(c, "otp"); got != ApprovalYes+" The OTP is 604217." {
+		t.Fatalf("the yes and the value: %q", got)
+	}
+	if got := approvalWithFact(c, ""); got != ApprovalYes {
+		t.Fatalf("a question no fact answers gets the yes alone: %q", got)
+	}
+}

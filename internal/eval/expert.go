@@ -160,6 +160,16 @@ func (e *Expert) ChooseFor(ctx context.Context, desktopID, taskID, question stri
 		e.mu.Unlock()
 		res, u, err = e.call(ctx, desktopID, taskID, expertRequest(question, facts, false))
 	}
+	// A rate limit or a provider failure is waited out a few times, never turned into "I don't know": found in the
+	// learning curves (2026-11-16), three runs on one key had the expert answer 429, and the worker was told nothing.
+	for attempt := 0; err == nil && retryableStatus(res.Status) && attempt < len(expertRetryWaits); attempt++ {
+		select {
+		case <-ctx.Done():
+			return Choice{Problem: "the expert could not be asked"}, ctx.Err()
+		case <-time.After(expertRetryWaits[attempt]):
+		}
+		res, u, err = e.call(ctx, desktopID, taskID, expertRequest(question, facts, !e.noTemperatureNow()))
+	}
 	if err != nil {
 		return Choice{Problem: "the expert could not be asked"}, err
 	}
@@ -187,6 +197,21 @@ func (e *Expert) ChooseFor(ctx context.Context, desktopID, taskID, question stri
 	return c, nil
 }
 
+// expertRetryWaits are the waits before the expert is asked again after a rate limit or a provider failure.
+var expertRetryWaits = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
+
+// retryableStatus reports whether a provider status is worth asking again: a rate limit or a server failure.
+func retryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= 500
+}
+
+// noTemperatureNow reports whether the deployment was found to refuse a temperature.
+func (e *Expert) noTemperatureNow() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.noTemperature
+}
+
 func (e *Expert) call(ctx context.Context, desktopID, taskID string, body []byte) (llm.ChatResult, llm.Usage, error) {
 	started := time.Now()
 	res, err := e.Hub.ChatResult(ctx, ExpertProvider, body)
@@ -202,6 +227,21 @@ func (e *Expert) call(ctx context.Context, desktopID, taskID string, body []byte
 		})
 	}
 	return res, u, nil
+}
+
+// secretFact is the one fact of the case a secret question names by its refers_to words (the OTP the client read
+// out), never chosen by a model; false when none or more than one does - the secret is then nobody's to give.
+func secretFact(c Case, question string) (Fact, bool) {
+	var found []Fact
+	for _, f := range c.Facts {
+		if f.NamedBy(question) {
+			found = append(found, f)
+		}
+	}
+	if len(found) != 1 {
+		return Fact{}, false
+	}
+	return found[0], true
 }
 
 // Reply is what the worker is sent for a chosen fact: the fact's own answer bytes, or DontKnow.

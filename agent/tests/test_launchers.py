@@ -158,6 +158,21 @@ class TestReplayingTheDesktop(Desktop):
         act.assert_called_once()
         self.assertEqual(act.call_args.kwargs["point"], (535, 361))
 
+    def test_a_launcher_on_the_panel_opens_its_app_like_a_desktop_icon(self):
+        # Found in the learning curves (2026-11-16): the panel's "Web Browser" opened no window on a practice desktop,
+        # and every part that began with it stopped at its first step.
+        step = dict(OPEN, n=1, point=[110, 698], window="",
+                    target={"role": "button", "name": "Web Browser", "path": 'xfce4-panel window "" > button "Web Browser"'})
+        self.assertTrue(replay._on_panel(step))
+        with patch.object(replay.core, "act") as act:
+            result = replay._run_step(step, {}, report=self.lines.append)
+        act.assert_not_called()
+        self.assertEqual(self.launched, [["/home/headless/.local/bin/koustubh-chrome-host"]])
+        self.assertEqual(result["status"], "done")
+        # A control inside an app's own window is no launcher.
+        self.assertFalse(replay._on_panel(dict(step, window="Bookwell - Chromium",
+                                               target={"role": "button", "name": "Show", "path": 'site x > button "Show"'})))
+
     def test_an_unrelated_following_step_does_not_choose_a_launcher(self):
         step = dict(OPEN, n=1, expect=[])
         self.assertIsNone(replay._open_desktop_icon(step, dict(IN_CHROME, n=3)))

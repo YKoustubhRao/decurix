@@ -553,6 +553,8 @@ func main() {
 	// A callback is the practice desktop's only from its address on the practice network, never by the desktop_id in
 	// its body (C-25): the mock app shares that network.
 	practiceSvc.Broker.Caller = desktops.PracticeDesktopAt
+	// A memory note from the run's desktop is written into that desktop, so its next case reads it (lessons).
+	practiceSvc.Broker.Remember = desktop.PracticeHome{M: desktops}.PersistMemoryFile
 	server.LLM.OnChange(practiceSvc.BrainChanged)
 	// The eval matrix runner (E3, docs/evals.md): one suite x arms x repeats on the practice sandbox, one run at a
 	// time, sharing Simulate's slot. Its routes are the owner's, primary listener only. A run that was running when

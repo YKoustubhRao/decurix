@@ -53,9 +53,19 @@ def begin(skill, task, text, values=None, mode="model", **extra):
         # from the control plane, offered it (person_record.left_decision) - this file names, it backs nothing.
         "left": {str(name): str((left or {}).get("judgement") or "")
                  for name, left in (run.get("left_to_app") or {}).items()},
+        # The one part of the run the engine was handed ("part": a hole the harness's part driver left it), so the
+        # gui command knows the driver holds the run (skill_engine does not run on into later parts then).
+        "phase": str(extra.get("phase") or ""),
     })
 
     return _current
+
+
+def phase_now():
+    """The part of the task being worked on that the engine was handed ("" for the whole). Read from any process."""
+
+    kept = _kept()
+    return str((kept or {}).get("phase") or "")
 
 
 def get():

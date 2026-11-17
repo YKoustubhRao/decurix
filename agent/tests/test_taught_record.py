@@ -515,8 +515,8 @@ class ALeftField(unittest.TestCase):
         self.assertTrue([s for s in program["steps"] if s.get("param") == "due_date"])
 
     def test_a_save_the_application_refuses_for_want_of_it_goes_to_the_model(self):
-        """(e) The save check still stands: a required field refused at the save halts the replay, and the model takes
-        over from that step, as from any halt."""
+        """(e) The save check still stands: a required field refused at the save halts the replay, and the model is given
+        that step, as any halt is (a bounded repair, repairs.py) - told the field is the person's to give, never made up."""
 
         skill_task._prepare(self.run_for())
         self.reply(REPLY, reading={"choice": "leave", "instruction": ""})
@@ -527,9 +527,10 @@ class ALeftField(unittest.TestCase):
         self.assertEqual(len(self.replayed), 1)
         self.assertEqual(len(self.by_model), 1)
         self.assertEqual(self.by_model[0]["from_step"], 7)
-        self.assertTrue(run["taken_over"])
-        self.assertTrue(skill_task.final_gate._helped(run, {"mode": "replay"}))
+        from decurix_agent import repairs
+        self.assertEqual(self.by_model[0].get("phase"), repairs.REPAIR_PHASE)
         self.assertIn("never make a value up", skill_task._left_note(run))
+        self.assertIn("never make a value up", skill_task._procedure(run, from_step=7, phase=repairs.REPAIR_PHASE))
 
 
 class AFieldLeftOutOfTheReplay(unittest.TestCase):

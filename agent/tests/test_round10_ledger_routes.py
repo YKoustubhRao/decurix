@@ -195,6 +195,14 @@ class APickNamedInAnotherForm(unittest.TestCase):
         self.assertFalse(backed("GST 18%", "Qty 18, rate 250", ["GST 5%", "GST 12%", "GST 18%"]))  # a bare figure
         self.assertTrue(backed("General", "cost centre: general"))
 
+    def test_an_option_of_alternatives_is_picked_out_by_one_of_them(self):
+        # Found in the learning curves (2026-11-16): taught "Unregistered", a correct ledger's "Unregistered/Consumer" was
+        # refused because "Consumer" stood nowhere.
+        backed = records.option_backed
+        self.assertTrue(backed("Unregistered/Consumer", "a customer with no GSTIN is Unregistered"))
+        self.assertTrue(backed("Unregistered/Consumer", "Unregistered", ["Regular", "Composition", "Unregistered/Consumer"]))
+        self.assertFalse(backed("Unregistered/Consumer", "a Regular customer", ["Regular", "Unregistered/Consumer"]))
+
     def test_with_the_list_unread_every_word_must_be_given(self):
         self.assertFalse(records.option_backed("Project Cedar", "charge it to Cedar"))
         self.assertTrue(records.option_backed("Project Cedar", "charge it to Cedar Project"))
@@ -249,7 +257,7 @@ class B3_ATaughtSkillsRunAndAReplay(ts.TeachingBase):
         run = {"skill": {"name": "enter-bill", "steps": []}, "values": {}}
         fault = records.finding(ledger_checks.UNDECLARED, "record INV-0001 was saved with Cost centre=General")
         with mock.patch.object(skill_task, "_read_back", lambda run, text: ([], [])), \
-                mock.patch.object(skill_task, "_ledger_faults", lambda reply="": [fault]), \
+                mock.patch.object(skill_task, "_ledger_faults", lambda reply="", run=None: [fault]), \
                 mock.patch.object(skill_task, "_own_run"), mock.patch.object(skill_task, "_record_verdict"), \
                 mock.patch.object(skill_task, "write_final_reply",
                                   lambda text, kind="final", engine=None, **k: sent.append((text, kind, k))):
@@ -261,7 +269,7 @@ class B3_ATaughtSkillsRunAndAReplay(ts.TeachingBase):
     def test_a_verified_replay_is_held_back_too_but_not_for_its_picks(self):
         sent, asked_picks = [], []
 
-        def findings(task_id=None, reports=(), events=None, picks=True):
+        def findings(task_id=None, reports=(), events=None, picks=True, allowed_made=0):
             asked_picks.append(picks)
             return [records.finding(ledger_checks.SAVED_TWICE, "record INV-0001 was saved 2 times")]
         result = {"outcome": replay_task.replay.VERIFIED, "text": "Replayed: saved INV-0001."}
@@ -430,6 +438,14 @@ class TheDecisions(Ledger):
         self.assertEqual([f.kind for f in found], [ledger_checks.UNCOVERED])
         self.assertIn("a record was made that no declaration covers", found[0])
         self.assertNotIn("twice", found[0])
+
+    def test_a_record_the_taught_collecting_part_made_is_no_uncovered_record(self):
+        # Found in the learning curves (2026-11-16): a new customer's ledger, made as taught before the bills, made a
+        # correct month "Not done - a record no declaration covers".
+        self.saved({"Bill no.": "INV-0001"})
+        with mock.patch.object(core, "records_created", return_value=2),                 mock.patch.object(core, "saved_twice", return_value={}),                 mock.patch.object(records, "unbacked_pick_entries", return_value=[]):
+            self.assertIn(ledger_checks.UNCOVERED, [f.kind for f in ledger_checks.findings(TASK, events=[])])
+            self.assertNotIn(ledger_checks.UNCOVERED, [f.kind for f in ledger_checks.findings(TASK, events=[], allowed_made=1)])
 
     def test_a_payment_naming_the_saved_bill_is_pressed(self):
         self.saved({"Bill no.": "INV-0001"})

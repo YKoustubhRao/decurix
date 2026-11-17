@@ -82,6 +82,12 @@ def shape(step, result):
         when = "manual"
     elif result.get("resume_from") is not None and result.get("resume_from") == (step.get("n") or 0) + 1:
         when = "after"
+    elif step.get("point") and not _norm(target.get("name")):
+        # A click kept only as a spot on the screen (no control named) that the replay would not press - what was
+        # around it is not there now. Told to "make the step possible" and leave it, the model did, the replay pressed
+        # the same spot again and stopped again: like a click left to a person, the model makes that one click and the
+        # replay goes on after it (found in the learning curves, 2026-11-15: a month's first bill stopped there).
+        when = "manual"
     else:
         when = "before"
     return {"when": when, "kind": str(step.get("kind") or ""), "role": str(target.get("role") or ""),
@@ -153,9 +159,10 @@ def _item_of(name):
     return (base, int(n)) if sep and n.isdigit() else (str(name or ""), None)
 
 
-def _bind(literal, values, halted_param):
+def _bind(literal, values, halted_param, item=None):
     """How a typed or chosen literal is bound to the run: {"halted": True}, {"item": base}, {"name": name}, or None
-    when it equals none of the run's values."""
+    when it equals none of the run's values. `item`: the item the stopped step belongs to (its written-out copy's), for
+    a step with no parameter of its own - a click kept as a spot."""
 
     want = _low(literal)
     if not want:
@@ -163,11 +170,15 @@ def _bind(literal, values, halted_param):
     if halted_param and _low(values.get(halted_param)) == want:
         return {"halted": True}
     _, n = _item_of(halted_param)
+    n = n if n is not None else item
     named = [name for name, value in values.items() if isinstance(value, str) and _low(value) == want]
     for name in named:
         base, m = _item_of(name)
         if n is not None and m == n:
             return {"item": base}
+    # One item's own value is never bound as it stands: kept, it would be chosen again for every later item (found live,
+    # 2026-11-16: bill 1's party chosen on bill 2).
+    named = [name for name in named if _item_of(name)[1] is None]
     if named:
         return {"name": named[0]}
     return None
@@ -225,7 +236,7 @@ def compile_candidate(skill, halted, values, events, inputs="", since=0):
             if param is None or param.get("secret") or param.get("default") is None:
                 return None, "it typed something the recording withheld"
             literal = param["default"]
-            how = _bind(literal, values, halted_param)
+            how = _bind(literal, values, halted_param, item=halted.get("item"))
             if how is None and len(_norm(literal)) >= MIN_LITERAL and _low(literal) in inputs_low:
                 return None, (f"it typed {_norm(literal)[:40]!r}, which is in this run's documents but is none of its "
                               "values - kept, it would be typed into the next run's record as it stands")
@@ -258,7 +269,8 @@ def compile_candidate(skill, halted, values, events, inputs="", since=0):
             field = "name" if check["type"] == "element" else "value"
             for v in held:
                 bound = next((b for b, how in binds.items()
-                              if _low(_resolve_for_compile(how, values, halted_param)) == _low(v)), None)
+                              if _low(_resolve_for_compile(how, values, halted_param, halted.get("item"))) == _low(v)),
+                         None)
                 if bound is None:
                     break
                 check = dict(check, **{field: _replace_ci(str(check.get(field) or ""), v, "{" + bound + "}")})
@@ -282,11 +294,12 @@ def compile_candidate(skill, halted, values, events, inputs="", since=0):
     return candidate, ""
 
 
-def _resolve_for_compile(how, values, halted_param):
+def _resolve_for_compile(how, values, halted_param, item=None):
     if how.get("halted"):
         return values.get(halted_param) or ""
     if how.get("item"):
         _, n = _item_of(halted_param)
+        n = n if n is not None else item
         return values.get(f"{how['item']}__{n}") or ""
     return values.get(how.get("name")) or ""
 
@@ -396,7 +409,7 @@ def program_for(version, values, halted, skill_name=""):
         if how is None:
             params[p["name"]] = p.get("default") or ""
             continue
-        value = _resolve_for_compile(how, values, halted_param)
+        value = _resolve_for_compile(how, values, halted_param, halted.get("item"))
         if not _norm(value):
             return None, f"this run has no value for what {p['label']} was bound to"
         params[p["name"]] = str(value)

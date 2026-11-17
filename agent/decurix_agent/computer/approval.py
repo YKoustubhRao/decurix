@@ -456,6 +456,12 @@ def _plain(text, words):
     return bool(tokens) and all(t in words for t in tokens)
 
 
+def plain_yes(text):
+    """Whether a reply is a yes made of nothing else (\"Yes, go ahead.\"): no condition, change or other word."""
+
+    return _plain(str(text or "").strip(), _PLAIN_YES)
+
+
 def reading(reply, action="", plain=True):
     """
     What a reply to an approval decides about that one action, read once for every part of the worker that acts on

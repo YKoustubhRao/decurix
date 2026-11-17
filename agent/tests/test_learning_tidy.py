@@ -213,6 +213,17 @@ class GroupedPositions(unittest.TestCase):
         self.assertIsNone(learning._named_control("keep"))
         self.assertEqual(learning._named_control('the button called "Pay now"'), ("button", "Pay now"))
 
+    def test_a_field_is_named_as_a_person_says_it(self):
+        # Found live (books lesson, 2026-11-15): "the Party A/c name combobox" got "I did not catch that" - a click
+        # recorded as a point on a field could not be named, only kept as the spot.
+        self.assertEqual(learning._named_control("the Party A/c name combobox"), ("combobox", "Party A/c name"))
+        self.assertEqual(learning._named_control("the State drop-down"), ("combobox", "State"))
+        self.assertEqual(learning._named_control("the GSTIN/UIN textbox"), ("textbox", "GSTIN/UIN"))
+        self.assertEqual(learning._named_control("the Amount text box"), ("textbox", "Amount"))
+        # A loose word ("field", "box") says it is a field, not which kind: found by its name, any role.
+        self.assertEqual(learning._named_control("it's the Party A/c name field"), ("", "Party A/c name"))
+        self.assertIsNone(learning._named_control("field"))
+
 
 if __name__ == "__main__":
     unittest.main()

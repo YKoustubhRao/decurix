@@ -303,7 +303,7 @@ USAGE = """gui - see and use this desktop's screen
   gui skill NAME                 one skill's steps and what it needs
   gui skill NAME --look N        the screen the person did step N on (the spot
                                  they pressed ringed), as this command's picture
-  gui do NAME [--param NAME=VALUE]... [--from N]
+  gui do NAME [--param NAME=VALUE]... [--from N] [--to N]
                                  do a taught task, with no model
 
   gui guide [NAME]               how a well-known app is worked here (Excel, Calc,
@@ -692,6 +692,8 @@ def build_parser():
     doer.add_argument("--param", action="append", default=[])
     doer.add_argument("--source-file", action="append", default=[])
     doer.add_argument("--from", dest="start", type=int, default=1)
+    # --to N: one part of the task (skills.parts), never the whole workflow when only a part fits this request.
+    doer.add_argument("--to", dest="end", type=int, default=None)
 
     guide = sub.add_parser("guide", add_help=False)
     guide.add_argument("name", nargs="*")
@@ -1100,8 +1102,10 @@ def run(argv):
         if refused:
             raise ComputerError(refused)
         params = guidance.with_run_values(given, skill.get("params"), skill=skill["name"])
-        return _print_replay(skill_engine.run(skill, params=params, start=args.start, source_files=_params(args.source_file)),
-                             command=f"gui do {skill['name']}")
+        to = f" --to {args.end}" if args.end else ""
+        return _print_replay(skill_engine.run(skill, params=params, start=args.start, source_files=_params(args.source_file),
+                                              end=args.end),
+                             command=f"gui do {skill['name']}" + to)
 
     if command in ("click", "double-click", "right-click"):
         words = _strip_descriptor(list(args.target))

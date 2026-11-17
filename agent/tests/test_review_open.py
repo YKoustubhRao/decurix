@@ -36,7 +36,7 @@ class ReviewLeftOpen(unittest.TestCase):
                           "The report says filed; the screen shows saved."])
 
     def test_a_report_without_the_block_has_none(self):
-        self.assertEqual(verify.review_left_open("Saved bill HS-0318."), [])
+        self.assertEqual(verify.review_left_open("Saved bill AB-1234."), [])
         self.assertEqual(verify.review_left_open(None), [])
 
     def test_only_a_review_not_made_is_no_open_point(self):

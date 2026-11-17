@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/llmrec"
@@ -212,5 +213,22 @@ func TestTheExpertApprovesOnlyAListedControl(t *testing.T) {
 	// A case that lists nothing approves nothing.
 	if _, ok := (Case{}).ApprovalFor(saveBillGate); ok {
 		t.Fatal("a case with no approvals approved a save")
+	}
+}
+
+// Found in the learning curves (2026-11-16): a rate-limited expert answered nothing and the worker was told nothing.
+func TestTheExpertWaitsOutARateLimit(t *testing.T) {
+	saved := expertRetryWaits
+	expertRetryWaits = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	defer func() { expertRetryWaits = saved }()
+	limited := llm.ChatResult{Status: 429, Deployment: "big-1", Body: []byte(`{"error":"rate"}`)}
+	hub := &scriptedHub{replies: []llm.ChatResult{limited, limited, content(`{"asks":"which centre","fact":"centre"}`)}}
+	e := &Expert{Hub: hub, Deployment: "big-1"}
+	c, err := e.ChooseFor(context.Background(), "d", "t", "Which cost centre is this bill charged to?", expertCase.Facts)
+	if err != nil || c.Fact != "centre" || c.Problem != "" {
+		t.Fatalf("after two 429s: %+v %v", c, err)
+	}
+	if len(hub.bodies) != 3 {
+		t.Fatalf("asked %d times, want 3", len(hub.bodies))
 	}
 }

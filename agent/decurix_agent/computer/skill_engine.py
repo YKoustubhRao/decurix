@@ -143,7 +143,7 @@ def other_system(skill, request):
     return ""
 
 
-def run(skill, params=None, start=1, source_files=None):
+def run(skill, params=None, start=1, source_files=None, end=None):
     """
     Run a ready skill with no model and say how it ended, in replay.run's shape.
     A skill that is not ready, is missing a value the recording could not
@@ -151,7 +151,9 @@ def run(skill, params=None, start=1, source_files=None):
     checked) does nothing and says why. One run of a skill at a time per task
     (or outside any task): a second, started while the first runs, is refused -
     its check of what was already done would pass before the first noted it.
-    Found in review (2026-11-03, D-30).
+    Found in review (2026-11-03, D-30). `end`: the last step to run - one part of
+    the task (skills.parts); a part that ran to its end is noted as a stop there,
+    so no step of it is replayed again for this request.
     """
 
     REPLAYED_DIR.mkdir(parents=True, exist_ok=True)
@@ -165,13 +167,113 @@ def run(skill, params=None, start=1, source_files=None):
         if not filelock.try_exclusive(handle):
             return _refusal(skill, "another run of it is going on now - wait for that one to end, then look at "
                                    "what it did before running it again")
-        return _run(skill, params, start, source_files)
+        result = _run(skill, params, start, source_files, end)
+        from decurix_agent import guidance
+        if end is None or source_files or guidance.phase_now() == DRIVER_PHASE:
+            # (A hole the harness's part driver handed the engine: the driver runs the parts after it, never this.)
+            _note_parts(skill, start, end, result)
+            return result
+        return _chain(skill, params, start, end, result)
     finally:
         handle.close()
 
 
-def _run(skill, params=None, start=1, source_files=None):
+def _note_parts(skill, start, end, result):
+    """Note each part (skills.parts) this run covered from its first step: clean when the run went past its last step.
+    A run that started inside a part notes none of it (it was not that part's run). Never raises."""
+
+    try:
+        from decurix_agent.computer import part_record
+        found = skills.parts(skill)
+        if not found or result.get("outcome") == replay.HALTED_BEFORE_EFFECT and not result.get("done"):
+            return
+        last = end or max(p["last"] for p in found)
+        stopped = None if result.get("outcome") in replay.SUCCESS else (result.get("step") or start)
+        for part in found:
+            if part["first"] < start or part["first"] > last or (stopped is not None and part["first"] > stopped):
+                continue
+            part_record.note_use(skill, part, task_context.current(), stopped is None or part["last"] < stopped)
+    except Exception as exc:  # noqa: BLE001 - the record is the learning's, never the run's
+        log(f"skill_engine: the parts of {skill.get('name')} were not noted: {exc}")
+
+
+# Parts run on by code in one call, at most: the model sees the screen at least this often.
+MAX_CHAINED_PARTS = 6
+# The phase of a hole skill_task's part driver hands the engine (skill_task.PART_PHASE).
+DRIVER_PHASE = "part"
+
+
+def _chain(skill, params, start, end, result):
+    """
+    A part ran to its end: run on into the parts after it that are proven (part_record), one after another, while each
+    is the person's steps for every request (not by hand), has every value it needs, and the one before it ended clean
+    - with no model turn between. Stops at the first part that is new, varies, lacks a value, or stops; the result says
+    which parts ran and where the model takes over. Owner (2026-11-16): "repeated sub parts logic can be codified".
+    """
+
+    _note_parts(skill, start, end, result)
+    from decurix_agent.computer import part_record
+    found = skills.parts(skill)
+    ran = [f"steps {start}-{end}"]
+    while result.get("outcome") in replay.SUCCESS and len(ran) <= MAX_CHAINED_PARTS:
+        nxt = next((p for p in found if p["first"] == end + 1), None)
+        if nxt is None or nxt["by_hand"] or not part_record.is_proven(skill, nxt):
+            break
+        values = skills.initial_values(skill, params)
+        if any(not values.get(p["name"]) for p in skills.needed_from(skill, nxt["first"], nxt["last"])):
+            break
+        log(f"skill_engine: part {nxt['k']} (steps {nxt['first']}-{nxt['last']}) is proven - running on into it by code")
+        result = _run(skill, params, nxt["first"], None, nxt["last"])
+        _note_parts(skill, nxt["first"], nxt["last"], result)
+        ran.append(f"part {nxt['k']} (steps {nxt['first']}-{nxt['last']}, proven in earlier checked runs)")
+        start, end = nxt["first"], nxt["last"]
+    if len(ran) > 1:
+        after = next((p for p in found if p["first"] == end + 1), None)
+        where = (f" Next is part {after['k']} (steps {after['first']}-{after['last']})"
+                 + (" - by hand: " + after["by_hand"] if after and after["by_hand"] else
+                    " - not proven yet: run its command, or do it by hand where this request differs")
+                 if after else " That was the task's last part.")
+        result = dict(result, text="Ran by code, one after another: " + "; ".join(ran) + "." + where + "\n"
+                      + str(result.get("text") or ""))
+    return result
+
+
+def item_block(skill):
+    """(first, last): the skill's own step numbers of its per-item block (the loop that is on and repeats the most
+    steps), or None."""
+
+    loops = [lp for lp in skill.get("loops") or [] if lp.get("enabled") and lp.get("blocks") and lp["blocks"][0]]
+    loop = max(loops, key=lambda lp: (lp.get("length") or 0) * (lp.get("reps") or 0), default=None)
+    if loop is None:
+        return None
+    by_id = {s.get("id"): s.get("n") for s in skill.get("steps") or []}
+    numbers = [by_id.get(i) for i in loop["blocks"][0] if by_id.get(i)]
+    return (min(numbers), max(numbers)) if numbers else None
+
+
+def _one_item_block(skill, params, start, end):
+    """Whether steps start..end are inside the per-item block and every list value given is one item: one item's own
+    entry (a bill the person gave in their words), written out once at the block's own step numbers."""
+
+    block = item_block(skill)
+    if block is None or not (block[0] <= start <= end <= block[1]):
+        return False
+    given = params or {}
+    return all(len(skills.split_items(given[p["name"]])) <= 1 for p in skills.list_params(skill) if p["name"] in given)
+
+
+def _run(skill, params=None, start=1, source_files=None, end=None):
     """run(), under its lock."""
+
+    last = max((s.get("n") or 0 for s in skill.get("steps") or []), default=0)
+    if end is not None:
+        if skills.list_params(skill) and not _one_item_block(skill, params, start, end):
+            return _refusal(skill, "--to is for a task without a per-item part, or for one item's own block (--from "
+                                   "and --to inside it, each list value one item); otherwise run it whole")
+        if end < start:
+            return _refusal(skill, f"--to {end} is before --from {start}")
+        if end >= last:
+            end = None
 
     if skill.get("status") != skills.READY:
         return _refusal(skill, "it was never finished being taught - a person confirms a skill in the chat with /learn")
@@ -201,11 +303,15 @@ def _run(skill, params=None, start=1, source_files=None):
     if count:
         absent = {name for row in (skills.repeated_rows(skill) or {"rows": []})["rows"][count:] for name in row}
 
-    left = _left_to_app(skill, values, start, absent)
+    left = _left_to_app(skill, values, start, absent, end)
     if left:
         log(f"skill_engine: {skill['name']} leaves {', '.join(left)} as the application fills it in (the person's decision)")
 
-    missing = [p for p in skills.needed_from(skill, start) if not values.get(p["name"]) and p["name"] not in absent]
+    # (one item's own block, _one_item_block: only what its own steps type is needed - the steps before the block ran
+    # already, and nothing of them is replayed)
+    needed = ([p for p in skills.required(skill) if start <= (p.get("step") or 0) <= end]
+              if end is not None and skills.list_params(skill) else skills.needed_from(skill, start, end))
+    missing = [p for p in needed if not values.get(p["name"]) and p["name"] not in absent]
     if missing:
         # Given, and empty: this run has nothing to put there (a document that leaves a field out). That is not a
         # value to ask a person for - found live: "ask the human" for a number the document said did not exist.
@@ -266,12 +372,19 @@ def _run(skill, params=None, start=1, source_files=None):
                                    f"--from {at} (with the same --param values)")
 
     program, expanded = skills.expand(skill, values)
+    if end is not None:
+        program = dict(program, steps=[s for s in program["steps"] if (s.get("n") or 0) <= end])
     from decurix_agent import learned
     learned.note_use("skill", skill["name"])
     result = replay.run(program, params=expanded, start=start,
                         ladder=escalation.Ladder(ask_model=None, goal=skill.get("title") or "", total=len(program["steps"])))
 
-    if result["outcome"] in replay.SUCCESS:
+    if result["outcome"] in replay.SUCCESS and end is not None:
+        # One part ran to its end: the next part carries on after it, and none of its steps is replayed again.
+        _note_stopped(key, end + 1, "part")
+        result = dict(result, resume_from=end + 1,
+                      text=f"Steps {start}-{end} (one part of the task) ran. " + str(result.get("text") or ""))
+    elif result["outcome"] in replay.SUCCESS:
         # Ran to its end (seen or not): it is never run again for this request. Only a run whose every result was seen
         # counts as a good run of the skill.
         if result["outcome"] == replay.VERIFIED:
@@ -284,7 +397,7 @@ def _run(skill, params=None, start=1, source_files=None):
     return result
 
 
-def _left_to_app(skill, values, start, absent=()):
+def _left_to_app(skill, values, start, absent=(), end=None):
     """
     Each value this run lacks (not given, or given empty) that the person decided to leave as the application fills it
     in - in this task's run of the skill (the run skill_task handed over, guidance.run_left, its judgement read on the
@@ -298,7 +411,7 @@ def _left_to_app(skill, values, start, absent=()):
     handed = guidance.run_left(skill.get("name"))
     task_id = task_context.current()
     left = []
-    for param in skills.needed_from(skill, start):
+    for param in skills.needed_from(skill, start, end):
         name = param["name"]
         if values.get(name) or name in absent or not skills.may_leave(skill, param):
             continue

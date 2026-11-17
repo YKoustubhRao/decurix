@@ -177,6 +177,24 @@ class WhoDoesItOnceItIsTrusted(unittest.TestCase):
         self.assertIn("no proof the search", handed[0]["attempt_note"])
         self.assertIn("no proof the search", saved[0]["supervised"])
 
+    def test_a_replay_the_check_reads_as_rightly_stopped_goes_to_the_person_never_a_second_attempt(self):
+        # Measured (2026-11-17): a correct stop at a cancelled GSTIN went to a second attempt - 52 turns, 2.1M tokens -
+        # and marked the skill as needing the model for good.
+        skill = a_bill_skill()
+        run = {"skill": skill, "values": dict(DEMO), "ladder": None, "asked_ids": []}
+        handed, saved = [], []
+        verdict = {"verdict": skill_task.verify.CANNOT, "seen": "Pre-upload check: receiver GSTIN is cancelled",
+                   "why": "the worker rightly stopped"}
+        with patch.object(skill_task, "_engine_can_drive", return_value=True),                 patch.object(skill_task, "_judge", return_value=verdict),                 patch.object(skill_task.verify, "available", return_value=True),                 patch.object(skill_task, "_by_model", side_effect=lambda r, **kw: handed.append(dict(r))),                 patch.object(skill_task.skills, "load", return_value=dict(skill)),                 patch.object(skill_task.skills, "save", side_effect=lambda s, **_: saved.append(s)),                 patch.object(skill_task.progress, "emit"), patch.object(skill_task, "_pause") as paused:
+            skill_task._finish(run, {"outcome": "completed_unverified", "text": "Stopped: KCI-047's GSTIN is cancelled."})
+
+        self.assertEqual(handed, [])
+        self.assertFalse(any(s.get("supervised") for s in saved))
+        (args, kwargs), = paused.call_args_list
+        self.assertEqual(args[1], "confirm")
+        self.assertTrue(kwargs["blocked"])
+        self.assertIn("receiver GSTIN is cancelled", args[2])
+
     def test_a_task_the_person_said_to_check_before_starting_is_the_models_from_the_first_run(self):
         skill = a_bill_skill()
         skill["experience"] = {"verdicts": [{"ok": True, "checked_by": "model", "helped": False, "basis": ["model", "ledger"]}] * experience.TRUST_AFTER}

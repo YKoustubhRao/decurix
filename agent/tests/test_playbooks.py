@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -508,6 +509,78 @@ class ARunAPersonSteered(_Store):
         playbooks.note_job(job(ORDER_WAY, turns=20, resumed=True))
         self.assertIsNone(playbooks.keep("Open http://erp in the browser and sign in with the username Administrator"))
         self.assertEqual(playbooks.all_books(), [])
+
+    def test_an_answer_required_every_run_is_not_steering(self):
+        # Found in the learning curves (2026-11-15): every filing asks for its one-time code, so no correct filing was
+        # ever kept as the way. A secret given and nothing more steers nothing (engine_questions._required_every_run).
+        from decurix_agent import state, thebot_harness
+        with mock.patch.object(state, "last_query_kind", "query"), \
+                mock.patch.object(state, "last_query_text", "Please give me the one-time password sent to the phone."), \
+                mock.patch.object(state, "last_query_secret", True):
+            self.assertFalse(thebot_harness._steers("604217"))
+            self.assertTrue(thebot_harness._steers("604217 - and file it under the other client instead"))
+        with mock.patch.object(state, "last_query_kind", "query"), \
+                mock.patch.object(state, "last_query_text", "Which ledger should this bill go to?"), \
+                mock.patch.object(state, "last_query_secret", False):
+            self.assertTrue(thebot_harness._steers("Use Office Supplies."))
+        with mock.patch.object(state, "last_query_kind", "approval"):
+            self.assertFalse(thebot_harness._steers("Yes, go ahead."))
+        # Found in the learning curves (2026-11-16): the plan question, answered by the harness from what the person said
+        # on an earlier task, made every run "steered", so no correct run was ever kept. Only that one reply is excused.
+        with mock.patch.object(state, "last_query_kind", "query"), \
+                mock.patch.object(state, "last_query_text", "Before I change anything, this is how I will do it: ..."), \
+                mock.patch.object(state, "last_query_secret", False), mock.patch.object(state, "answer_from_earlier", True):
+            self.assertFalse(thebot_harness._steers("The person already answered this earlier: Yes, go ahead. Read the chat."))
+            self.assertTrue(thebot_harness._steers("Use the other ledger."))
+        # Found in the learning curves (2026-11-16): "the review found a discrepancy - go on?" answered "Yes, go ahead."
+        # kept a correct filing from being kept. A plain yes to the worker's own question leaves the way its own.
+        with mock.patch.object(state, "last_query_kind", "query"), \
+                mock.patch.object(state, "last_query_text", "The review found a discrepancy in table 4A. Shall I file?"), \
+                mock.patch.object(state, "last_query_secret", False):
+            self.assertFalse(thebot_harness._steers("Yes, go ahead."))
+            self.assertTrue(thebot_harness._steers("Yes, but fix table 4A first."))
+            self.assertTrue(thebot_harness._steers("No, do not file."))
+        # The one-time code asked for in the model's own words: the control plane withheld the reply as a secret.
+        with mock.patch.object(state, "last_query_kind", "query"), \
+                mock.patch.object(state, "last_query_text", "The portal sent an OTP to the signatory. Please send it."), \
+                mock.patch.object(state, "last_query_secret", False), \
+                mock.patch.object(state, "reply_secret", True, create=True):
+            self.assertFalse(thebot_harness._steers("604217"))
+            self.assertTrue(thebot_harness._steers("604217 - and file it under the other client instead"))
+
+    def test_a_plain_yes_to_an_either_or_question_is_asked_again_once(self):
+        # Found in the learning curves (2026-11-16): "Is there a missing bill, or should I proceed with these three?"
+        # answered "Yes, go ahead." - a bill the person had was never entered.
+        from decurix_agent import state, thebot_harness
+        asked = "The bill numbers are 1058, 1059 and 1061. Is there a missing bill, or should I proceed with these three?"
+        thebot_harness._reasked["question"] = None
+        settles = mock.patch.object(thebot_harness, "_yes_settles", side_effect=lambda q, r: "anything" in q)
+        settles.start()
+        self.addCleanup(settles.stop)
+        # The plan's own closing question: a yes means go ahead (the model's reading says so) - never asked again.
+        with mock.patch.object(state, "last_query_kind", "query"), mock.patch.object(
+                state, "last_query_text", "Is there anywhere else I should read, or anything I should do differently?"):
+            self.assertEqual(thebot_harness._yes_to_either_or("Yes, go ahead."), "")
+        with mock.patch.object(state, "last_query_kind", "query"), mock.patch.object(state, "last_query_text", asked):
+            self.assertIn("Is there a missing bill", thebot_harness._yes_to_either_or("Yes, go ahead."))
+            self.assertEqual(thebot_harness._yes_to_either_or("Yes, go ahead."), "")     # once per question
+            thebot_harness._reasked["question"] = None
+            self.assertEqual(thebot_harness._yes_to_either_or("Proceed with the three."), "")
+        with mock.patch.object(state, "last_query_kind", "query"), \
+                mock.patch.object(state, "last_query_text", "This is the plan. Reply yes to go ahead, or say what to change?"):
+            self.assertEqual(thebot_harness._yes_to_either_or("yes"), "")                # a question that offers yes
+        with mock.patch.object(state, "last_query_kind", "approval"), mock.patch.object(state, "last_query_text", asked):
+            self.assertEqual(thebot_harness._yes_to_either_or("yes"), "")
+        with mock.patch.object(state, "last_query_kind", "query"), \
+                mock.patch.object(state, "last_query_text", "Shall I file the return now?"):
+            self.assertEqual(thebot_harness._yes_to_either_or("yes"), "")                # a yes/no question
+        # A plan whose last line asks which: only that sentence is put again (a dot in an address ends no sentence).
+        plan = ("Before I change anything, this is how I will do it:\n- From: the Mailbox web app at http://mail.example.test "
+                "and the bills\n\nOne bill is at 12% tax. Should I open only Sales@18% vouchers or also Sales@12%?")
+        thebot_harness._reasked["question"] = None
+        with mock.patch.object(state, "last_query_kind", "query"), mock.patch.object(state, "last_query_text", plan):
+            self.assertEqual(thebot_harness._yes_to_either_or("Yes, go ahead."),
+                             "Should I open only Sales@18% vouchers or also Sales@12%?")
 
     def test_a_yes_to_an_approval_is_not_steering(self):
         usage.reset()

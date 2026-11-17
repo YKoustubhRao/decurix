@@ -10,7 +10,7 @@ from decurix_agent import values as field_values
 from decurix_agent import verdict as verdicts
 from decurix_agent import ledger_checks
 from decurix_agent import (attachments, binding, config, guidance, llm_client, messaging, playbooks, produced, progress,
-                           request_reading, source_guard, state, task_context, usage, verify)
+                           repairs, request_reading, source_guard, state, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
                                     mimic, records, replay, skills)
 from decurix_agent.computer import elements as el
@@ -536,7 +536,12 @@ def _prepare(run):
         progress.emit("Reading the values this task needs from its documents.")
         # A run the model does reads its own sources: only what the request and its documents hold is handed to it as
         # this run's values - a guess handed on reads as the person's (binding.fill).
-        found, evidence, rows = binding.fill(skill, missing, run["context"], strict=_learning_by_model(run))
+        # Driven part by part, a value chosen from the application's own list is read for the run too (binding.fill
+        # `relaxed`): the plan shows it, and the replay can only choose an entry the list has.
+        driven = _drives_parts(run)
+        relaxed = _chosen_for(run) if driven else ()
+        found, evidence, rows = binding.fill(skill, missing, run["context"], strict=_learning_by_model(run),
+                                             relaxed=relaxed, folders=driven)
         if rows:
             # How many entries this run's document has of the part the demonstration repeated.
             run["rows"] = rows
@@ -582,6 +587,9 @@ def _prepare(run):
     if missing and not problem and run.get("filled") and run["start"] == 1 and _learning_by_model(run):
         if _start_pause(run):
             return
+        if _drives_parts(run):
+            # (A part that types a value not in hand is the model's - a hole - and the parts around it still replay.)
+            return _drive_parts(run)
         progress.emit("The documents do not give " + ", ".join(p["name"] for p in missing)
                       + " - working from the documents themselves.")
         _by_model(run)
@@ -596,6 +604,8 @@ def _prepare(run):
         return
 
     if run["start"] == 1 and _learning_by_model(run):
+        if _drives_parts(run):
+            return _drive_parts(run)
         _by_model(run)
         return
 
@@ -914,8 +924,228 @@ def _document_files():
 def _gather(run):
     run["gathered"] = "started"
     run["files_before"] = _document_files()
+    if _gather_by_replay(run):
+        return
     progress.emit("This task is done once per document: collecting this request's documents first, the way you showed me.")
     _by_model(run, phase=GATHER_PHASE)
+
+
+# Whether the steps before the per-document block are replayed when the request's documents are in hand ("0": the
+# model collects, as before).
+GATHER_REPLAY = os.environ.get("DECURIX_GATHER_REPLAY", "1") != "0"
+
+
+def _sub_program(run, numbers, values=None):
+    """(program, values) of the skill's steps `numbers`, numbered again from 1, with the parameters they type."""
+
+    skill = run["skill"]
+    renumber = {n: i for i, n in enumerate(numbers, 1)}
+    steps = [dict(s, n=renumber[s["n"]]) for s in skill.get("steps") or [] if s.get("n") in renumber]
+    params = [dict(p, step=renumber[p["step"]]) for p in skill.get("params") or [] if p.get("step") in renumber]
+    if run.get("mimic"):
+        spans = mimic.step_spans(run["mimic"], skill, run["values"])
+        steps = [mimic.substitute_step(step, spans) for step in steps]
+    given = dict(_replay_values(run), **(values or {}))
+    return skills._program(skill, steps, params), {p["name"]: given[p["name"]] for p in params if p["name"] in given}
+
+
+def _gather_by_replay(run):
+    """
+    The steps before the per-document block replayed, when the request brings its documents (a folder or files it
+    names) and those steps need nothing the documents give: they only lead to the work (an inbox opened, the books of
+    the month shown), and what they end on is what the person looked at before the first document - given to the
+    reading of the documents as the collecting part's report. A block that makes a record from a document's values (a
+    new customer, skills.maker_blocks) is left out: it runs for a document whose record the run finds missing
+    (_make_missing). False - nothing replayed, or the replay stopped - leaves the collecting to the model, as before.
+
+    Measured in the learning curves (2026-11-17): the model collecting a month's bills was 72% of the tokens of the
+    bills workflow - 17 to 54 turns a case, one taught click a turn - and did not get cheaper with practice.
+    """
+
+    skill = run["skill"]
+    start = _loop_start(skill)
+    if not GATHER_REPLAY or start <= 1:
+        return False
+    documents = _documents_in_hand(run)
+    if not documents:
+        return False
+    known = _replay_values(run)
+    makers = skills.maker_blocks(skill, start, known)
+    inside = {n for m in makers for n in range(m["first"], m["last"] + 1)}
+    numbers = [s["n"] for s in skill.get("steps") or [] if 0 < (s.get("n") or 0) < start and s["n"] not in inside]
+    lead = [s for s in skill["steps"] if s.get("n") in set(numbers)]
+    if not lead or any(s.get("param") and not str(known.get(s["param"]) or "") for s in lead) \
+            or any(s.get("kind") == "manual" or s.get("by_hand") for s in lead):
+        return False
+    program, values = _sub_program(run, numbers)
+    progress.emit(f"This task is done once per document, and the request brings its {len(documents)} document(s): "
+                  f"replaying your first {len(lead)} steps to where the documents are entered"
+                  + (f" (the steps that make a new record - {len(makers)} block(s) - run only for a document whose "
+                     "record is missing)" if makers else "") + ".")
+    run["ladder"].total = len(program["steps"])
+    try:
+        result = replay.run(program, params=values, start=1, ladder=run["ladder"])
+    except Exception as exc:  # noqa: BLE001 - a shortcut: whatever breaks it, the model collects as before
+        # Found in the learning curves (2026-11-17): the display failed under the first step's window lookup, and the
+        # whole task ended in an error before anything was done.
+        log(f"Skill {skill['name']}: replaying the first steps failed ({exc}); the model collects")
+        result = {"outcome": replay.HALTED_BEFORE_EFFECT, "text": f"the replay failed: {exc}"}
+    if result.get("outcome") not in replay.SUCCESS:
+        log(f"Skill {skill['name']}: replaying the first steps stopped ({_halt_why(result.get('text'))}); the model "
+            "collects")
+        progress.emit(f"Replaying the first steps stopped ({_halt_why(result.get('text'))}); the model takes the "
+                      "collecting from here.")
+        return False
+    try:
+        screen = el.render(core.observe(), budget=6000)
+    except Exception as exc:  # noqa: BLE001 - nothing seen: the documents are read without it
+        log(f"Skill {skill['name']}: the screen after the first steps could not be read ({exc})")
+        screen = ""
+    log(f"Skill {skill['name']}: replayed the first steps ({len(lead)}) to where the documents are entered; "
+        f"{len(makers)} block(s) that make a record run only when one is missing")
+    run["makers"] = [dict(m, numbers=[n for n in range(m["first"], m["last"] + 1)]) for m in makers]
+    report = (f"The person's first {len(lead)} steps were replayed; the documents are the ones the request brings "
+              "(nothing to collect). What the application showed then - the records already there:\n" + screen)
+    _after_phase(run, GATHER_PHASE, report, "final")
+    return True
+
+
+# What a replay says when the entry a step picks is not in the application's list (core.act / gui select).
+MISSING_ENTRY_RE = re.compile(r"has no option '([^']+)'")
+
+
+def _make_missing(run, n, text):
+    """
+    A stop at step n of a per-document replay because the entry the step picks - a document's customer - is not in
+    the application's list, when the person's steps before the block make such a record from a document's values
+    (run["makers"], _gather_by_replay): that block is put before this document's block (_spliced) with the values its
+    document gives, and the replay goes on from it - the record made, then the document entered again from its first
+    step. True: handled.
+
+    Made only when the document gives every value the block types and names the very entry that was missing; a value
+    the block chooses from a list and the document does not give is chosen at its step (choices.py). Each document's
+    record is made at most once in a run. Otherwise False: the stop is repaired as any other.
+    """
+
+    found = MISSING_ENTRY_RE.search(str(text or ""))
+    loop = _item_loop(run["skill"])
+    if not found or not run.get("makers") or run.get("gathered") != "done" or not loop:
+        return False
+    wanted = " ".join(found.group(1).split())
+    first_id = loop["blocks"][0][0]
+    k = sum(1 for s in (run.get("expanded") or {}).get("steps") or []
+            if s.get("id") == first_id and (s.get("n") or 0) <= n and not s.get("made_for"))
+    entered = _entered_documents(run)
+    if not k or k > len(entered) or str(k) in (run.get("splices") or {}):
+        return False
+    document = entered[k - 1]
+    skill = run["skill"]
+    by_name = {p["name"]: p for p in skill.get("params") or []}
+    kind_of = {s.get("param"): s.get("kind") for s in skill.get("steps") or [] if s.get("param")}
+    known = _replay_values(run)
+    for maker in run["makers"]:
+        wanted_params = [by_name[name] for name in maker["params"] if name in by_name and not str(known.get(name) or "")]
+        chosen = {name for name in maker["params"] if kind_of.get(name) == "select"}
+        values, evidence = binding.fill_document(skill, wanted_params, run.get("context") or "", document,
+                                                 relaxed=chosen)
+        typed = [p["name"] for p in wanted_params if kind_of.get(p["name"]) != "select"]
+        if not any(" ".join(str(values.get(name) or "").split()).casefold() == wanted.casefold() for name in typed):
+            log(f"Skill {skill['name']}: steps {maker['first']}-{maker['last']} would not make '{wanted}' from "
+                f"{Path(document).name}; the stop is repaired as any other")
+            continue
+        # A field the document does not give is left as the application fills it in (an unregistered customer has no
+        # GSTIN): its steps are left out (skills.left_alone) - never typed with the demonstration's own value. A choice
+        # it does not give is made at its step (choices.py).
+        values.update({name: binding.EMPTY_ITEM for name in typed if not str(values.get(name) or "").strip()})
+        values.update({name: "" for name in chosen if name not in values and not str(known.get(name) or "")})
+        run.setdefault("splices", {})[str(k)] = {"numbers": maker["numbers"], "values": values, "document": document}
+        run.setdefault("evidence", {}).update({f"{name} ({Path(document).name})": ev for name, ev in evidence.items()})
+        # The record the block makes is declared as its own, from this document, before it is typed: its save is then
+        # this record's - never the document's own record (the bill) the form's name also stands in. Found in the
+        # learning curves (2026-11-17): the new ledger's save was taken for bill 1076's, and the bill's own save was
+        # then refused as "saved in this task already". Not declared (a value its document does not hold as written):
+        # counted as the person's steps' own record instead, as the collecting part's are (_gather_made).
+        if not _declare_made(skill, maker, values, wanted, document):
+            run["gather_made"] = int(run.get("gather_made") or 0) + 1
+        run["start_splice"], run["resuming"] = k, True
+        progress.emit(f"{Path(document).name}: '{wanted}' is not in the application yet. Making it the way you did when "
+                      f"you taught it (your steps {maker['first']}-{maker['last']}) with this document's values, then "
+                      "entering the document again from its first step.")
+        log(f"Skill {skill['name']}: item {k} needs '{wanted}'; steps {maker['first']}-{maker['last']} spliced before it")
+        _execute(run)
+        return True
+    return False
+
+
+def _declare_made(skill, maker, values, key, document):
+    """Declare the record a maker block makes (records.declare): keyed by the entry it makes, its typed fields under the
+    labels the block's steps type them into, from `document`. True when declared."""
+
+    from decurix_agent.computer import records
+    labels = {}
+    for step in skill.get("steps") or []:
+        name = step.get("param")
+        if (step.get("kind") == "type" and name in maker["params"] and (maker["first"] <= (step.get("n") or 0)
+                                                                          <= maker["last"])):
+            value = str(values.get(name) or "")
+            label = ((step.get("target") or {}).get("name") or "").strip()
+            if label and value and value != binding.EMPTY_ITEM:
+                labels.setdefault(label, value)
+    if not labels:
+        return False
+    try:
+        records.declare(key, document, labels)
+        log(f"Skill {skill['name']}: declared the new record {key!r} from {Path(document).name}: {', '.join(labels)}")
+        return True
+    except Exception as exc:  # noqa: BLE001 - not declared: counted as the steps' own record instead
+        log(f"Skill {skill['name']}: the new record {key!r} could not be declared ({exc})")
+        return False
+
+
+def _spliced(run, program, values):
+    """
+    (program, values) with each made record's steps (run["splices"], _make_missing) put before the block of the
+    document that needed it - their values named apart for that document - and every step numbered again.
+    """
+
+    loop = _item_loop(run["skill"])
+    if not loop:
+        return program, values
+    first_id = loop["blocks"][0][0]
+    steps, params, values, k = [], [], dict(values), 0
+    for step in program["steps"]:
+        if step.get("id") == first_id:
+            k += 1
+            splice = (run.get("splices") or {}).get(str(k))
+            if splice:
+                sub, sub_values = _sub_program(run, splice["numbers"], splice["values"])
+                blank = {name for name, v in sub_values.items() if v == binding.EMPTY_ITEM}
+                made_steps = skills.left_alone(sub["steps"], blank) if blank else sub["steps"]
+                tag = f"__made{k}"
+                names = sorted({p["name"] for p in sub["params"]}, key=len, reverse=True)
+                by_param = {}
+                for made in made_steps:
+                    text = json.dumps(made)
+                    for name in names:
+                        text = text.replace("{" + name + "}", "{" + name + tag + "}").replace(
+                            f'"param": "{name}"', f'"param": "{name}{tag}"')
+                    made = dict(json.loads(text), made_for=k, document=splice.get("document"))
+                    steps.append(made)
+                    if made.get("param"):
+                        by_param.setdefault(made["param"], made)
+                params.extend((dict(p, name=p["name"] + tag), by_param[p["name"] + tag]) for p in sub["params"]
+                              if p["name"] + tag in by_param)
+                values.update({name + tag: v for name, v in sub_values.items() if name not in blank})
+        steps.append(step)
+    renumber = {}
+    for i, step in enumerate(steps, 1):
+        renumber.setdefault(id(step), i)
+    old = {s.get("n"): s for s in program["steps"]}
+    out_params = [dict(p, step=renumber[id(old[p["step"]])]) if p.get("step") in old else dict(p)
+                  for p in program.get("params") or []]
+    out_params += [dict(p, step=renumber[id(at)]) for p, at in params]
+    steps = [dict(s, n=renumber[id(s)]) for s in steps]
+    return dict(program, steps=steps, params=out_params), values
 
 
 def _new_documents(run):
@@ -964,6 +1194,13 @@ def _after_phase(run, phase, reply, kind):
     report = " ".join((reply or "").split())[:1500]
     phase_note.write(task_context.current(), None)  # (the part that only collected is over)
 
+    if phase == repairs.REPAIR_PHASE:
+        # The model fixed (or could not fix) the one stopped step: the harness checks it by code and resumes the replay,
+        # repairs again within the budget, or hands the rest to the model as before.
+        return repairs.after_repair(run, reply, kind, execute=_execute, by_model=_by_model, takeover=_repair_takeover)
+    if phase == PART_PHASE:
+        # The model filled one hole of a run driven part by part: the driver goes on (_after_hole).
+        return _after_hole(run, reply, kind)
     if phase == REST_PHASE:
         # The model entered the documents the fill set aside; the replay's result and the model's report are judged as
         # one (the model's part is its own word until the check looks).
@@ -972,6 +1209,13 @@ def _after_phase(run, phase, reply, kind):
         done = ", ".join(Path(x["document"]).name for x in run.get("by_hand") or [])
         result["text"] = (result.get("text") or "") + f"\n\nEntered by hand, outside the replay ({done}): " + (
             report if kind == "final" else f"NOT finished - the model stopped with {kind}: {report}")
+        # A record made for what the person gave in their answer (a bill missing from the documents) is one their
+        # answer asked for: counted with the records the person's own steps make (gather_made), so the ledger check does
+        # not hold it as "a record no declaration covers" - its values are still judged against their words. Found in
+        # the learning curves (2026-11-17): the bill was entered right, and the run ended "Not done" for that alone.
+        said = [x for x in run.get("by_hand") or [] if x.get("said")]
+        if said and kind == "final":
+            run["gather_made"] = int(run.get("gather_made") or 0) + len(said)
         run["by_hand_done"], run["by_hand"] = run.get("by_hand") or [], []
         _finish(run, result)
         return True
@@ -1004,6 +1248,7 @@ def _after_phase(run, phase, reply, kind):
         return True
 
     run["gathered"], run["documents"], run["gather_report"] = "done", documents, report
+    run["gather_made"] = _gather_made(run)
     run["start"] = _loop_start(skill)
     wanted = [p for p in _needed(run) if not run["values"].get(p["name"])]
     _same_addresses(run)
@@ -1152,7 +1397,8 @@ def _series_question(run):
     holes = _series_holes(run)
     if not holes:
         return ""
-    said = "\n".join(x for x in (records._answers_text(), records._worker_words_text()) if x)
+    # (The person's own words only: a plan of the worker's naming the hole, said yes to, settles nothing about it.)
+    said = "\n".join(x for x in (records._answers_text(approved=False), records._worker_words_text()) if x)
     open_holes = [h for h in holes if h["count"] > len(h["missing"])
                   or not all(re.search(r"(?<![\w-])" + re.escape(m) + r"(?![\w-])", said) for m in h["missing"])]
     if not open_holes:
@@ -1252,9 +1498,8 @@ def _taught_fields(run):
             continue
         if not param.get("varies", True) and value == " ".join(str(param.get("default") or "").split()):
             continue  # the demonstration's own value, kept because it never changes: no fact of this run's document
-        target = (steps.get(param.get("step")) or {}).get("target") or {}
-        label = " ".join(str(target.get("name") or "").split())
-        if not label or target.get("role") not in FIELD_ROLES:
+        label = _value_field_label(skill, param, steps)
+        if not label:
             continue
         if label in fields and not records.same_value(fields[label], value):
             clash.add(label)
@@ -1329,6 +1574,30 @@ def _declarable(run, candidates, document):
     return fields
 
 
+def _value_field_label(skill, param, steps):
+    """The label of the field a parameter's value goes into: its own step's labelled control, or - for a value typed
+    into "the focused field" after a click kept as a spot - the named control a fix learned from a repair puts it in
+    (the skill's branches). Found in the learning curves (2026-11-16): a learned fix chose the party in its "Party A/c
+    name" list, the declaration had no such field, and a correct month was refused as "a value no declaration backs"."""
+
+    target = (steps.get(param.get("step")) or {}).get("target") or {}
+    label = " ".join(str(target.get("name") or "").split())
+    if label and target.get("role") in FIELD_ROLES:
+        return label
+    base = param["name"]
+    for found in (skill.get("branches") or {}).values():
+        for version in reversed(found.get("versions") or []):
+            binds = version.get("binds") or {}
+            for step in version.get("steps") or []:
+                how = binds.get(step.get("param")) or {}
+                learned = step.get("target") or {}
+                if base in (how.get("item"), how.get("name")) and learned.get("role") in FIELD_ROLES:
+                    name = " ".join(str(learned.get("name") or "").split())
+                    if name:
+                        return name
+    return ""
+
+
 def _item_fields(run, n):
     """
     {label: value} of document n's record in a run done once per document: each list's item n, by the label of the
@@ -1341,9 +1610,8 @@ def _item_fields(run, n):
     fields, clash = {}, set()
     for param in skills.list_params(skill):
         items = skills.split_items(run["values"].get(param["name"]))
-        target = (steps.get(param.get("step")) or {}).get("target") or {}
-        label = " ".join(str(target.get("name") or "").split())
-        if n >= len(items) or items[n] == binding.EMPTY_ITEM or not label or target.get("role") not in FIELD_ROLES:
+        label = _value_field_label(skill, param, steps)
+        if n >= len(items) or items[n] == binding.EMPTY_ITEM or not label:
             continue
         if label in fields and not records.same_value(fields[label], items[n]):
             clash.add(label)
@@ -1486,6 +1754,16 @@ def _execute(run):
     phase_note.write(task_context.current(), None)  # (the replay enters the documents: no gather part now)
     # (A field left as the application fills it in is entered by no step: _replay_values.)
     program, values = skills.expand(skill, _replay_values(run))
+    if run.get("parts") and run.get("part_end"):
+        # Driven part by part: this replay is the one part's, up to its last step (_next_part).
+        program = dict(program, steps=[s for s in program["steps"] if (s.get("n") or 0) <= run["part_end"]])
+    if run.get("splices"):
+        # A record a document needs that the application did not have, made by the person's own steps for it before
+        # that document's block (_make_missing); the run goes on from the first step of the first one just added.
+        program, values = _spliced(run, program, values)
+        at = run.pop("start_splice", None)
+        if at:
+            run["start"] = next((s["n"] for s in program["steps"] if s.get("made_for") == at), run["start"])
     run["expanded"] = program
 
     # A point click a person said to make anyway goes without its picture,
@@ -1508,7 +1786,8 @@ def _execute(run):
     # what it is: replay.run would call it a halt at a step that does not exist.
     # A gathered run begins at the per-item block: the step of the expanded program that carries the block's first
     # step id (a loop before it, written out zero times for want of items, moves the numbers).
-    if run.get("gathered") == "done" and (loop := _item_loop(skill)):
+    # A replay that resumes after a repair (repairs.py sets "resuming") goes on from where the repair left it.
+    if run.get("gathered") == "done" and not run.get("resuming") and (loop := _item_loop(skill)):
         first = next((s["n"] for s in program["steps"] if s.get("id") == loop["blocks"][0][0]), None)
         if first:
             run["start"] = first
@@ -1531,9 +1810,40 @@ def _execute(run):
     outcome = result["outcome"]
 
     log(f"Skill {skill['name']} ended {outcome}: {result['text']}")
+    # A repair or a learned fix given the step before this replay: whether the replay then got past it (repairs.py).
+    repairs.settle(run, result)
+    if run.get("parts") and outcome not in replay.SUCCESS:
+        run["part_clean"] = False
 
-    if outcome in replay.SUCCESS:
+    if outcome in replay.SUCCESS and run.get("parts"):
+        _part_done(run, result)
+    elif outcome in replay.SUCCESS:
         _finish(run, result)
+    elif outcome in (replay.HALTED, replay.HALTED_BEFORE_EFFECT, replay.NEEDS_HUMAN) and _engine_can_drive() \
+            and not run.get("taken_over") and run["stuck"] < MAX_STUCK_ASKS \
+            and (outcome != replay.NEEDS_HUMAN or (run.get("gathered") == "done"
+                                                   and _click_left_to_a_person(program["steps"], result.get("step")))) \
+            and repairs.on_halt(run, program, values, result, execute=_execute, by_model=_by_model,
+                                   make=_make_missing):
+        # A stopped replay is repaired one step at a time and goes on as a replay: a fix learned from an earlier
+        # repair is tried by code first, else the model is given that one stop with a small action budget
+        # (repairs.py). Measured (2026-11-15, learning curves): a stop at one click of a month's first bill handed the
+        # model the whole rest of the month, worked click by click until the case ran out of tokens.
+        pass
+    elif run.get("parts") and outcome == replay.NEEDS_HUMAN and result.get("step") \
+            and skills.asks_value(next((s for s in program["steps"] if s.get("n") == result["step"]), {})):
+        # A private value the person typed when they taught it (a one-time code): asked of them now, typed for them
+        # (_type_given) - never a hole for the model. Measured (2026-11-17): the code's part cost 6-19 model turns a case.
+        step = next(s for s in program["steps"] if s.get("n") == result["step"])
+        field = el._quote((step.get("target") or {}).get("name") or "the field", 80)
+        _pause(run, "human", f"Step {step['n']} is the value you typed yourself when you taught this - {field}. Reply "
+               "with it (it is kept secret and typed for you), or `done` once you have typed it on the screen.",
+               "query", secret=True, step=step["n"], resume_from=step["n"] + 1, asks_value=True)
+    elif run.get("parts") and outcome in (replay.HALTED, replay.HALTED_BEFORE_EFFECT, replay.NEEDS_HUMAN) \
+            and _engine_can_drive() and result.get("step"):
+        # Driven part by part, and the repairs could not get this part through: the rest of this part is a hole.
+        _settle(run, outcome)
+        _hole(run, _current_part(run), _halt_why(result.get("text")), from_step=result["step"])
     elif outcome == replay.NEEDS_HUMAN and run.get("gathered") == "done" and _engine_can_drive() \
             and _click_left_to_a_person(program["steps"], result.get("step")):
         # A click the recording kept only as a spot on the screen, made "a person does this" when it was taught, is
@@ -1573,6 +1883,446 @@ def _execute(run):
     else:
         run["stuck"] += 1
         _ask_stuck(run, result)
+
+
+def _repair_takeover(run, n, note):
+    """The repairs this run allows are spent (repairs.after_repair): the model takes the rest of the run, as a stopped
+    replay's rest was given before bounded repairs - the run counts as helped. Driven part by part: the rest of that
+    part only (_hole), and the driver goes on after it."""
+
+    if run.get("parts"):
+        return _hole(run, _current_part(run), note, from_step=n)
+    run["taken_over"] = True
+    _own_run(run, False)
+    _settle(run, replay.HALTED)
+    _by_model(run, from_step=n, note=note)
+
+
+# ============================================================
+# Driven part by part: code runs the taught task, the model fills its holes
+#
+# Owner (2026-11-16): "entire workflow may not be repeatable, but subparts of it are repeatable. remember these are
+# semi structured workflows. repeated sub parts logic can be codified." A skill still being learned was the model's
+# whole (_learning_by_model): every case of a 70-step filing cost ~90 model turns, the same on the tenth case as the
+# first, because one step that differs anywhere (another quarter, one receiver, a one-time code) kept the whole run
+# from ever repeating. Now code drives the run through the skill's parts (skills.parts): each part is replayed with this
+# run's values, a step that stops is repaired one at a time (repairs.py) and a fix learned there runs by code next
+# time; the model is handed only a HOLE - a part the person did by hand or that presses the demonstration's own case,
+# a part this run has no value for yet, a part the repairs could not get through - with a brief of that part alone,
+# and the driver goes on after it. Before the first part that commits something the person must approve (a filing),
+# the model reviews the work so far against the request's documents and does only what this case needs that the taught
+# steps did not (a row, a table the demonstration did not have). The person approves the plan once, every
+# consequential step still stops at the approval gate, and the final check is unchanged.
+# ============================================================
+
+PART_PHASE = "part"
+# The driver is on unless DECURIX_DRIVE_PARTS=0 (the whole run is then the model's while it learns, as before).
+DRIVE_PARTS = os.environ.get("DECURIX_DRIVE_PARTS", "1") != "0"
+# A check of the work before the part that commits (_case_extras, then a review hole): off unless
+# DECURIX_PART_REVIEW=1. Measured live (2026-11-16): as a hole it audited the whole return (~3M tokens of a 4.3M case);
+# as one model reading it either thought through its whole budget and answered nothing, or named as missing the
+# invoices the request gave only to check against. Without it each hole is still reviewed when the model says it is
+# done (soul), the approval before the commit carries what that review left open, and the final check looks at the
+# result - a case needing more than the taught steps do ends not done, never done unseen.
+#
+# "auto" (the default): only for a run that types values read from its documents (_types_document_values) - there a
+# document unlike the demonstration's (an invoice of another kind) can need an entry no taught step makes. Found live
+# (2026-11-16): a month with one B2B invoice, taught on B2C only, was filed without its B2B row. A run whose documents
+# are only checked against (the data comes in by an import) is not asked: there the check named them as "missing".
+#
+# Default "1" (always), after a live round showed "auto" too narrow: a chat-fed filing reads its invoices inside the
+# chat app, so no value comes from a document at the start, the check never ran, and a B2B invoice the demonstration
+# never had went unfiled twice. A false item costs a short targeted look ("if one is in fact already done, say so and
+# leave it") - correctness first.
+PART_REVIEW = os.environ.get("DECURIX_PART_REVIEW", "1")
+DOCUMENT_SUFFIXES_SEEN = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".png", ".jpg", ".jpeg", ".txt")
+
+
+def _types_document_values(run):
+    """Whether this run's values were read from its documents (the fill's evidence names a document)."""
+
+    return any(any(s in str(why).lower() for s in DOCUMENT_SUFFIXES_SEEN) for why in (run.get("evidence") or {}).values())
+
+
+def _part_review(run):
+    """Whether the check before the commit is made for this run (PART_REVIEW)."""
+
+    return PART_REVIEW == "1" or (PART_REVIEW == "auto" and _types_document_values(run))
+
+
+def _drives_parts(run):
+    """Whether this run of a skill still being learned is driven part by part (see above)."""
+
+    return (DRIVE_PARTS and run.get("start") == 1 and not run.get("one_off") and not run.get("gathered")
+            and not run.get("parts_off") and _engine_can_drive() and bool(skills.parts(run["skill"])))
+
+
+def _current_part(run):
+    found = skills.parts(run["skill"])
+    return found[min(run.get("part_k", 0), len(found) - 1)]
+
+
+def _parts_plan_text(run):
+    """The plan put to the person once, before a run driven part by part: the values, and which parts the taught steps
+    do and which the model does for this case."""
+
+    from decurix_agent.thebot_harness import PLAN_QUESTION
+
+    skill = run["skill"]
+    lines = [PLAN_QUESTION]
+    for param in skills.required(skill):
+        value = run["values"].get(param["name"])
+        if value:
+            lines.append(f"- {param.get('label') or param['name']}: {el._quote(str(value), 80)}")
+    for part in skills.parts(skill):
+        why = _part_hole(run, part)
+        lines.append(f"- Part {part['k']} (steps {part['first']}-{part['last']}"
+                     + (f", {part['where']}" if part["where"] else "") + "): "
+                     + (f"I do it myself for this case - {why}" if why else "your taught steps, replayed with these values"))
+    lines.append("Before anything is filed, sent or submitted, I check the work so far against this request's documents "
+                 "and do whatever this case needs that your steps did not show; each such step still asks your OK.")
+    lines.append("Reply `yes` to go ahead, or say what to change.")
+    return "\n".join(lines)
+
+
+def _drive_parts(run):
+    """Start a run driven part by part: the plan once, then the first part."""
+
+    if not run.get("plan_ok") and _stage(run) == experience.APPRENTICE:
+        text = _parts_plan_text(run)
+        _pause(run, "plan", text, plan_text=text)
+        return
+    run["parts"] = True
+    run.setdefault("part_k", 0)
+    run.setdefault("parts_done", [])
+    progress.emit(f"Doing \"{run['skill'].get('title') or run['skill']['name']}\" part by part: your taught steps where "
+                  "they fit, the model only where this case differs.")
+    _next_part(run)
+
+
+def _part_hole(run, part):
+    """Why the model does this part for this run ("" when the taught steps do): the person did it by hand or it presses
+    the demonstration's own case, or a value it types is not in hand yet."""
+
+    if part["by_hand"]:
+        return part["by_hand"]
+    # (A pick the replay can choose at its step from what the screen lists - computer/choices.py - is no hole.)
+    lacking = [p for p in skills.needed_from(run["skill"], part["first"], part["last"])
+               if not run["values"].get(p["name"]) and not _chosen_at_step(run["skill"], p)]
+    tried = run.setdefault("derive_tried", [])
+    fresh = [p for p in lacking if p["name"] not in tried]
+    if fresh:
+        # A value no document writes as it is but the documents give by arithmetic (a total across invoices): proposed
+        # by one model reading, kept only when code proves it (binding.derive) - else the part stays the model's.
+        tried.extend(p["name"] for p in fresh)
+        try:
+            from decurix_agent.computer import records
+            context = str(run.get("context") or "")
+            files = list(dict.fromkeys(binding.referenced_files(context) + binding.folder_files(context)
+                                       + [str(p) for p in records._request_folder_files()]))
+            got, evidence = binding.derive(run["skill"], fresh, context, files)
+        except Exception as exc:  # noqa: BLE001 - not derived: the part is the model's, as before
+            log(f"Skill {run['skill']['name']}: could not derive {', '.join(p['name'] for p in fresh)} ({exc})")
+            got, evidence = {}, {}
+        if got:
+            run["values"].update(got)
+            run.setdefault("evidence", {}).update({k: f"{v} ({binding.WORKED})" for k, v in evidence.items()})
+            log(f"Skill {run['skill']['name']}: derived from the documents, checked by code: "
+                + "; ".join(f"{k}={v} ({evidence[k][:160]})" for k, v in got.items()))
+            progress.emit("Worked out from the documents (each figure found in its document, the sum checked): "
+                          + "; ".join(f"{k} = {v}" for k, v in got.items()))
+        lacking = [p for p in lacking if not run["values"].get(p["name"])]
+    if lacking:
+        return ("it needs " + ", ".join(f"{p['name']} ({p.get('label') or p['name']})" for p in lacking)
+                + ", which this request and its documents do not give - read from the screen once the work gets there")
+    return ""
+
+
+EXTRAS_SYSTEM = (
+    "A task a person taught was just done for a new request: code replayed the person's steps with this request's "
+    "values, and a model did the parts that differed. Before the work is filed or sent, say what this request's "
+    "documents hold that the request needs and that nothing done covers - a row, a table, a record of a kind the "
+    "taught steps never enter (a document unlike the demonstration's). Data a step brings in whole (a file exported "
+    "and imported, a list copied) is covered by that step: it is not missing for want of typed values. Do NOT re-check "
+    "the values entered (they were checked on the screen as they were typed), and list nothing the request does not "
+    "ask for. Decide quickly. Answer JSON only: "
+    "{\"missing\": [\"one line each: what, and from which document\"]} - [] when nothing is missing."
+)
+# How much of each document, and of all of them, the check before a commit reads.
+EXTRAS_DOC_CHARS = 6000
+EXTRAS_TOTAL_CHARS = 40000
+
+
+def _case_extras(run):
+    """
+    What this case's documents need that nothing the run did covers - one model reading, before the part that commits
+    (_next_part): [] when nothing, the items when some, None when it could not be read (the full review then runs).
+    Found in the learning curves (2026-11-16): a review hole that audited the whole return - every invoice read again,
+    every table opened - cost ~3M tokens of a 4.3M case, after the taught steps had entered and checked every value.
+    """
+
+    try:
+        if not llm_client.available():
+            return None
+        from decurix_agent.computer import records
+        from decurix_agent.tools import office
+        files = list(dict.fromkeys(binding.referenced_files(str(run.get("context") or ""))
+                                   + [str(p) for p in records._request_folder_files()]))
+        docs, used = [], 0
+        for path in files:
+            if used >= EXTRAS_TOTAL_CHARS:
+                break
+            try:
+                text = office.read_document(path)["text"][:EXTRAS_DOC_CHARS]
+            except Exception:  # noqa: BLE001 - a document not read is said as such
+                text = "(could not be read)"
+            docs.append(f"--- {Path(path).name} ---\n{text}")
+            used += len(text)
+        content = (f"The request:\n{run.get('context') or ''}\n\nThe values entered:\n"
+                   + "\n".join(f"- {k} = {v}" for k, v in (run.get("values") or {}).items())
+                   + "\n\nWhat each part of the task does (the person's steps, done for this request):\n"
+                   + _parts_steps_text(run["skill"])
+                   + "\n\n" + _parts_text(run) + "\n\nThe request's documents:\n" + ("\n\n".join(docs) or "(none)"))
+        # JSON mode, and room to think: without it the model thought through 16,000 tokens and answered nothing; with it,
+        # it answered after ~7,300 (measured live, 2026-11-16).
+        said, found = "", None
+        # (an empty answer - the model thought through its whole budget - is asked once more with twice the room: the
+        # full review it otherwise falls back to costs 1-3M tokens; measured live 2026-11-17, an empty answer at 16,000)
+        for budget in (16000, 32000):
+            message, _ = llm_client.chat([{"role": "system", "content": EXTRAS_SYSTEM},
+                                          {"role": "user", "content": content}],
+                                         max_tokens=budget, response_format={"type": "json_object"},
+                                         purpose="py.parts.extras")
+            said = message.get("content") or ""
+            found = re.search(r"\{.*\}", said, re.DOTALL)
+            if found or said.strip():
+                break
+            log(f"Skill {run['skill']['name']}: the check before the commit answered nothing within {budget} tokens")
+        missing = json.loads(found.group(0)).get("missing") if found else None
+        if not isinstance(missing, list):
+            log(f"Skill {run['skill']['name']}: the check before the commit gave no list ({said[:200]!r}); a full review runs")
+            return None
+        missing = [" ".join(str(m).split())[:300] for m in missing if str(m).strip()][:12]
+        log(f"Skill {run['skill']['name']}: before the commit, the documents need beyond what was done: "
+            + ("; ".join(missing) if missing else "nothing"))
+        return missing
+    except Exception as exc:  # noqa: BLE001 - not read: the full review runs, as before
+        log(f"Skill {run['skill']['name']}: the check before the commit could not be made ({exc}); a full review runs")
+        return None
+
+
+def _parts_steps_text(skill):
+    """Each part of the skill with its steps' summaries: what the work does, so a check can see where data goes in (a
+    file imported carries every row of it; nothing is "missing" because no value was typed for it)."""
+
+    lines = []
+    steps = {s.get("n"): s for s in skill.get("steps") or []}
+    for part in skills.parts(skill):
+        done = "; ".join((steps.get(n) or {}).get("summary") or "" for n in range(part["first"], part["last"] + 1)
+                         if (steps.get(n) or {}).get("summary"))
+        lines.append(f"- Part {part['k']} (steps {part['first']}-{part['last']}): {done[:900]}")
+    return "\n".join(lines)
+
+
+def _chosen_at_step(skill, param):
+    """Whether a parameter's step picks an entry from a list (a select): the replay chooses it at the step."""
+
+    step = next((s for s in skill.get("steps") or [] if s.get("n") == param.get("step")), None) or {}
+    return step.get("kind") == "select"
+
+
+def _commits_to_the_person(skill, part):
+    """Whether a part holds a step that commits the person to something (a filing, a payment, a message sent)."""
+
+    return any(s.get("consequential") for s in skill.get("steps") or [] if part["first"] <= (s.get("n") or 0) <= part["last"])
+
+
+def _next_part(run, result=None):
+    """Run the part the driver is at: a pre-commit review first when it commits to the person, then the part - replayed
+    by code, or a hole for the model. Past the last part, the run is finished and checked (_finish)."""
+
+    skill = run["skill"]
+    found = skills.parts(skill)
+    if run.get("part_k", 0) >= len(found):
+        run["parts"] = False
+        text = _parts_text(run) + ("\n\n" + str(result.get("text") or "") if result else "")
+        # Verified only when every part was the taught steps' own, each result seen: a hole is the model's word until
+        # the final check looks (no unseen success).
+        outcome = (result or {}).get("outcome") if result and not run.get("had_hole") else replay.COMPLETED_UNVERIFIED
+        return _finish(run, dict(result or {}, text=text, outcome=outcome or replay.COMPLETED_UNVERIFIED))
+    part = found[run["part_k"]]
+    if _part_review(run) and _commits_to_the_person(skill, part) and not run.get("reviewed") and run.get("parts_done"):
+        missing = _case_extras(run)
+        if missing == []:
+            run["reviewed"] = True
+            run["parts_done"].append(f"Checked before part {part['k']} commits: this request's documents hold nothing "
+                                     "the entered values and the parts done do not cover")
+        else:
+            # (no reading came back - None: the full review runs, as before - correctness first - but within its
+            # action budget, REVIEW_ACTIONS: measured in the learning curves (2026-11-17), an unbounded one ran 197
+            # model turns, 7.8M tokens, and the case ran out of time unfiled)
+            run["review_items"] = missing or []
+            return _hole(run, part, "", review=True)
+    why = _part_hole(run, part)
+    if why:
+        return _hole(run, part, why)
+    run["start"], run["part_end"], run["part_clean"] = part["first"], part["last"], True
+    run.pop("resuming", None)
+    log(f"Skill {skill['name']}: part {part['k']} (steps {part['first']}-{part['last']}) - replaying the taught steps")
+    _execute(run)
+
+
+def _part_done(run, result):
+    """A part's replay reached its last step: note it (part_record) and go on to the next part."""
+
+    from decurix_agent.computer import part_record
+    part = _current_part(run)
+    part_record.note_use(run["skill"], part, task_context.current(), bool(run.get("part_clean")))
+    run["parts_done"].append(f"Part {part['k']} (steps {part['first']}-{part['last']}): replayed"
+                             + ("" if run.get("part_clean") else ", with a step repaired"))
+    run["part_k"] += 1
+    run.pop("part_end", None)
+    run["last_result"] = result
+    _next_part(run, result)
+
+
+def _hole(run, part, why, from_step=None, review=False):
+    """Hand the model one hole of a run driven part by part: this part (from `from_step` when a replay of it stopped
+    there), or - `review` - the check of the work so far before the part that commits."""
+
+    run["hole"] = {"k": part["k"], "first": part["first"], "last": part["last"], "why": why,
+                   "from": from_step or part["first"], "review": review}
+    run["had_hole"] = True
+    run.pop("part_end", None)
+    if review:
+        # Where the part that commits begins: a review looks around (the return's other tables) and the part's first
+        # step is on this page - _after_hole brings the screen back to it.
+        try:
+            run["hole"]["page"] = core.observe().get("page_url") or ""
+        except Exception:  # noqa: BLE001 - no page noted: nothing to come back to
+            pass
+        progress.emit(f"Before part {part['k']} ({part['does'] or 'the step that commits'}), the model checks the work "
+                      "so far against this request's documents and does only what this case needs that the taught "
+                      "steps did not.")
+    else:
+        progress.emit(f"Part {part['k']} (steps {run['hole']['from']}-{part['last']}) is the model's for this case: {why}")
+    log(f"Skill {run['skill']['name']}: part {part['k']} is a hole for the model"
+        + (" (review before it commits)" if review else f" from step {run['hole']['from']}: {why[:200]}"))
+    _by_model(run, phase=PART_PHASE)
+
+
+def _back_to(page):
+    """Open `page` again when the screen has moved off it (a review that looked at other pages): the next part's first
+    step is there. Found in the learning curves (2026-11-17): after the review the browser was on another table, the
+    filing part's declaration checkbox was "not on the screen", two repairs failed and the model took the filing."""
+
+    if not page:
+        return
+    try:
+        now = core.observe().get("page_url") or ""
+        if now.split("#", 1)[0] != page.split("#", 1)[0]:
+            from decurix_agent.computer import cdp
+            cdp.navigate(page)
+            log(f"Back on the page the next part begins on: {page[:120]}")
+    except Exception as exc:  # noqa: BLE001 - not reopened: the part's replay and its repairs find their way as before
+        log(f"Could not reopen the page the next part begins on ({exc})")
+
+
+def _after_hole(run, reply, kind):
+    """The model's report on a hole: on to the next part. A hole the model could not finish ends the driving - the rest
+    is the model's, as a run still being learned always was."""
+
+    hole = run.pop("hole", None) or {}
+    report = " ".join((reply or "").split())[:1500]
+    if kind != "final":
+        run["parts"], run["parts_off"] = False, True
+        progress.emit(f"Part {hole.get('k')} did not finish ({kind}), so the model does the rest of the task itself.")
+        return _by_model(run, from_step=hole.get("from"),
+                         note=f"The taught steps ran part by part up to here: {_parts_text(run)}\nOn part "
+                              f"{hole.get('k')} you stopped with {kind}: {report[:600]}")
+    if hole.get("review"):
+        run["reviewed"] = True
+        run["parts_done"].append(f"Checked before part {hole.get('k')}: {report}")
+        _back_to(hole.get("page"))
+    else:
+        if _says_it_could_not(run, report):
+            # The model found this case cannot go on (an error the application shows in the data - a receiver's GSTIN
+            # cancelled): the parts after it are not driven, each only to find the same. The run ends here and is
+            # checked; a stop the check agrees with goes to the person (_finish, CANNOT). Measured in the learning
+            # curves (2026-11-17): after such a stop the driver handed parts 5-8 to the model one by one.
+            run["parts_done"].append(f"Part {hole.get('k')} (steps {hole.get('from')}-{hole.get('last')}): the model "
+                                     f"found the work cannot go on - {report}")
+            log(f"Skill {run['skill']['name']}: part {hole.get('k')} cannot go on; the parts after it are not driven")
+            return _finish(run, {"outcome": replay.COMPLETED_UNVERIFIED, "text": _parts_text(run)})
+        run["parts_done"].append(f"Part {hole.get('k')} (steps {hole.get('from')}-{hole.get('last')}): done by the "
+                                 f"model - {report}")
+        run["part_k"] = run.get("part_k", 0) + 1
+    _next_part(run, run.get("last_result"))
+    return True
+
+
+def _parts_text(run):
+    """What the driver did, part by part, for the final check and the report."""
+
+    return "The task ran part by part:\n" + "\n".join(f"- {x}" for x in run.get("parts_done") or [])
+
+
+def _part_procedure(run):
+    """What the model is told for one hole of a run driven part by part: that part alone."""
+
+    skill, hole = run["skill"], run["hole"]
+    part = next((p for p in skills.parts(skill) if p["k"] == hole["k"]), None) or {}
+    lines = [f"This task is a task a person taught this desktop: skill `{skill['name']}` "
+             f"(\"{skill.get('title') or skill['name']}\"). Code runs it part by part with this run's values; you are "
+             "handed ONE part of it."]
+    if run.get("parts_done"):
+        lines.append(_parts_text(run))
+    criteria = _criteria(skill, run["values"], since=run.get("began"))
+    if criteria:
+        lines.append("What the person said, and what was agreed when they taught it (follow it):\n" + criteria)
+    if run["values"]:
+        lines.append("This run's values:\n" + "\n".join(f"- {k} = {json.dumps(v, ensure_ascii=False)}"
+                                                      for k, v in run["values"].items()))
+    understood = (skill.get("understanding") or {}).get("steps") or {}
+    if hole.get("review") and run.get("review_items"):
+        lines.append(f"Your part: before part {hole['k']} ({part.get('does') or 'the step that commits'}) commits the "
+                     "work, do ONLY these - a check of this request's documents found them needed and not done:\n"
+                     + "\n".join(f"- {item}" for item in run["review_items"])
+                     + f"\nIf one is in fact already done, say so and leave it. Change nothing else, and do NOT do part "
+                     f"{hole['k']} itself: the code does it after you. Report what you did for each.")
+    elif hole.get("review"):
+        lines.append(f"Your part: before part {hole['k']} ({part.get('does') or 'the step that commits'}), which "
+                     "commits the work, CHECK the work done so far against this request's documents and the person's "
+                     "rules. Find what this case needs that the taught steps did not do (a row, a table, a record the "
+                     "demonstration did not have) and any value entered wrong, and do only that - change nothing that "
+                     f"is right. Do NOT do part {hole['k']} itself: the code does it after you. Then report what you "
+                     "checked, what you found and what you changed.")
+    else:
+        steps = [s for s in skill.get("steps") or [] if hole["from"] <= (s.get("n") or 0) <= hole["last"]]
+        shown = []
+        for s in steps:
+            line = f"{s['n']}. {s.get('summary') or s['kind']}"
+            if s.get("intent"):
+                line += f" - the person said: {s['intent']}"
+            if understood.get(str(s["n"])):
+                line += f" - purpose: {understood[str(s['n'])]}"
+            shown.append(line)
+        lines.append(f"Your part: part {hole['k']}, steps {hole['from']}-{hole['last']}, done for THIS case. Why it is "
+                     f"yours: {hole.get('why') or 'the replay could not do it'}.\nThe person's steps for it:\n"
+                     + "\n".join(shown))
+        names = [p for p in part.get("params") or []]
+        if names and not part.get("by_hand"):
+            lines.append("If this part fits this case as taught, read the value(s) it lacks off the screen and have "
+                         "the steps done for you with one command:\n  "
+                         + _do_line(run, start=hole["from"], end=hole["last"], names=names)
+                         + "\nIt stops at the first step it cannot do; do that one step yourself and carry on with "
+                         "`--from N`. Otherwise do the steps yourself with gui observe / click / type / select.")
+        lines.append(f"Do ONLY this part: stop when step {hole['last']}'s work is done - the code runs the parts after "
+                     "it. Never redo a step an earlier part did. Report what you did and what the screen shows now.")
+    lines.append(f"`gui skill {skill['name']} --look N` shows the screen as it was when the person did step N.")
+    lines.append("- Before you say DONE, look at the screen and make sure it shows your part done. A false DONE is the "
+                 "worst outcome; if you cannot do it, say so.")
+    return "\n\n".join(lines)
 
 
 def _click_left_to_a_person(steps, n):
@@ -1826,7 +2576,12 @@ def _finish(run, result):
     """
 
     outcome = result.get("outcome", replay.COMPLETED_UNVERIFIED)
-    screen_checked = outcome == replay.VERIFIED and not result.get("skipped")
+    # A step the model repaired, a learned fix not yet proven, or a step left unchecked: the replay's own checks do not
+    # stand for the whole, so the final check always looks, and the repairs are said beside the result (repairs.py).
+    screen_checked = outcome == replay.VERIFIED and not result.get("skipped") and not repairs.unverified(run)
+    said = repairs.finished_text(run)
+    if said and said not in (result.get("text") or ""):
+        result = dict(result, text=(result.get("text") or "") + said)
 
     # The documents the fill set aside as not of the taught shape are the model's to enter now, by hand, before the
     # whole is judged ("The per-document part").
@@ -1866,6 +2621,22 @@ def _finish(run, result):
         # Every step's own result was on the screen; the model could not tell
         # more than that. The screen is the proof it always was.
         return _succeed(run, result, "screen")
+
+    if verdict["verdict"] == verify.CANNOT:
+        # The check reads the work as rightly stopped - something in this case's data keeps it from going on (a
+        # receiver's GSTIN cancelled, so nothing may be filed). That is the person's to decide, told as it is: `stop`
+        # ends it with the worker's report (final_gate, a blocked stop), anything else is what to do next. Never a
+        # second attempt at the whole task, and the skill is not marked as needing the model (_supervise): its steps
+        # were right. Measured in the learning curves (2026-11-17): a correct stop at a cancelled GSTIN went to a
+        # second attempt - 52 model turns, 2.1M tokens - that found the same.
+        seen = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
+        report = (result.get("text") or "").strip()
+        if len(report) > REPORT_CHARS:
+            report = report[:REPORT_CHARS].rstrip() + " ..."
+        _pause(run, "confirm", f"The work stopped, and the check agrees it cannot go on: {seen}\n\nWhat was reported:\n"
+               f"{report}\n\nTell me what to do about it and I will carry on with that, or reply `stop` to end it with "
+               "this report.", result=result, verdict=verdict, blocked=True)
+        return
 
     # A replay that ran to its end and still cannot be confirmed is the model's to finish before a person
     # is asked - and the sign that this task needs more than its recorded steps (_supervise). Not for a run that
@@ -2014,7 +2785,7 @@ def _spot(run):
     return int(hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8], 16) % every == 0
 
 
-def _basis(checked_by, code=False):
+def _basis(checked_by, code=False, run=None):
     """
     The kinds of check this run passed (experience.INDEPENDENT): `checked_by` itself (screen, model or person), "code"
     when the caller read the run's own files back clean, and "ledger" when every record the task declared was read back
@@ -2028,17 +2799,32 @@ def _basis(checked_by, code=False):
     # Every declared record read back - and no save outside them: the records this task's saves made equal the
     # declared records it saved (review round 9, B: a second save, outside the ledger, passed as "every declared
     # record read back").
-    if records.all_read_back(task_context.current()) and not _ledger_faults():
+    # (`run`: its collecting part's own records are not "a save outside the ledger" - _ledger_faults.)
+    if records.all_read_back(task_context.current()) and not _ledger_faults(run=run):
         basis.add("ledger")
     return sorted(basis)
 
 
-def _ledger_faults(reply=""):
+def _ledger_faults(reply="", run=None):
     """What code holds against the task's saved records, and each item of the report's JUDGEMENTS list the worker
     itself marked "| not backed": ledger_checks.findings, the one check every route that can say done makes (review
-    round 9, R9-B3). [] when none; a check that could not be made is a finding of its own kind. Never raises."""
+    round 9, R9-B3). [] when none; a check that could not be made is a finding of its own kind. Never raises.
+    `run`: a taught run whose collecting part made records with the saves its taught steps make there (_gather_made)."""
 
-    return ledger_checks.findings(task_context.current(), reply)
+    return ledger_checks.findings(task_context.current(), reply, allowed_made=(run or {}).get("gather_made", 0))
+
+
+def _gather_made(run):
+    """How many records the collecting part of a run made - only the saves its taught steps make there (the phase's
+    fence, core._phase_refusal) - counted when the part ends: they are the person's steps' records, not ones a
+    document's declaration covers. Found in the learning curves (2026-11-16): a new customer's ledger made as taught
+    before the bills made a correct month "Not done - a record no declaration covers"."""
+
+    try:
+        return core.records_created(core._task_events_now())
+    except Exception as exc:  # noqa: BLE001 - nothing counted: the check stays as strict as before
+        log(f"Could not count the records the collecting part made: {exc}")
+        return 0
 
 
 not_backed_items = ledger_checks.not_backed_items
@@ -2107,6 +2893,36 @@ def _success_verdict(checked_by, basis, seen=""):
                          evidence=evidence)
 
 
+_CODE_LIKE = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{8,}(?![A-Za-z0-9])")
+
+
+def _as_on_screen(seen, screen_text=None):
+    """
+    The check's words with each long code (a reference, an acknowledgement number) written as the screen's own text
+    writes it, when the screen holds one of the same length a character or two apart (a picture read "I" as "1").
+    Found in the learning curves (2026-11-17): the filing's ARN "AA290327883181I" was reported as "AA2903278831811",
+    and the report named a reference the portal never gave.
+    """
+
+    if screen_text is None:
+        try:
+            screen_text = el.render(core.observe(), budget=20000)
+        except Exception:  # noqa: BLE001 - no screen read: the words stand as the check wrote them
+            return seen
+    on_screen = set(_CODE_LIKE.findall(screen_text or ""))
+    if not on_screen:
+        return seen
+
+    def fix(m):
+        token = m.group(0)
+        if token in on_screen:
+            return token
+        near = [s for s in on_screen if len(s) == len(token) and sum(a != b for a, b in zip(s, token)) <= 2]
+        return near[0] if len(near) == 1 else token
+
+    return _CODE_LIKE.sub(fix, str(seen or ""))
+
+
 def _succeed(run, result, checked_by, seen="", helped=False):
     skill = run["skill"]
     text = result["text"]
@@ -2124,7 +2940,7 @@ def _succeed(run, result, checked_by, seen="", helped=False):
         problems, not_made = _read_back(run, text)
         # What code holds against the saved records (review round 9, R9-B3: a run's read-back passed over a value no
         # source gives, and done stood).
-        found_in_ledger = _ledger_faults(text)
+        found_in_ledger = _ledger_faults(text, run)
         file_problems, file_not_made = list(problems), list(not_made)
         if (found_in_ledger and not file_problems and not file_not_made and not run.get("picks_asked")
                 and all(getattr(f, "kind", "") == ledger_checks.UNBACKED_PICK for f in found_in_ledger)
@@ -2167,7 +2983,7 @@ def _succeed(run, result, checked_by, seen="", helped=False):
                               verdict=verdicts.from_outcome(decided, "skill_gate"))
             return
     _own_run(run, True)
-    basis = _basis(checked_by, code=read_clean)
+    basis = _basis(checked_by, code=read_clean, run=run)
     verdict = _success_verdict(checked_by, basis, seen)
     if run.get("spot_not_done"):
         # The judge's dissent stays on the outcome: the person's confirmation decides, and the record says both.
@@ -2179,7 +2995,7 @@ def _succeed(run, result, checked_by, seen="", helped=False):
         text = f"Done the way I did it before, with this request's values ({result.get('total') or len(skill['steps'])} steps)."
 
     if checked_by == "model" and seen:
-        text += f"\n\nChecked on the screen: {seen}"
+        text += f"\n\nChecked on the screen: {_as_on_screen(seen)}"
     elif checked_by == "person":
         text += "\n\nYou confirmed it was done."
 
@@ -2307,6 +3123,18 @@ def _run_reply(paused, reply, approval_outcome):
 
     if kind == "approval":
         stop = approval_outcome == "declined" or (approval_outcome is None and not approval.says_yes(reply))
+    elif kind == "human" and paused.get("asks_value") and not _plain_hand(reply):
+        # (Read in code only: the reply may be the secret itself, which no model is shown.)
+        # The value itself, given in the reply (a one-time code): typed into the step's field, and the replay goes on
+        # after the rest of that entry (skills.entry_end).
+        value = given_value(attachments.text(reply or ""))
+        if value is None:
+            # (a sentence with no one value in it, or with two: asked again for the value alone - never typed whole)
+            return _pause(run, "human", f"I could not tell which part of your reply is the value for step "
+                          f"{paused['step']}. Reply with the value alone (it is kept secret and typed for you), or "
+                          "`done` once you have typed it on the screen.", "query", secret=True, step=paused["step"],
+                          resume_from=paused.get("resume_from"), asks_value=True)
+        return _type_given(run, paused["step"], value)
     elif kind == "human":
         said = approval.read_choice(reply, "A step of the task was left for the person to do by hand on the screen; "
                                     "they were asked to reply when it is done.", HAND_CHOICES, plain=HAND_PLAIN)
@@ -2326,6 +3154,66 @@ def _run_reply(paused, reply, approval_outcome):
         return _stop(paused["step"], run)
 
     run["start"] = paused["resume_from"]
+    _execute(run)
+
+
+def _plain_hand(reply):
+    """"done" or "stop" when the reply is, whole, one of their plain phrases (HAND_PLAIN); "" otherwise. Code only."""
+
+    said = " ".join(re.sub(r"[^\w\s']", " ", str(reply or "").lower()).split())
+    for choice in ("done", "stop"):
+        if said in HAND_PLAIN[choice]:
+            return choice
+    return ""
+
+
+# A code-like token in a sentence: digits (a one-time code), or letters and digits mixed, 4 to 12 long.
+_CODE_TOKEN = re.compile(r"(?<![\w-])(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{4,12}(?![\w-])")
+
+
+def given_value(reply):
+    """
+    The value a reply to "type the value you typed when you taught this" gives, read in code only (it may be secret):
+    the reply whole when it is one word ("604217", "s3cr3t!"), else the one code-like token of a sentence ("The
+    client says the code is 604217." -> "604217"), else None - asked again, never typed whole. Found in the learning
+    curves (2026-11-17): the whole sentence was typed into the OTP field, the portal refused it, and the return went
+    unfiled.
+    """
+
+    text = " ".join(str(reply or "").split())
+    if not text:
+        return None
+    if " " not in text:
+        return text.strip("`'\"")
+    quoted = re.findall(r"[`'\"]([^`'\"\s]{1,64})[`'\"]", text)
+    if len(quoted) == 1:
+        return quoted[0]
+    codes = list(dict.fromkeys(_CODE_TOKEN.findall(text)))
+    return codes[0] if len(codes) == 1 else None
+
+
+def _type_given(run, n, value):
+    """
+    Type the value the person gave for step n (a private value they typed when they taught it) into that step's field,
+    through the replay - its checks, its secret handling - then carry on after the rest of that entry. A value that
+    could not be typed puts the step back to the person.
+    """
+
+    program, values = skills.expand(run["skill"], _replay_values(run))
+    step = next((s for s in program["steps"] if s.get("n") == n), None)
+    if step is None or not value:
+        return _pause(run, "human", "I could not type that value. Type it on the screen yourself, then reply `done`.",
+                      "query", step=n, resume_from=n + 1)
+    one = {k: v for k, v in step.items() if k not in ("by_hand", "reason", "look", "expect")}
+    one.update(n=1, kind="type", param="__given__", expect=[], append=False)
+    mini = dict(program, steps=[one], params=[{"name": "__given__", "label": "the value given", "default": None,
+                                                "secret": True, "reason": None, "step": 1}])
+    result = replay.run(mini, params={"__given__": value})
+    if result.get("outcome") not in replay.SUCCESS:
+        return _pause(run, "human", f"I could not type that value ({_halt_why(result.get('text'))}) Type it on the "
+                      "screen yourself, then reply `done`.", "query", step=n, resume_from=n + 1)
+    run["start"] = skills.entry_end(program["steps"], n) + 1
+    progress.emit(f"Typed the value you gave into step {n}'s field; carrying on from step {run['start']}.")
     _execute(run)
 
 
@@ -2660,17 +3548,63 @@ def _back_to_start(run):
     return f"gui open {page} && " if page else ""
 
 
-def _do_line(run, start=None):
-    """`gui do` for this run, with its values written out: what the engine runs to have the steps done for it."""
+def _do_line(run, start=None, end=None, names=None):
+    """`gui do` for this run, with its values written out: what the engine runs to have the steps done for it. With
+    `end`, one part only (skills.parts), and only that part's values (`names`); a value this run has not got yet - one
+    the work itself makes before that part, a file it exports - is written as what to put there."""
 
     import shlex
 
     parts = [f"gui do {run['skill']['name']}"]
-    parts += [f"--param {shlex.quote(name + '=' + str(value))}" for name, value in (run.get("values") or {}).items()
-              if value not in (None, "")]
+    values = run.get("values") or {}
+    labels = {p["name"]: p.get("label") or p["name"] for p in run["skill"].get("params") or []}
+    for name in (names if names is not None else list(values)):
+        value = values.get(name)
+        if value not in (None, ""):
+            parts.append(f"--param {shlex.quote(name + '=' + str(value))}")
+        elif names is not None:
+            parts.append(f"--param {name}=\"<{labels.get(name, name)}, as the screen shows it by then>\"")
     if start and start > 1:
         parts.append(f"--from {start}")
+    if end:
+        parts.append(f"--to {end}")
     return " ".join(parts)
+
+
+def _parts_how(run):
+    """
+    How the engine reuses the taught task part by part (skills.parts): each part with its own command, and which parts
+    are this request's to do by hand. "" when the skill has no parts (one part, or a per-item loop).
+    """
+
+    found = skills.parts(run["skill"])
+    if not found:
+        return ""
+    from decurix_agent.computer import part_record
+    lines = []
+    for part in found:
+        runs = 0 if part["by_hand"] else part_record.proven(run["skill"], part)
+        head = (f"     Part {part['k']} - steps {part['first']}-{part['last']}"
+                + (f" in {part['where']}" if part["where"] else "") + (f": {part['does']}" if part["does"] else "")
+                + (f" [proven: ran clean in {runs} checked run(s) - runs on by itself after the part before it]"
+                   if runs >= part_record.PROVEN_AFTER else ""))
+        if part["by_hand"]:
+            lines.append(f"{head}\n       by hand: {part['by_hand']} - do these steps for THIS request's own case "
+                         "with gui observe / click / type / select")
+        else:
+            lines.append(f"{head}\n       {_do_line(run, start=part['first'], end=part['last'], names=part['params'])}")
+    return ("  3. Do the person's steps with THIS run's values, PART BY PART. Each part below has its own command: it "
+            "replays only that part's steps with this run's values and stops at the first step it cannot do. Run a part's "
+            "command when the screen is where that part begins and the part fits this request as taught; do by hand a "
+            "part this request needs done differently (a case the demonstration did not have) or one marked by hand. "
+            "Never run the parts as one, never run a part again that already ran, and never skip a part this request "
+            "needs. A part marked proven runs on by itself when the part before it ends clean (the command's output "
+            "says which parts ran and where you take over) - do not run it again.\n" + "\n".join(lines) + "\n"
+            "     Working a part's steps by hand instead is fine - then type every value exactly, and check each entry "
+            "on the screen as you go.\n"
+            "  4. A part's command stops at the first step it cannot do, and says which step and why. Look (gui observe), "
+            "do THAT ONE step yourself with gui, and carry on with the same command and `--from N` for the next step "
+            "number - never from the part's start again: what it entered is there.")
 
 
 def _chosen_for(run):
@@ -2892,7 +3826,35 @@ def _taught(skill, since=None):
     return "\n".join(parts)
 
 
+def _repair_procedure(run):
+    """The guidance of a one-step repair (repairs.py): the steps around the stop, how to work it, and the person's
+    rules - not the whole procedure, which is not this phase's."""
+
+    skill = run["skill"]
+    current = repairs.job(run) or {}
+    lines = [f"You were taught \"{skill.get('title') or skill['name']}\" by a person; its steps are being replayed "
+             "for this request, and one of them stopped."]
+    around = repairs.steps_around(run, current.get("n") or 0)
+    if around:
+        lines.append("The person's steps around it:\n" + "\n".join(around))
+    step = current.get("step") or {}
+    value = (current.get("values") or {}).get(step.get("param")) if step.get("param") else None
+    if value:
+        lines.append(f"This run's value for that step: {json.dumps(value, ensure_ascii=False)}")
+    if _left_note(run):
+        lines.append(_left_note(run))  # (a field the person left: never filled in to get a save through)
+    taught = _taught(skill)
+    if taught:
+        lines.append("What the person taught about this work:\n" + str(taught)[:4000])
+    lines.append("\n".join(repairs.how_lines(run)))
+    return "\n\n".join(lines)
+
+
 def _procedure(run, from_step=None, note="", ran=False, phase=None):
+    if phase == repairs.REPAIR_PHASE:
+        return _repair_procedure(run)
+    if phase == PART_PHASE:
+        return _part_procedure(run)
     """What the engine is told when it does a taught task (guidance.py puts it into its model's context)."""
 
     skill = run["skill"]
@@ -3034,7 +3996,21 @@ def _procedure(run, from_step=None, note="", ran=False, phase=None):
                       "application, and the replay starts a new record and saves it. Find what the first attempt made "
                       "and correct it by hand with gui observe / click / type / select / key."]
     corrects = bool(run.get("attempt_note") and not run.get("attempt_blank"))
+    by_parts = "" if one_off or corrects or phase else _parts_how(run)
     how += [] if one_off or corrects else [
+        look,
+        "- Do it in this order. It is the order the person works in, and each part has its command:\n"
+        "  1. Read this request's document(s) (office read), if you have not.\n"
+        "  2. Do what the person's rules say to check BEFORE starting - a rule about what ALREADY EXISTS (below) "
+        "is one - with the application's own search or list. A check made after the record exists is too late.\n"
+        + by_parts + ("\n" + _made_how(run) + "\n" if by_parts else "") +
+        "  5. When it has run to the end it has checked nothing. Read the result off the screen (gui observe) "
+        "against this run's values and the person's rules, and report what you read. Do not press its last "
+        "step again to make sure: it ran. Found live - a save shortcut pressed a second time on a record just "
+        "saved is, in some applications, the next action on it (submit, post), and it opened \"Permanently "
+        "Submit?\". Change only a value you read as wrong.",
+        "- Work a step by hand with gui observe / click / type / select / key wherever the command cannot.",
+    ] if by_parts else [
         look,
         "- Do it in this order. It is the order the person works in, and each part has its command:\n"
         "  1. Read this request's document(s) (office read), if you have not.\n"
@@ -3087,6 +4063,13 @@ def _procedure(run, from_step=None, note="", ran=False, phase=None):
         "read cannot be confirmed afterwards, and the task comes back to you.",
         "- A value a field refuses (it does not keep what you typed) is not entered: type it again in the form "
         "the field shows it takes, and read the field back. Never pick a date from a calendar by guessing a day.",
+        # Found in the learning curves (2026-11-15): a filing made from the books read the month's invoices only to
+        # check them, named none of them in its report, and the review's coverage check left four points open on a
+        # correct return - so it went out "not checked" and nothing of it was kept for the next month.
+        "- End your report with one line per document file you read, its file name written whole, in one of two forms: "
+        "`FILE NAME - entered: what you entered from it` or `FILE NAME - not entered, because why` (for example: "
+        "`invoice 12.docx - not entered, because the return takes it from the books; its figures matched them`). A "
+        "file the report does not account for this way is sent back to you.",
     ]
     if phase == GATHER_PHASE:
         how = _gather_how(run)
@@ -3106,6 +4089,30 @@ def _gather_how(run):
     """How the engine works the gather phase of a per-document run: the steps before the per-item block, and no entry."""
 
     start = _loop_start(run["skill"])
+    in_hand = _documents_in_hand(run)
+    if in_hand:
+        # The request brings its documents (a folder or files it names): there is nothing to collect. Found in the
+        # learning curves (2026-11-15): told to "save every document" from the mail, the phase spent 100+ model turns
+        # opening, downloading and deleting attachments the request had already put in a folder, and a review sent it
+        # back four times for reading that folder.
+        commits = [c for c in _gather_commits(run["skill"]) if c]
+        return [
+            "How to work - THIS PHASE ONLY:",
+            "- This request's documents are already in hand - do not collect, download or save them again: "
+            + "; ".join(in_hand) + ". Read each one (office read PATH) to know what the application will need.",
+            f"- Do the person's steps BEFORE step {start} (the ones listed above) that prepare the application for these "
+            f"documents: open it, choose the right company or account and period, and leave it where step {start} "
+            "begins." + (" Where a document needs a record the person's steps before the block make and the "
+                         "application does not have yet (" + ", ".join(sorted(set(commits)))[:200] + "), make it the "
+                         "way they did - only those, only what these documents need." if commits else ""),
+            "- Do NOT enter the documents themselves: entering them is done after this phase, once per document, by the "
+            "person's steps. Nothing of the per-item steps is yours now.",
+            "- What the person answered - when they taught this and during earlier runs - is settled. Act on it and never "
+            "ask them the same thing again. Ask (HELP) only for what nothing in front of you can tell.",
+            "- Finish with DONE and a report: one line per document in the form `FULL PATH - read, not entered in this "
+            "phase`, what you prepared (the company, any record made), and anything about a document that looked wrong "
+            "(missing, a duplicate, not of this kind, cancelled).",
+        ]
     return [
         "How to work - THIS PHASE ONLY:",
         f"- Do the person's steps BEFORE step {start} (the ones listed above) for THIS request: open where its documents "
@@ -3122,6 +4129,34 @@ def _gather_how(run):
         "saved in the form `FULL PATH - saved, not entered in this phase`, and anything about a document that looked "
         "wrong (missing, a duplicate, not of this kind, cancelled). Entering is the next phase's: a report of this "
         "phase is complete when every document is saved.",
+    ]
+
+
+def _given_item_how(run):
+    """
+    The one command that has the person's own steps enter an item they gave in their words: the per-item block once,
+    with the values the engine reads from their words (skill_engine._one_item_block). The engine reads the values - a
+    judgement - and the steps are typed by the replay, checked as they go. Measured in the learning curves (2026-11-17):
+    a bill given in an answer took the model 75 turns (2.4M tokens) entered click by click, while the replay entered
+    every other bill of the month without it.
+    """
+
+    from decurix_agent.computer import skill_engine
+    block = skill_engine.item_block(run["skill"])
+    if block is None:
+        return []
+    import shlex
+    names = [p for p in skills.required(run["skill"]) if block[0] <= (p.get("step") or 0) <= block[1]]
+    if not names:
+        return []
+    args = " ".join(f"--param {shlex.quote(p['name'] + '=<' + (p.get('label') or p['name']) + '>')}" for p in names)
+    return [
+        f"- The quickest way to enter it (you may also enter it by hand): the person's own steps, once - gui do "
+        f"{run['skill']['name']} --from {block[0]} --to "
+        f"{block[1]} {args} - one value each, read from their words, as the documents' values were for the other "
+        f"items. A field their words do not give is passed as \"{skills.EMPTY_ITEM}\" (left as the application fills "
+        "it in) - never a guess, never the demonstration's value. Run it once; if it stops, finish that entry by hand "
+        "from where it stopped (never from the start, which would save it twice).",
     ]
 
 
@@ -3145,10 +4180,22 @@ def _rest_how(run):
         "the sources, then enter' has been kept - do not redo that review and do not report it as missed.",
         "- The taught steps have ALREADY been run once per document for these documents, which are entered: "
         + (", ".join(done) or "none") + ". Do NOT enter them again, and do not check them now.",
+    ] + ([
         "- Enter BY HAND, each once, the way the person's steps do (gui observe / click / type / select / key, one at a "
         "time, every value read from the document's own file with office read), ONLY these documents, which were set "
         "aside because they do not fit the taught shape: "
-        + "; ".join(f"{x['document']} ({x['why']})" for x in run.get("by_hand") or []) + ".",
+        + "; ".join(f"{x['document']} ({x['why']})" for x in run.get("by_hand") or [] if not x.get("said")) + ".",
+    ] if any(not x.get("said") for x in run.get("by_hand") or []) else []) + ([
+        # A record the person gave in an answer (a bill missing from the documents) is entered from their words: found
+        # in the learning curves (2026-11-16), it was given, and the whole task went back to the model, which ran out of
+        # questions without entering it.
+        "- Enter BY HAND, once, the way the person's steps do, what the person gave in their answer - every value from "
+        "their words, nothing guessed: " + "; ".join(x["why"] for x in run.get("by_hand") or [] if x.get("said")) + ".",
+        # Declared from their words (in this phase's request): found in the learning curves (2026-11-17), the bill they
+        # gave was entered right and the run still ended "Not done - a record was made that no declaration covers".
+        "- BEFORE you enter it, declare it from their words: gui record \"<its own number>\" --from screen --fields - "
+        "with each field label as the form shows it and the value as their words give it - then enter it.",
+    ] + _given_item_how(run) if any(x.get("said") for x in run.get("by_hand") or []) else []) + [
         "- Documents the person's rules leave out stay out: " + ("; ".join(
             f"{Path(x['document']).name} ({x['why']})" for x in run.get("left_out") or []) or "none") + ".",
         "- What the person answered - when they taught this and during earlier runs - is settled. Act on it and never "
@@ -3170,7 +4217,17 @@ def _engine_request(run, phase=None):
     # the engine as typed; its triage called that a question, its chat skill -
     # no tools - answered "DONE", and nothing had touched the screen. The
     # engine sends "Do the task you were taught" to its operator, always.
-    if run.get("one_off"):
+    if phase == repairs.REPAIR_PHASE:
+        request = repairs.request_text(run, skill.get("title") or skill["name"], skill["name"])
+    elif phase == PART_PHASE:
+        hole = run.get("hole") or {}
+        request = (f"Do ONE PART of the task you were taught, \"{skill.get('title') or skill['name']}\" (skill "
+                   f"{skill['name']}): " + (f"before part {hole.get('k')} commits the work, check the work so far "
+                                            "against this request's documents and do only what this case needs that "
+                                            "the taught steps did not" if hole.get("review") else
+                                            f"part {hole.get('k')}, steps {hole.get('from')}-{hole.get('last')}, for "
+                                            "this case; the code does the parts before and after it"))
+    elif run.get("one_off"):
         request = f"Do the task you were taught by a recording of \"{run['mimic']['text']}\""
     elif phase == GATHER_PHASE:
         request = (f"Do the FIRST PART of the task you were taught, \"{skill.get('title') or skill['name']}\" (skill "
@@ -3182,6 +4239,12 @@ def _engine_request(run, phase=None):
                    f"{skill['name']}): the first part (collecting this request's documents, entering nothing) is "
                    f"finished, and the taught steps have since entered {max(entered, 0)} of them, rightly; enter by hand "
                    "only the documents your instructions name as left for you, each once, and nothing else")
+        said = [" ".join(str(x.get("why") or "").split()) for x in run.get("by_hand") or [] if x.get("said")]
+        if said:
+            # The person's own words are this phase's source: in the request, where the work's values are traced from.
+            # Found in the learning curves (2026-11-17): with their answer only in the instructions, every value of the
+            # bill they gave ("19-05-2027", "14,600.00") was refused as never read, and they were asked again.
+            request += ". The person gave, in their answer: " + " | ".join(s[:800] for s in said)
     else:
         request = f"Do the task you were taught, \"{skill.get('title') or skill['name']}\" (skill {skill['name']})"
     if run["values"]:
@@ -3264,7 +4327,16 @@ def _by_model(run, from_step=None, note="", ran=False, phase=None):
     run["attempts"] += 1
     # The gather part only collects: the gui command refuses a save its taught steps do not make (core._phase_refusal).
     # Any other part clears it.
-    phase_note.write(task_context.current(), "gather" if phase == GATHER_PHASE else None, _gather_commits(skill))
+    if phase == repairs.REPAIR_PHASE:
+        phase_note.write(task_context.current(), phase, extra=repairs.phase_extra(run))
+    elif phase == PART_PHASE and (run.get("hole") or {}).get("review"):
+        # A review before a commit may enter what this case needs (a row the taught steps never enter), within a
+        # budget of actions (repairs.budget_refusal): past it the model reports what is done and what is not.
+        phase_note.write(task_context.current(), repairs.REVIEW_PHASE,
+                         extra={"events_from": repairs._events_now(), "budget": repairs.REVIEW_ACTIONS,
+                                "step": (run.get("hole") or {}).get("k")})
+    else:
+        phase_note.write(task_context.current(), "gather" if phase == GATHER_PHASE else None, _gather_commits(skill))
 
     guidance.begin(skill=skill["name"], task=request, text=_procedure(run, from_step, note, ran, phase=phase),
                    values=run["values"], mode="phase" if phase else ("takeover" if from_step else "model"), run=run,
@@ -3272,6 +4344,8 @@ def _by_model(run, from_step=None, note="", ran=False, phase=None):
 
     if phase == GATHER_PHASE:
         progress.emit("Collecting this request's documents with the model, the way you showed me; nothing is entered yet.")
+    elif phase in (repairs.REPAIR_PHASE, PART_PHASE):
+        pass  # (repairs._start_repair, or _hole, said which step or part and why)
     elif phase == REST_PHASE:
         progress.emit("The taught steps have run once per document; the model now enters by hand the documents that did "
                       "not fit them: " + ", ".join(Path(x["document"]).name for x in run.get("by_hand") or []))

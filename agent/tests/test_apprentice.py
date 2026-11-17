@@ -357,9 +357,13 @@ class WithTheModel(ts.TeachingBase):
 
         skill_task.perform(f"/skill {name}")
 
-        self.assertEqual(len(self.engine_calls), 1)
-        self.assertIn("stopped there", self.engine_calls[0][1])
-        self.assertIn("Carry on from step 1", self.engine_calls[0][1])
+        # The stop is first given to the model as that one step (bounded repairs, repairs.py), and only after two
+        # repairs that did not get past it is the model given the rest of the run.
+        self.assertEqual(len(self.engine_calls), 3)
+        for call in self.engine_calls[:2]:
+            self.assertIn("THIS REPAIR ONLY", call[1])
+        self.assertIn("stopped there", self.engine_calls[-1][1])
+        self.assertIn("Carry on from step 1", self.engine_calls[-1][1])
         last = skills.load(name)["experience"]["verdicts"][-1]
         self.assertEqual((last["ok"], last["helped"]), (True, True))
         self.assertEqual(experience.stage(skills.load(name)), experience.APPRENTICE)

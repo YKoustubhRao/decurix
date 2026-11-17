@@ -6,6 +6,7 @@ budget is spent does the model get the rest of the run, as before.
 """
 
 import copy
+import json
 import os
 from pathlib import Path
 
@@ -39,12 +40,23 @@ from decurix_agent.logging_utils import log
 # ============================================================
 
 REPAIR_PHASE = "repair"
+# A review before a commit (skill_task's parts driver) and its budget of actions: it looks, and enters only what this
+# case needs that the taught steps did not.
+REVIEW_PHASE = "review"
+try:
+    REVIEW_ACTIONS = max(10, int(os.environ.get("DECURIX_REVIEW_ACTIONS", "40")))
+except ValueError:
+    REVIEW_ACTIONS = 40
 MAX_CONSECUTIVE = 2
 MAX_TOTAL = 5
+# A repair's actions: one stopped step made possible takes a few (look, pick, check). Measured in the learning curves
+# (2026-11-17): at 30 the model filled the whole form around the step - 29 actions, too many to keep as a fix, so every
+# later item stopped and was repaired again; a missing record is made by the run's own taught steps (skill_task.
+# _make_missing), not a repair.
 try:
-    REPAIR_ACTIONS = max(3, int(os.environ.get("DECURIX_REPAIR_ACTIONS", "30")))
+    REPAIR_ACTIONS = max(3, int(os.environ.get("DECURIX_REPAIR_ACTIONS", "12")))
 except ValueError:
-    REPAIR_ACTIONS = 30
+    REPAIR_ACTIONS = 12
 # The person's steps shown around the stopped one in a repair's guidance (the whole procedure is not this phase's).
 CONTEXT_STEPS = 3
 REPORT_CHARS = 600
@@ -185,15 +197,20 @@ def _conclude(run, pending, passed):
 # A stop
 # ------------------------------------------------------------
 
-def on_halt(run, program, values, result, *, execute, by_model, observe=None):
+def on_halt(run, program, values, result, *, execute, by_model, observe=None, make=None):
     """
     Handle a replay stop one step at a time. True: handled (a branch ran and the replay goes on, or the model was given
     the stop as a repair); False: not repairable or the budget is spent - the caller hands the rest to the model.
+
+    `make(run, n, text)`: True when the stop is an entry missing from the application's list that the run's own taught
+    steps make (skill_task._make_missing) - it is made by replay, and the replay goes on; no repair is spent.
     """
 
     steps = program.get("steps") or []
     n = result.get("step")
     step = steps[n - 1] if n and n <= len(steps) else None
+    if make is not None and n and make(run, n, result.get("text")):
+        return True
     if not repairable(step, result):
         return False
     book = state(run)
@@ -203,7 +220,7 @@ def on_halt(run, program, values, result, *, execute, by_model, observe=None):
 
     version = None if run.get("one_off") else branches.best(run["skill"], k)
     if version is not None and not book.get("pending"):
-        ran = _try_branch(run, step, values, found, k, version, execute, observe)
+        ran = _try_branch(run, step, values, found, k, version, execute, observe, make=make)
         if ran is True:
             return True
         held_note = ran or ""
@@ -217,7 +234,7 @@ def on_halt(run, program, values, result, *, execute, by_model, observe=None):
     return True
 
 
-def _try_branch(run, step, values, found, k, version, execute, observe):
+def _try_branch(run, step, values, found, k, version, execute, observe, make=None):
     """Run a kept branch for this stop. True when it ran and the replay went on; else a note for the model (why the
     learned fix did not settle it), "" for none."""
 
@@ -233,6 +250,10 @@ def _try_branch(run, step, values, found, k, version, execute, observe):
         _update_skill(run, lambda s: branches.note_held(s, k, version["v"]))
         return ("The fix learned from an earlier repair stopped at a press the approval gate puts to the person: make "
                 "that press yourself, and the gate will ask them. ")
+    if outcome["outcome"] not in replay.SUCCESS and make is not None and make(run, n, outcome.get("text")):
+        # (the fix stopped because the entry it picks is not there yet - not the fix's fault: it is made, and the
+        # item is entered again)
+        return True
     if outcome["outcome"] not in replay.SUCCESS:
         _conclude(run, {"what": "branch", "key": k, "v": version["v"], "n": n}, False)
         return (f"A fix learned from an earlier repair was tried and stopped ({_norm(outcome.get('text'))[:200]}); look "
@@ -248,7 +269,14 @@ def _try_branch(run, step, values, found, k, version, execute, observe):
         run["start"], run["resuming"] = n + 1, True
         execute(run)
         return True
-    must = n if found["when"] == "before" else n + 1
+    if found["when"] == "manual":
+        # (a fix for a click kept as a spot did the entry that click began - what was typed into what it focused: the
+        # replay goes on after it, as after a repair of it, and never types that value again)
+        span = _focus_span(run, n) if step.get("point") else []
+        must = (span or [n])[-1] + 1
+        run.setdefault("unchecked_steps", []).extend([n] + span)
+    else:
+        must = n if found["when"] == "before" else n + 1
     nxt = (run.get("expanded") or {}).get("steps") or []
     must_step = nxt[must - 1] if must <= len(nxt) else step
     state(run)["pending"] = {"what": "branch", "key": k, "v": version["v"], "n": n, "must_pass": must,
@@ -263,9 +291,39 @@ def _observe():
     return core.observe()
 
 
+# What follows a click kept only as a spot and acts on what that click focused: typing into "the focused field", and an
+# Enter or Tab that confirms it. They are one entry with the click (choose a party: click the list, type, Enter).
+_FOCUS_KEYS = {"return", "enter", "kp_enter", "tab"}
+MAX_FOCUS_SPAN = 3
+
+
+def _focus_span(run, n):
+    """The numbers of the steps right after step n that act on what step n's click focused (none for other steps)."""
+
+    steps = (run.get("expanded") or {}).get("steps") or []
+    span = []
+    for k in range(n + 1, min(n + MAX_FOCUS_SPAN, len(steps)) + 1):
+        s = steps[k - 1]
+        keys = {"".join(str(x).lower().split()) for x in s.get("keys") or []}
+        if s.get("kind") == "type" and not _norm((s.get("target") or {}).get("name")):
+            span.append(k)
+        elif s.get("kind") == "key" and keys and keys <= _FOCUS_KEYS and span:
+            span.append(k)
+        else:
+            break
+    return span
+
+
 def _start_repair(run, step, values, result, found, by_model, extra="", observe=None):
     book = state(run)
     n = step["n"]
+    # A click kept only as a spot, and what was typed into what it focused, are repaired as one entry: the replay never
+    # types that value again into whatever has the keyboard after the repair (found live, 2026-11-16: the party went
+    # into the date field). Only a spot click's: a named control's step is found by its name.
+    span = _focus_span(run, n) if found["when"] == "manual" and step.get("point") else []
+    steps = (run.get("expanded") or {}).get("steps") or []
+    typed = {steps[k - 1]["param"]: values.get(steps[k - 1]["param"]) for k in span
+             if steps[k - 1].get("param") and values.get(steps[k - 1]["param"])}
     # Whether the step's own recorded result was missing when it stopped: if the model then does the step itself, its
     # result appears, and the replay goes on after it rather than pressing it twice (after_repair).
     missing_at_halt = False
@@ -280,7 +338,8 @@ def _start_repair(run, step, values, result, found, by_model, extra="", observe=
     book["job"] = {"n": n, "step": copy.deepcopy(step), "shape": found, "values": dict(values),
                    "result": {k: result.get(k) for k in ("outcome", "step", "resume_from", "reason", "evidence", "text",
                                                           "options")},
-                   "events_from": _events_now(), "extra": extra, "missing_at_halt": missing_at_halt}
+                   "events_from": _events_now(), "extra": extra, "missing_at_halt": missing_at_halt,
+                   "span": span, "span_values": typed}
     reason = _norm(result.get("reason") or result.get("text"))[:400]
     progress.emit(f"The replay stopped at step {n} ({_norm(step.get('summary'))[:120]}): {reason}. The model is given "
                   f"this one step to fix (at most {REPAIR_ACTIONS} actions); the taught steps carry on after it.")
@@ -304,7 +363,7 @@ def budget_refusal(task_id=None):
     from decurix_agent.computer import phase, recording
     noted = phase.read()
     task_id = task_id if task_id is not None else _task()
-    if noted.get("phase") != REPAIR_PHASE or noted.get("task") != task_id:
+    if noted.get("phase") not in (REPAIR_PHASE, REVIEW_PHASE) or noted.get("task") != task_id:
         return None
     try:
         count = int((recording.meta(recording.session_for_task(task_id)) or {}).get("event_count") or 0)
@@ -314,6 +373,9 @@ def budget_refusal(task_id=None):
     budget = int(noted.get("budget") or REPAIR_ACTIONS)
     if used < budget:
         return None
+    if noted.get("phase") == REVIEW_PHASE:
+        return (f"this check before the commit has used its {budget} actions - report now what is entered and what is "
+                "still missing (HELP for anything not done); nothing more is yours to do.")
     return (f"this repair of step {noted.get('step')} has used its {budget} actions - report now: DONE if the step can "
             "go on, HELP with what stops it. The taught steps carry on after you; nothing more is yours to do.")
 
@@ -374,9 +436,10 @@ def after_repair(run, reply, kind, *, execute, by_model, takeover, observe=None)
         return True
 
     if found["when"] == "manual":
-        must = n + 1
-        run["start"] = n + 1
-        run.setdefault("unchecked_steps", []).append(n)
+        # (the click, and what was typed into what it focused, were the repair's: the replay goes on after them)
+        must = (job.get("span") or [n])[-1] + 1
+        run["start"] = must
+        run.setdefault("unchecked_steps", []).extend([n] + list(job.get("span") or []))
     else:
         must = n
         run["start"] = n
@@ -431,6 +494,14 @@ def how_lines(run):
         lines.append(f"- Step {n} WAS done, and what it should leave on the screen never appeared. Look (gui observe). "
                      "If the screen shows the step did its job, change nothing and report DONE. Otherwise bring about "
                      "only what that step was for. Never press a save, submit or send a second time.")
+    elif found.get("when") == "manual" and current.get("span"):
+        span, typed = current["span"], current.get("span_values") or {}
+        said = ", ".join(json.dumps(v, ensure_ascii=False) for v in typed.values()) or "this run's value"
+        lines.append(f"- Step {n} is a click the recording kept only as a spot on the screen, and steps "
+                     f"{', '.join(str(k) for k in span)} entered {said} into what that click focused (one entry: a list "
+                     f"chosen, or a field filled). Look (gui observe), find the control that is meant and put {said} "
+                     f"in it - choose it from its list or type it - that one entry, nothing else; then report DONE. The "
+                     f"replay goes on after step {span[-1]}, so nothing of it is typed again.")
     elif found.get("when") == "manual":
         lines.append(f"- Step {n} is a click the recording kept only as a spot on the screen. Look (gui observe), find "
                      "the control that is meant and click it - that one action - then report DONE.")

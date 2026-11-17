@@ -77,6 +77,26 @@ func TestASecretQuestionIsNeverAnswered(t *testing.T) {
 	}
 }
 
+// A secret question that names one of the case's own facts by its refers_to words (the OTP the client read out) is
+// answered with that fact, and the reply goes marked secret. Found in the learning curves (2026-11-17): the worker
+// asked for the code its filing needs as a secret, and the case ended unanswered.
+func TestASecretTheCaseGivesIsAnswered(t *testing.T) {
+	q := []map[string]any{{"kind": "query", "reply": "Step 63 is the value you typed yourself - the one-time password (OTP). Reply with it.", "secret": true}}
+	_, sb := expertRun(t, asker(q), true, `{"fact": "centre"}`)
+	if got := requestsAfterFirst(sb); len(got) != 0 {
+		t.Fatalf("a secret no fact names was answered: %q", got)
+	}
+	yes := true
+	c := Case{ID: "c", Request: "File it.", Facts: []Fact{{ID: "otp", About: "the OTP", Answer: "The OTP is 604217.",
+		RefersTo: []string{"otp", "one time password"}, Required: &yes}}}
+	if f, ok := secretFact(c, q[0]["reply"].(string)); !ok || f.ID != "otp" {
+		t.Fatalf("the OTP fact was not found: %+v %v", f, ok)
+	}
+	if _, ok := secretFact(c, "What is the portal password?"); ok {
+		t.Fatal("a password question was given the OTP")
+	}
+}
+
 // An approval on an arm without the expert, or one the gate did not sign, ends the case with nothing answered. (A
 // gate-signed one the case does not list, on an arm with the expert, is declined and the case goes on:
 // TestAnUnlistedApprovalIsDeclinedAndTheCaseGoesOn.)

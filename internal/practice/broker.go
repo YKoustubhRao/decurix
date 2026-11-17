@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/llmrec"
+	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/qualification"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
@@ -92,6 +94,10 @@ type Broker struct {
 	// A callback is the run's desktop's only when it comes from that desktop's address: a desktop_id in the body
 	// proves nothing, since the mock app shares the network (C-25). Nil refuses every callback (fail closed).
 	Caller func(ctx context.Context, addr netip.Addr) (string, bool)
+	// Remember, when set, writes a memory note the run's desktop sends into that desktop's own memory directory
+	// (desktop.PracticeHome.PersistMemoryFile), as the control plane does for a worker's desktop: a lesson from one
+	// case reaches the next. Nil drops the notes.
+	Remember func(ctx context.Context, desktopID, filename, content string) error
 
 	mu  sync.Mutex
 	run *brokerRun
@@ -784,11 +790,35 @@ func expertJudgement(r brokerReply) map[string]any {
 		"skill_name": "", "secret": false, "at": r.At.Format("2006-01-02T15:04:05.000Z07:00")}
 }
 
-// memory accepts the agent's memory notes and drops them.
+// brokerMemoryMax bounds a memory note's body.
+const brokerMemoryMax = 64 << 10
+
+// memory accepts the agent's memory notes: one from the run's own desktop is written into that desktop's memory
+// (Remember), so the next case of the run reads it as a worker reads its lessons; any other is dropped.
 func (b *Broker) memory(w http.ResponseWriter, r *http.Request) {
-	if b.active() == nil {
+	run := b.active()
+	if run == nil {
 		http.NotFound(w, r)
 		return
+	}
+	if r.Method == http.MethodPost && b.Remember != nil && b.fromRunDesktop(r, run) {
+		r.Body = http.MaxBytesReader(w, r.Body, brokerMemoryMax)
+		if err := r.ParseForm(); err == nil {
+			title, summary := strings.TrimSpace(r.FormValue("title")), strings.TrimSpace(r.FormValue("summary"))
+			category := strings.TrimSpace(r.FormValue("category"))
+			if category == "" {
+				category = "workflow"
+			}
+			if title != "" || summary != "" {
+				now := time.Now()
+				entry := memory.WorkerMemoryEntry{ID: fmt.Sprintf("memory-%d", now.UnixNano()), DesktopID: run.desktopID,
+					Title: title, Summary: summary, Category: category, CreatedAt: now}
+				filename, content := memory.FormatForDesktopFile(entry)
+				if err := b.Remember(r.Context(), run.desktopID, filename, content); err != nil {
+					log.Printf("practice broker: keeping a memory note on %s: %v", run.desktopID, err)
+				}
+			}
+		}
 	}
 	_, _ = io.Copy(io.Discard, r.Body)
 	w.Header().Set("Content-Type", "application/json")
