@@ -91,6 +91,20 @@ class APerDocumentRun(unittest.TestCase):
             handled = skill_task._after_phase(run, "gather", "Saved 3 files to the December folder.", "final")
         return handled, fill, sorted(docs, key=docs.get)
 
+    def test_a_gather_whose_documents_are_in_hand_only_prepares_the_application(self):
+        # Found in the learning curves (2026-11-15): the request put the month's bills in a folder, and the phase spent
+        # 100+ model turns downloading them again from the mail to "save every document".
+        run = self.run_for()
+        folder = "/home/headless/work/december"
+        in_hand = [f"{folder}/1188 Coastal.docx", f"{folder}/1189 Hebri.docx"]
+        run["context"] = f"This month's bills are in the mail; they are also saved in {folder}/. Please enter them."
+        with mock.patch.object(skill_task, "_documents_in_hand", return_value=in_hand):
+            told = skill_task._procedure(run, phase="gather")
+        self.assertIn("already in hand - do not collect, download or save them again", told)
+        self.assertIn("1188 Coastal.docx", told)
+        self.assertIn("FULL PATH - read, not entered in this phase", told)
+        self.assertNotIn("save every one of them", told)
+
     def test_a_request_without_its_documents_gathers_them_first_and_enters_nothing(self):
         run = self.run_for()
         with mock.patch.object(skill_task.binding, "fill", return_value=({}, {}, None)), \
@@ -323,7 +337,10 @@ class APerDocumentRun(unittest.TestCase):
             skill_task._prepare(run)
         ((handed, kw),) = self.by_model
         self.assertEqual(kw.get("from_step"), step["n"])
-        self.assertIn("click 129,719", kw["note"])
+        # The model is given that one click as a bounded repair (repairs.py), and the replay goes on after it.
+        from decurix_agent import repairs
+        self.assertEqual(kw.get("phase"), repairs.REPAIR_PHASE)
+        self.assertEqual(repairs.job(run)["step"]["by_hand"], "click 129,719")
         self.assertEqual(self.asked, [])  # nobody at the screen is asked to click
 
         # A secret a person types stays theirs.

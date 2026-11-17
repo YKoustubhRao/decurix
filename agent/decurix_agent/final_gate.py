@@ -740,7 +740,10 @@ def _gate(reply, kind, engine):
         gate_not_made += typed_failed
     # What code holds against the saved records - on every run, a taught skill's too (ledger_checks.findings): a fault
     # is decided here; a check of them that could not be made is a check not made.
-    found_in_ledger = _ledger_faults(reply)
+    # (With the run: the records its collecting part made with the taught steps' own saves are not "made that no
+    # declaration covers". Found live (2026-11-16): checked again after the person confirmed a new customer's entries,
+    # a correct month was refused for that customer's ledger and sent to a second attempt - 59 turns, 2.5M tokens.)
+    found_in_ledger = _ledger_faults(reply, run)
     ledger_faults = ledger_checks.faults(found_in_ledger)
     if kind == "final":
         # (The person's confirmed answers about a field's pick, kept on the control plane for later tasks.)
@@ -973,7 +976,7 @@ def _gate(reply, kind, engine):
         state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "engine": engine, "task": guided["task"],
                               "verdict": {"verdict": verify.UNSURE, "confidence": 0.0, "seen": series, "why": ""},
                               "series": {"helped": _helped(run, guided),
-                                         "basis": _basis("model", code=bool(made) and facts.compared_clean())}}
+                                         "basis": _basis("model", code=bool(made) and facts.compared_clean(), run=run)}}
         ask_for_query(series, kind="query", engine=engine)
         return True
 
@@ -1023,7 +1026,7 @@ def _gate(reply, kind, engine):
             # end but did not run smoothly: it does not count towards trust.
             _record_verdict(run, True, checked_by="model",
                             helped=_helped(run, guided),
-                            basis=_basis("model", code=bool(made) and facts.compared_clean()))
+                            basis=_basis("model", code=bool(made) and facts.compared_clean(), run=run))
         where = "Checked on the screen" if on_screen else "Checked against the files I wrote"
         text = f"{reply}\n\n{where}: {verdict['seen']}" if verdict.get("seen") else reply
         if facts.totals_note:
@@ -1041,7 +1044,7 @@ def _gate(reply, kind, engine):
             gate_checks.append(verdicts.check("files.read_back", verdicts.PASS, "code",
                                               f"{facts.source_compared} figure(s) given as a source's own matched "
                                               f"that source, in {len(made)} file(s)"))
-        if "ledger" in _basis(None):
+        if "ledger" in _basis(None, run=run):
             gate_checks.append(verdicts.check("ledger.read_back", verdicts.PASS, "ledger",
                                               "every declared record read back from the application"))
         shown = [f"{where}: {verdict['seen']}"] if verdict.get("seen") else []
@@ -1259,15 +1262,16 @@ def _first_attempt_text(run):
             "please check it.\n\nThen: ")
 
 
-def ledger_held(claim, engine, picks=True):
+def ledger_held(claim, engine, picks=True, run=None):
     """
     Report the task not done (or not checked) when the shared ledger check (ledger_checks.findings) holds its saved
     records back; True when it did. For a route whose report goes out without the final gate (a replay): what the
     gate holds against a task holds there too (review round 9, R9-B3). `picks`: a replay's picks are the person's
-    recorded ones, so they are not held against it.
+    recorded ones, so they are not held against it. `run`: a taught run, whose collecting part's own records count.
     """
 
-    found = ledger_checks.findings(task_context.current(), claim, picks=picks)
+    found = ledger_checks.findings(task_context.current(), claim, picks=picks,
+                                   allowed_made=(run or {}).get("gather_made", 0))
     wrong, unmade = ledger_checks.faults(found), ledger_checks.not_made(found)
     if not wrong and not unmade:
         return False
@@ -1525,10 +1529,34 @@ def _confirm_reply(paused, reply):
         return write_final_reply(f"{claim}\n\nNot confirmed: you could not check it, so it stands as reported, "
                                  "unchecked.", kind="final", engine=engine, checked=False)
 
+    if choice == "stop" and paused.get("blocked") and claim.strip():
+        # The worker said it could not go on, and why; the person says to stop there: that report is the end of the
+        # task, as they want it - never a success for the skill, never checked. Found in the learning curves
+        # (2026-11-16): the right outcome of a month with a cancelled receiver was "file nothing, say which invoice";
+        # the worker said so, the person said stop, and the run ended "Not done - marked as a failure" without the
+        # report that named the invoice.
+        if run is not None:
+            _record_verdict(run, False, why="stopped where the worker could not go on, as the person said")
+        return write_final_reply(f"{claim.strip()}\n\nStopped here, as you said: nothing more was done.", kind="final",
+                                 engine=engine, checked=False, gated=True)
+
     if choice == "stop":
         if run is not None:
             _record_verdict(run, False, why="the person said it was not done")
         return write_final_reply("Not done - marked as a failure. " + seen, kind="error", engine=engine, checked=False, gated=True)
+
+    if paused.get("series") and run is not None and run.get("gathered") == "done" and told.strip() \
+            and choice in ("correction", "redo") and _engine_can_drive():
+        # The person answered the hole in the series with what fills it (a bill they give in words, "enter it with the
+        # others"): the replay has entered every document, so only that is entered, by hand, from their words - the
+        # rest phase - never the whole task again. Found in the learning curves (2026-11-16): the bill was given, the
+        # whole task went back to the model, and it ran out of questions without entering it. Their data is help.
+        run["asked_person"] = True
+        run["by_hand"] = [{"document": "what you gave in your answer", "why": " ".join(reply.split())[:800],
+                           "kind": "by_hand", "said": True}]
+        run["replay_result"] = dict(paused.get("result") or {"text": claim, "outcome": "completed_unverified"})
+        progress.emit("Entering what you gave in your answer, by hand; the taught steps have entered the documents.")
+        return _by_model(run, phase="rest")
 
     # "Retry" alone tries again as it was; with anything more ("retry only the two that failed") their words go with it.
     redo = choice == "redo" and not told

@@ -358,12 +358,15 @@ def damage_watch():
         return None
 
 
-_display = None
+# One connection to the X server per thread: an Xlib Display is not safe to share, and two threads asking at once
+# put its replies out of step - one thread's reply read by the other ("Request reply to unknown request. Can't
+# happen!"), and the first then waits for its own forever. Found in the learning curves (2026-11-17): the warmed-browser
+# check and a replay's window lookup shared one, and the replay hung in get_property with nothing logged.
+_local = threading.local()
 
 
 def _connect():
-    global _display
-
+    _display = getattr(_local, "display", None)
     if _display is not None:
         return _display
 
@@ -382,6 +385,7 @@ def _connect():
     except Exception as exc:
         raise ComputerError(f"could not open the desktop's screen: {exc}")
 
+    _local.display = _display
     return _display
 
 

@@ -1,3 +1,4 @@
+import sys
 import threading
 from http.server import ThreadingHTTPServer
 
@@ -40,6 +41,16 @@ def tidy_recordings():
 def main():
 
     log_banner("Decurix VM Agent")
+
+    # Where every thread is, written to the agent's log on SIGUSR1: a run that went silent mid-replay can be read
+    # without stopping it (code positions only - no values). Found in the learning curves (2026-11-17): a replay hung
+    # 30 minutes after a key press with nothing logged, and nothing showed where.
+    try:
+        import faulthandler
+        import signal
+        faulthandler.register(signal.SIGUSR1, file=sys.stdout, all_threads=True)
+    except (AttributeError, ValueError, OSError, ImportError):
+        pass
 
     # What was kept from a reply and not yet copied to the control plane, tried once more (messaging.post_learned).
     try:

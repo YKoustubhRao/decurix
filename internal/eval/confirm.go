@@ -224,3 +224,15 @@ func holdsRat(have []*big.Rat, want *big.Rat) bool {
 	}
 	return false
 }
+
+// approvalWithFact is the reply to a worded approval that also asks for a value the person holds: the yes, then the
+// answer of the fact the expert chose for the question ("Please provide the OTP so I can click Verify"). A person
+// typing the code answers both at once; the yes alone left the worker asking again for the digits (found in the
+// learning curves, 2026-11-15, gstr1-books og-2: a second question on every filing). A question the expert matched to
+// no fact gets the yes as before.
+func approvalWithFact(c Case, fact string) string {
+	if f, ok := c.Fact(fact); ok && strings.TrimSpace(f.Answer) != "" {
+		return ApprovalYes + " " + f.Answer
+	}
+	return ApprovalYes
+}

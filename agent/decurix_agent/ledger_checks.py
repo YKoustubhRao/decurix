@@ -61,7 +61,7 @@ def _events(task_id):
     return evidence._task_events(task_id)
 
 
-def findings(task_id=None, reports=(), events=None, picks=True):
+def findings(task_id=None, reports=(), events=None, picks=True, allowed_made=0):
     """
     Every point code holds against the task's saved records (the module's list), as records.Finding lines; [] when
     none. `reports`: the reports whose JUDGEMENTS lists are read (one text, or one per stage). `events`: the task's
@@ -81,6 +81,9 @@ def findings(task_id=None, reports=(), events=None, picks=True):
                                             "same record saved twice"))
         # (A record saved twice is said as that, not again as a record no declaration covers.)
         created = core.records_created(events) - sum(n - 1 for n in twice.values())
+        # (`allowed_made`: records a part of a taught run made by the saves its taught steps make there - a new
+        # customer's ledger before the per-document block - which no per-document declaration covers by design.)
+        created = max(0, created - int(allowed_made or 0))
         # A value set and not declared that its record's document or the person's words back is taken onto the record
         # first, as its declaration would have; only what nothing backs is held (records.adopt_backed).
         for line in records.adopt_backed(task_id):

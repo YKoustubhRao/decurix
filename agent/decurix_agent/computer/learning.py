@@ -959,7 +959,9 @@ def _follow_param(skill, param):
     if len(example) < 2:
         return
 
-    pattern = re.compile(re.escape(example), re.IGNORECASE)
+    # Whole words only, and never inside a placeholder already there: found in the learning curves (2026-11-16), a unit
+    # "NA" matched inside "{client_name}" and the check became "{client_{uqc}me}", which no screen ever shows.
+    pattern = re.compile(r"(?<![\w{])" + re.escape(example) + r"(?![\w}])", re.IGNORECASE)
 
     for step in skill["steps"]:
         for check in step.get("expect") or []:
@@ -2461,7 +2463,12 @@ def _apply_step_choice(skill, step, choice):
 # "button Submit", "the Customers tab". Found live (2026-10-14): asked about a click recorded as a bare point, a
 # person said what it was - and the only answers taken were keep / skip / manual.
 CONTROL_ROLES = {"button": "button", "link": "link", "tab": "tab", "checkbox": "checkbox", "check box": "checkbox",
-                 "radio button": "radio", "radio": "radio", "menu item": "menuitem", "option": "option"}
+                 "radio button": "radio", "radio": "radio", "menu item": "menuitem", "option": "option",
+                 # A field a person names (found live 2026-11-15: "the Party A/c name combobox" was not taken). A word
+                 # that says only "a field" leaves the role open (""): the step is found by its name, any role.
+                 "combobox": "combobox", "combo box": "combobox", "dropdown": "combobox", "drop-down": "combobox",
+                 "drop down": "combobox", "textbox": "textbox", "text box": "textbox", "text field": "textbox",
+                 "field": "", "box": "", "input": ""}
 _ROLE_WORDS = "|".join(sorted((re.escape(r) for r in CONTROL_ROLES), key=len, reverse=True))
 _QUOTES = "\"'`“”‘’"
 _LEAD = re.compile(r"^(?:step\s*\d+\s+(?:is|was)\s+|(?:it|that|this)(?:'s|\s+is|\s+was)\s+|(?:click|press)(?:\s+on)?\s+|the\s+|a\s+)", re.I)

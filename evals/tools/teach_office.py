@@ -43,6 +43,7 @@ ENV = dict(os.environ, DISPLAY=":1", DECURIX_GUI_TEXT_CHARS="20000")
 # A control's state between its name and its place may hold a comma ("[row 4, unchecked]"): a checkbox in a table row
 # was never found when the pattern refused one.
 ITEM = re.compile(r'(e\d+) (?:([a-z][a-z ]*?) )?"([^"]*)"[^@\n]*?@(-?\d+),(-?\d+)')
+BOTTOM = 70
 FIELDS = ("textbox", "searchbox", "spinbutton", "password text", "text", "entry", "combobox")
 
 
@@ -58,16 +59,35 @@ def look():
 def find(roles, name, me, tries=14):
     """The centre of the control with this visible name (and one of these roles), scrolled into view."""
     want = " ".join(name.split())
+    last = None  # where the control was on the look before: a press waits until the page stops moving
     for attempt in range(tries):
         items, w, h, out = look()
+        active = re.search(r'Active window: "([^"]*)"', out)
+        if active and "Chromium" not in active.group(1) and "Chromium" in out.split("\n", 2)[1]:
+            # A Return that landed on the desktop opened the file manager and took the keyboard (found live: a form's
+            # values were typed into Thunar): a person closes it and goes back to the browser.
+            print(f"the active window is {active.group(1)!r}; going back to the browser", flush=True)
+            subprocess.run(["bash", "-lc", "pkill -x Thunar; sleep 1; gui front Chromium"], env=ENV, timeout=60)
+            time.sleep(1)
+            continue
         hits = [(x, y) for role, n, x, y in items if n == want and (not roles or not role or role in roles)]
         hits = hits or [(x, y) for role, n, x, y in items if n.startswith(want) and (not roles or not role or role in roles)]
         if hits:
             x, y = hits[0]
-            if 110 <= y <= h - 25:
-                return x, y
-            me.click(w // 2, h // 2, button=5 if y > h - 25 else 4)  # the wheel, toward it
-            me.click(w // 2, h // 2, button=5 if y > h - 25 else 4)
+            # The desktop's panel covers the screen's bottom edge: a control drawn under it is scrolled up first, or the
+            # press lands on the panel (found live: "Save" at y=690 opened the file manager from the panel's launcher).
+            if 110 <= y <= h - BOTTOM:
+                # A wheel scroll animates after the look that followed it: a press at the position read mid-scroll
+                # hit the field a row above (found live: "Total number" typed into "Sr. no. to"). Press only where two
+                # looks in a row agree.
+                if last == (x, y):
+                    return x, y
+                last = (x, y)
+                time.sleep(0.7)
+                continue
+            last = None
+            me.click(w // 2, h // 2, button=5 if y > h - BOTTOM else 4)  # the wheel, toward it
+            me.click(w // 2, h // 2, button=5 if y > h - BOTTOM else 4)
             time.sleep(0.6)
             continue
         if attempt in (4, 9):
@@ -76,11 +96,53 @@ def find(roles, name, me, tries=14):
     raise SystemExit(f"no control named {name!r} ({'/'.join(roles) or 'any role'}) on the screen:\n{out[-3000:]}")
 
 
+def value_of(roles, name):
+    """What the named field shows now (its value= in a look), or None when the look does not say."""
+    want = " ".join(name.split())
+    out = look()[3]
+    for m in re.finditer(r'e\d+ (?:([a-z][a-z ]*?) )?"([^"]*)"([^@\n]*)', out):
+        role, n, rest = m.group(1) or "", " ".join(m.group(2).split()), m.group(3)
+        if n == want and (not role or role in roles):
+            v = re.search(r'value="([^"]*)"', rest)
+            # A filled field shows value="..."; one found without it is empty. A secret field reads back withheld:
+            # not a value to compare.
+            if not v:
+                return ""
+            return v.group(1).replace(",", "").strip() if "[withheld]" not in v.group(1) else None
+    return None
+
+
+def tab_of(out):
+    """The browser tab's title and address in a look ('' when none): it changes when a page answers a press."""
+    m = re.search(r'== Chromium tab ("[^"]*" \S+) ==', out)
+    return m.group(1) if m else ""
+
+
+def settled(roles, name, ok, tries=7):
+    """The field's value once it shows what was entered, or what it shows after ~10 s: on a loaded host the keys sent
+    over VNC land seconds late, and a look taken at once read an empty field that was filled a moment later."""
+    have = None
+    for _ in range(tries):
+        time.sleep(1.5)
+        have = value_of(roles, name)
+        if have is None or ok(have):
+            return have
+    return have
+
+
 def run(steps):
     me = Person(pace=0.4)
-    for st in steps:
+    form = []  # the fills and choices since the last press: what a person enters again when the page refuses the form
+    queue = list(steps)
+    redo = 0
+    while queue:
+        st = queue.pop(0)
         kind = st[0]
         print("step:", json.dumps(st), flush=True)
+        if kind in ("fill", "choose", "tick"):
+            form.append(st)
+        elif kind == "click" and "button" not in st[1]:
+            form = []
         if kind == "open":
             # With no browser window open, a person starts one from the panel first: ctrl+l alone goes nowhere (found
             # live on a fresh teach desktop: the address was typed into nothing and the next step found no page).
@@ -118,21 +180,87 @@ def run(steps):
             else:
                 raise SystemExit(f"could not open {st[1]}")
         elif kind == "click":
-            me.click(*find(st[1], st[2], me))
+            if "button" in st[1] and form and not st[-1:] == ["checked"]:
+                # A person looks over the whole form before pressing: a late click left keys in the field before it
+                # (found live: "372881.35" typed into a focused list chose rate 3; the amount was then typed again and
+                # the row was saved at 3%).
+                drifted = []
+                for f in form:
+                    if f[0] == "fill":
+                        have = value_of(FIELDS, f[1])
+                        if have is not None and have != f[2]:
+                            drifted.append(f)
+                    elif f[0] == "choose":
+                        have = value_of(("combobox", "listbox", "popup button", "menu button"), f[1])
+                        if have is not None and not (have.startswith(f[2]) or f[2] in have):
+                            drifted.append(f)
+                if drifted and redo < 3:
+                    redo += 1
+                    print("before pressing: " + ", ".join(repr(f[1]) for f in drifted) + " changed; entering them again",
+                          flush=True)
+                    queue = drifted + [st] + queue
+                    form = [f for f in form if f not in drifted]
+                    continue
+            at = find(st[1], st[2], me)
+            before = look()[3] if "button" in st[1] else ""
+            me.click(*at)
             me.wait(1.5)
+            if "button" in st[1]:
+                # A person waits for the page to answer a press before the next one: on a loaded host the press lands
+                # seconds late, and a link pressed meanwhile took the page away before the form was sent (found live:
+                # a table's Save showed nothing, the next link was pressed, and the row was never stored).
+                for _ in range(10):
+                    items, w, h, now = look()
+                    if tab_of(now) != tab_of(before) or any(role in ("alert", "status") for role, n, x, y in items):
+                        break
+                    time.sleep(1.5)
+                # A refused form shows its problem in a role=alert line: a person reads it; a demonstration that
+                # carried on past it taught a save that never happened (found live: a table saved nothing).
+                alerts = [n for role, n, x, y in items if role == "alert" and n.strip()]
+                if alerts and redo:
+                    # The alert seen may be the refused page's, still shown while the press is on its way.
+                    time.sleep(4)
+                    alerts = [n for role, n, x, y in look()[0] if role == "alert" and n.strip()]
+                if alerts and form and redo < 2:
+                    # A person reads the problem, enters the form's values again and presses once more.
+                    redo += 1
+                    print(f"the page refused {st[2]!r}: {' | '.join(alerts)}; entering the form again", flush=True)
+                    queue = [x for x in form if x[0] != "tick"] + [st] + queue
+                    form = []
+                    continue
+                if alerts:
+                    raise SystemExit(f"the page refused {st[2]!r}: {' | '.join(alerts)}")
+                form, redo = [], 0
         elif kind == "fill":
-            me.click(*find(FIELDS, st[1], me))
-            me.key("ctrl+a")
-            if st[2]:
-                me.type(st[2])
-            else:
-                me.key("BackSpace")
+            # A person reads the field back and types it again when a loaded host dropped a character.
+            for attempt in range(3):
+                me.click(*find(FIELDS, st[1], me))
+                me.key("ctrl+a")
+                if st[2]:
+                    me.type(st[2])
+                    # The browser offers what was typed in that field before in a list drawn over the field below;
+                    # a person closes it, or the next press picks an old entry (found live, a demonstration taken
+                    # again on the same browser: the next field's press filled this one from its history).
+                    me.key("Escape")
+                else:
+                    me.key("BackSpace")
+                have = settled(FIELDS, st[1], lambda v: v == st[2])
+                if have is None or have == st[2]:
+                    break
+                print(f"the field {st[1]!r} reads {have!r}, not {st[2]!r}; typing it again", flush=True)
         elif kind == "choose":
-            me.click(*find(("combobox", "listbox", "popup button", "menu button"), st[1], me))
-            me.wait(0.6)
-            me.type(st[2], each=0.02)
-            me.key("Return")
-            me.wait(0.5)
+            # Type-ahead into a native list resets when the keys arrive slowly (a loaded host chose "3" for "18"):
+            # a person looks at what the field shows and chooses again.
+            roles = ("combobox", "listbox", "popup button", "menu button")
+            for attempt in range(3):
+                me.click(*find(roles, st[1], me))
+                me.wait(0.6)
+                me.type(st[2], each=0.02)
+                me.key("Return")
+                have = settled(roles, st[1], lambda v: v.startswith(st[2]) or st[2] in v)
+                if have is None or have.startswith(st[2]) or st[2] in have:
+                    break
+                print(f"the list {st[1]!r} shows {have!r}, not {st[2]!r}; choosing again", flush=True)
         elif kind == "tick":
             me.click(*find(("checkbox", "radio", "radio button", "check box"), st[1], me))
         elif kind == "wait":

@@ -174,5 +174,21 @@ class KeepingProvingAndRetiring(unittest.TestCase):
         self.assertIn("no value", why)
 
 
+class AFixLearnedAtAClickWithNoValueOfItsOwn(unittest.TestCase):
+    """Found live (2026-11-16, books): the repair of a spot click (no parameter) chose bill 1's party; the fix kept was
+    bound to bill 1's own value and chose it again for bill 2. Which item a stop is in is the step's, not its value's."""
+
+    def test_the_value_chosen_is_bound_to_the_item_and_follows_it(self):
+        values = {"party_name__1": "Vasco Bay Hotels", "party_name__2": "Hampi Residency"}
+        how = branches._bind("Vasco Bay Hotels", values, None, item=1)
+        self.assertEqual(how, {"item": "party_name"})
+        self.assertEqual(branches._resolve_for_compile(how, values, None, item=2), "Hampi Residency")
+
+    def test_another_item_s_value_at_a_stop_in_no_item_is_never_bound_to_that_item(self):
+        values = {"party_name__1": "Vasco Bay Hotels", "party_name__2": "Hampi Residency", "month": "November 2026"}
+        self.assertIsNone(branches._bind("Vasco Bay Hotels", values, None))
+        self.assertEqual(branches._bind("November 2026", values, None), {"name": "month"})
+
+
 if __name__ == "__main__":
     unittest.main()

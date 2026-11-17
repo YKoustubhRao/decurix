@@ -70,6 +70,37 @@ def available():
     return llm_client.available()
 
 
+# A folder a request names ("the invoices are also in ~/work/clients/november/"): a path with no extension.
+FOLDER_RE = re.compile(r"(?<![\w/])((?:~|/home/headless|/tmp)/[^\s'\"<>|;,]+?)/?(?=[\s'\"<>|;,]|\.\s|\.$|$)")
+# How many files of named folders a run reads, beside the files it names one by one.
+MAX_FOLDER_FILES = 8
+DOCUMENT_SUFFIXES = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt", ".png", ".jpg", ".jpeg")
+
+
+def folder_files(text):
+    """The document files of the folders a request names (each folder's own files, not its subfolders'), in order, at
+    most MAX_FOLDER_FILES. Found in the learning curves (2026-11-17): a filing whose request said "the invoices are also
+    in <folder>" had its values read from nothing, and three parts of the taught steps went to the model by hand."""
+
+    found = []
+    for match in FOLDER_RE.finditer(text or ""):
+        folder = os.path.expanduser(match.group(1).rstrip(".)"))
+        if not os.path.isdir(folder):
+            continue
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            if (os.path.isfile(path) and not name.startswith((".", "~$")) and name.lower().endswith(DOCUMENT_SUFFIXES)
+                    and path not in found):
+                found.append(path)
+            if len(found) >= MAX_FOLDER_FILES:
+                return found
+    return found
+
+
 def referenced_files(text):
     """The existing files a request names, in order, at most MAX_FILES."""
 
@@ -103,7 +134,7 @@ def _describe(param, meaning="", lookup=False):
     return line
 
 
-def fill(skill, params, context, strict=False):
+def fill(skill, params, context, strict=False, relaxed=(), folders=False):
     """
     ({name: value}, {name: evidence}, rows) for the params the run's context shows;
     ({}, {}, None) when there is no model, nothing to read, or the model fails.
@@ -113,14 +144,34 @@ def fill(skill, params, context, strict=False):
     document came back with an invoice series made from the client's initials and the month, a count to match and two
     table rows, none of them anywhere; passed on as the run's values they read as the person's, were typed, and the
     final check then held the work to them over the person's own "don't invent".
+
+    relaxed: names kept even when strict - values the steps choose from the application's own list (a financial year,
+    a quarter, a return period), read from what the run was given (December -> "Quarter 3 (Oct - Dec)"): the plan shows
+    them to the person, and the replay can only choose an entry the list has. Found in the learning curves (2026-11-16):
+    a run driven part by part handed the model three parts only for a financial year the request implies.
     """
 
-    answer, texts = _ask(skill, params, context, referenced_files(context))
+    files = referenced_files(context)
+    if folders:
+        # (folders: the documents of the folders the request names are read too - a run driven part by part.)
+        files += [p for p in folder_files(context) if p not in files]
+    answer, texts = _ask(skill, params, context, files)
     if answer is None:
         return ({}, {}, None)
-    values, evidence = _clean(params, answer, texts, strict=strict)
+    values, evidence = _clean(params, answer, texts, strict=strict, relaxed=relaxed)
     rows = _rows(skill, params, answer, texts, values, evidence, strict=strict)
     return (values, evidence, rows)
+
+
+def fill_document(skill, params, context, path, relaxed=()):
+    """({name: value}, {name: evidence}) for `params` from the one document at `path` - only what it holds, but for the
+    `relaxed` names (values a step chooses from the application's own list); ({}, {}) when there is no model or it
+    fails."""
+
+    answer, texts = _ask(skill, params, context, [path], rows=False)
+    if answer is None:
+        return ({}, {})
+    return _clean(params, answer, texts, strict=True, relaxed=relaxed)
 
 
 # How many documents one run's lists are read from at once (the gathered documents of a month; a page each).
@@ -401,8 +452,9 @@ def _prompt(skill, params, context, rows=True):
     ])
 
 
-def _clean(params, answer, texts=(), strict=False):
-    """Only values of the params asked for, in the shape each takes (strict: only those the texts hold - fill)."""
+def _clean(params, answer, texts=(), strict=False, relaxed=()):
+    """Only values of the params asked for, in the shape each takes (strict: only those the texts hold - fill - but for
+    the `relaxed` names)."""
 
     wanted = {p["name"]: p for p in params}
     values, evidence = {}, {}
@@ -437,7 +489,7 @@ def _clean(params, answer, texts=(), strict=False):
                 log(f"binding: {name} = {written!r} has no number where the taught {param.get('example')!r} had; "
                     "left for the work to read")
                 continue
-            if strict and not held_by(written, texts):
+            if strict and name not in relaxed and not held_by(written, texts):
                 log(f"binding: {name} = {written!r} is in nothing this run was given; left for the work to read")
                 continue
             if sign_differs(written, texts):
@@ -449,7 +501,11 @@ def _clean(params, answer, texts=(), strict=False):
                 log(f"binding: {name} = {written!r} numbers this run's words the way the taught "
                     f"{param.get('example')!r} did, and nothing of this run says it - kept, and said")
                 notes.append(NUMBERED)
-            if is_example(written, param.get("example")) and not held_by(written, texts) and not (
+            if name in relaxed and not held_by(written, texts):
+                # Chosen from the application's list, read for this run (the same financial year as the teaching's is
+                # often right): kept, and said - the plan shows it, the review before anything is filed checks it.
+                notes.append(WORKED)
+            elif is_example(written, param.get("example")) and not held_by(written, texts) and not (
                     re.search(r"[^\W\d_]{3,}", written) and words_held(written, texts)):
                 # The person's own value from when they taught it, which nothing of this run says.
                 log(f"binding: {name} = {written!r} is the taught example and this run's documents do not hold it - left out")
@@ -844,3 +900,153 @@ def _rows(skill, params, answer, texts, values, evidence, strict=False):
             values.pop(name, None)
             evidence.pop(name, None)
     return {"count": len(names), "demo": len(group["rows"]), "fields": group["fields"], "names": names, "base": base}
+
+
+# ============================================================
+# A value the documents give by arithmetic (derive)
+# ============================================================
+
+DERIVE_SYSTEM = (
+    "A task replays a person's taught steps with this run's values. These values are not written anywhere as they are, "
+    "but this request's documents may give each one by simple arithmetic: a total of figures across documents (the "
+    "taxable value of every invoice of a kind), a count of documents, or one figure copied - or zero (op \"none\", no "
+    "figures) when no document has such a figure at all (no cess on any invoice). For each value, answer "
+    "the operation and EVERY figure it uses, each with the file name it stands in, written exactly as that file writes "
+    "it - or null when the documents and the request do not settle it (never a guess). JSON only: {\"values\": {NAME: "
+    "{\"op\": \"sum\"|\"count\"|\"copy\"|\"none\", \"value\": \"...\", \"figures\": [{\"document\": \"file name\", \"figure\": "
+    "\"...\"}], \"why\": \"which documents and why those\"} or null}}"
+)
+# How much of each document, and of all of them, a derivation reads.
+DERIVE_DOC_CHARS = 6000
+DERIVE_TOTAL_CHARS = 40000
+
+
+def _amount(text):
+    """A figure as a Decimal ("1,20,000.00" -> 120000.00), or None."""
+
+    from decimal import Decimal, InvalidOperation
+    cleaned = re.sub(r"[^\d.\-]", "", str(text or "").replace(",", ""))
+    if not cleaned or cleaned in ("-", ".") or cleaned.count(".") > 1:
+        return None
+    try:
+        return Decimal(cleaned)
+    except InvalidOperation:
+        return None
+
+
+def _figures_in(text):
+    """Every number a text writes, as Decimals."""
+
+    out = set()
+    for m in re.finditer(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])", str(text or "")):
+        n = _amount(m.group(0))
+        if n is not None:
+            out.add(n)
+    return out
+
+
+def checked_derivation(answer, texts):
+    """
+    The value an answered derivation gives, or None: every figure must stand in the document it names (`texts`:
+    {file name: text}), and the operation must give the value exactly - a sum of the figures, the count of them, or the
+    one figure. Decided by code: the model only proposes.
+    """
+
+    if not isinstance(answer, dict):
+        return None
+    op, value = str(answer.get("op") or ""), _amount(answer.get("value"))
+    figures = answer.get("figures") if isinstance(answer.get("figures"), list) else []
+    if op == "none" and value is not None and value == 0 and not figures and str(answer.get("why") or "").strip():
+        # (no document has such a figure at all - no cess, no cancelled invoice: zero, said why, and marked worked out)
+        return str(answer.get("value")).strip()
+    if value is None or not figures or op not in ("sum", "count", "copy"):
+        return None
+    amounts = []
+    for f in figures:
+        if not isinstance(f, dict):
+            return None
+        name, figure = os.path.basename(str(f.get("document") or "")), _amount(f.get("figure"))
+        text = texts.get(name)
+        if text is None or figure is None or figure not in _figures_in(text):
+            return None
+        amounts.append(figure)
+    if op == "sum" and sum(amounts) == value and len(amounts) == 1:
+        # (a sum of one figure is that figure. A sum of several is a choice of which documents count - the B2B invoice
+        # in the B2C total - which code cannot check: the model makes it where the work is, with the screen. Found in
+        # the learning curves (2026-11-17): a B2C HSN total summed in a B2B invoice, and the filing went wrong.)
+        return str(answer.get("value")).strip()
+    if op == "count" and value == len(amounts) and len({(os.path.basename(str(f.get("document"))), str(f.get("figure")))
+                                                         for f in figures}) == len(amounts):
+        return str(answer.get("value")).strip()
+    if op == "copy" and len(amounts) == 1 and amounts[0] == value:
+        return str(answer.get("value")).strip()
+    return None
+
+
+def derive(skill, params, context, files):
+    """
+    ({name: value}, {name: evidence}) for `params` this run's documents give by arithmetic (a total across invoices, a
+    count, a copied figure): one model reading proposes each with the figures it uses, and code keeps only what
+    checked_derivation proves. ({}, {}) when there is no model or nothing is proven. Measured in the learning curves
+    (2026-11-17): a month's B2C total, written in no document, made a whole part of a filing the model's - 43 turns, 1.2M
+    tokens - for one number.
+    """
+
+    if not params or not files or not available():
+        return ({}, {})
+    texts, used = {}, 0
+    for path in files:
+        if used >= DERIVE_TOTAL_CHARS:
+            break
+        try:
+            text = office.read_document(path)["text"][:DERIVE_DOC_CHARS]
+        except Exception:  # noqa: BLE001 - a document not read gives nothing
+            continue
+        texts[os.path.basename(path)] = text
+        used += len(text)
+    if not texts:
+        return ({}, {})
+    # Where each value goes - the page and the part of it the taught step types into ("7 - B2C (Others)"), and the
+    # person's own notes: which documents count is decided by that, never by the label alone. Found in the learning
+    # curves (2026-11-17): a B2C total summed in the inter-state B2C Large invoice that has a table of its own.
+    steps = {s.get("n"): s for s in (skill or {}).get("steps") or []}
+
+    def where(p):
+        n = p.get("step") or 0
+        before = [steps[k].get("summary") or "" for k in range(max(1, n - 5), n) if k in steps]
+        here = steps.get(n) or {}
+        return (f"typed at: {here.get('summary') or ''}, on \"{here.get('window') or ''}\"; the steps just before it: "
+                + "; ".join(x for x in before if x))
+
+    notes = [str(x.get("text") or "") for x in (skill or {}).get("notes") or [] if isinstance(x, dict)]
+    asked = "\n".join(f"- {p['name']}: {p.get('label') or p['name']}"
+                      + (f" (when taught: {p.get('example')})" if p.get("example") else "") + f" - {where(p)}"
+                      for p in params)
+    content = (f"The request:\n{context}\n\nThe values:\n{asked}\n\n"
+               + (("What the person said when they taught it:\n" + "\n".join(f"- {n}" for n in notes[:12]) + "\n\n")
+                  if notes else "")
+               + "Count a document only where the value goes - a figure that belongs in another table or section of "
+                 "the same form is not part of this one.\n\nThe documents:\n"
+               + "\n\n".join(f"--- {name} ---\n{text}" for name, text in texts.items()))
+    try:
+        message, _ = llm_client.chat([{"role": "system", "content": DERIVE_SYSTEM}, {"role": "user", "content": content}],
+                                     max_tokens=16000, response_format={"type": "json_object"},
+                                     purpose="py.binding.derive")
+        found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
+        answer = (json.loads(found.group(0)) if found else {}).get("values") or {}
+    except Exception as exc:  # noqa: BLE001 - not derived: the part stays the model's
+        log(f"binding: the values could not be derived ({exc})")
+        return ({}, {})
+    values, evidence = {}, {}
+    for p in params:
+        proposed = answer.get(p["name"]) if isinstance(answer, dict) else None
+        value = checked_derivation(proposed, texts)
+        if value is None:
+            if proposed:
+                log(f"binding: {p['name']} proposed as {json.dumps(proposed)[:200]} - not proven, left to the model")
+            continue
+        values[p["name"]] = value
+        figures = ", ".join(f"{f.get('figure')} ({os.path.basename(str(f.get('document')))})"
+                            for f in proposed.get("figures") or [])
+        evidence[p["name"]] = f"{proposed.get('op')} of {figures} - checked by code: {str(proposed.get('why') or '')[:160]}"
+    return values, evidence

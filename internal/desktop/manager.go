@@ -1643,28 +1643,41 @@ func (m *Manager) PersistMemoryFile(
 	filename string,
 	fileContent string,
 ) error {
-	name := path.Base(filename)
-	if name != filename || name == "." || name == ".." || name == "/" || name == "" {
-		return fmt.Errorf("memory file %q is not a file name", filename)
-	}
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	body := []byte(strings.TrimSpace(fileContent) + "\n")
-	if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body)), ModTime: time.Now()}); err != nil {
+	buf, err := memoryTar(filename, fileContent)
+	if err != nil {
 		return err
 	}
-	if _, err := tw.Write(body); err != nil {
-		return err
-	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
-
 	target, done, err := m.homeAccess(ctx, desktopID)
 	if err != nil {
 		return err
 	}
 	defer done()
+	return m.persistMemoryTar(ctx, target, desktopID, buf)
+}
+
+// memoryTar is one memory file as a tar archive, its name checked to be a plain file name.
+func memoryTar(filename, fileContent string) (*bytes.Buffer, error) {
+	name := path.Base(filename)
+	if name != filename || name == "." || name == ".." || name == "/" || name == "" {
+		return nil, fmt.Errorf("memory file %q is not a file name", filename)
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := []byte(strings.TrimSpace(fileContent) + "\n")
+	if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body)), ModTime: time.Now()}); err != nil {
+		return nil, err
+	}
+	if _, err := tw.Write(body); err != nil {
+		return nil, err
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return &buf, nil
+}
+
+// persistMemoryTar unpacks a memory file's archive into the memory directory of the container target, as the worker.
+func (m *Manager) persistMemoryTar(ctx context.Context, target, desktopID string, buf *bytes.Buffer) error {
 	// A container keeps the image it was created from, so a desktop created before the agent's directories moved
 	// under ~/.decurix still runs an agent that reads ~/memory. Write there while it is the only memory directory the
 	// desktop has; a newer agent moves it in when it starts. The script is constant; only the archive varies.
@@ -1672,7 +1685,7 @@ func (m *Manager) PersistMemoryFile(
 dir=/home/headless/.decurix/memory
 if [ -d /home/headless/memory ] && [ ! -d "$dir" ]; then dir=/home/headless/memory; fi
 mkdir -p "$dir" && exec tar -x --no-overwrite-dir -C "$dir" -f -`
-	code, err := m.execWorker(ctx, target, &buf, "/bin/sh", "-c", script)
+	code, err := m.execWorker(ctx, target, buf, "/bin/sh", "-c", script)
 	if err != nil {
 		return fmt.Errorf("write memory into desktop %s: %w", sanitizeName(desktopID), err)
 	}

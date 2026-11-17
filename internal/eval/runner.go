@@ -96,6 +96,12 @@ type Sandbox interface {
 	SettlePractice(ctx context.Context, id string) error
 }
 
+// practiceAddresser reads a practice desktop's address now (desktop.Manager.PracticeAddress): a reset restarts the
+// container, and its address may change.
+type practiceAddresser interface {
+	PracticeAddress(ctx context.Context, id string) (string, error)
+}
+
 // Bundles pulls a case's run bundle off its practice desktop (*runs.Puller over desktop.PracticeHome), before the
 // next case resets the desktop; the worker is the practice container's id.
 type Bundles interface {
@@ -411,21 +417,21 @@ func caseClasses(cases []Case) map[string]string {
 	return out
 }
 
-// selectCases is the suite's cases, limited to ids when given, in the suite's order.
+// selectCases is the suite's cases, limited to ids when given, in the order the ids are given (a learning curve that
+// starts with the case that failed last round runs it first), each once.
 func selectCases(s Suite, ids []string) ([]Case, error) {
 	if len(ids) == 0 {
 		return s.Cases, nil
 	}
-	want := map[string]bool{}
+	seen := map[string]bool{}
+	var out []Case
 	for _, id := range ids {
-		if _, ok := s.Case(id); !ok {
+		c, ok := s.Case(id)
+		if !ok {
 			return nil, BadRequest(fmt.Sprintf("The suite has no case %q.", clipText(id, 64)))
 		}
-		want[id] = true
-	}
-	var out []Case
-	for _, c := range s.Cases {
-		if want[c.ID] {
+		if !seen[id] {
+			seen[id] = true
 			out = append(out, c)
 		}
 	}
@@ -778,6 +784,12 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 						err = s.Sandbox.SettlePractice(ctx, d.ContainerID)
 					}
 					if err == nil {
+						// (the address it had may be another container's now: desktop.Manager.PracticeAddress)
+						if a, ok := s.Sandbox.(practiceAddresser); ok {
+							if ip, aerr := a.PracticeAddress(ctx, d.ContainerID); aerr == nil && ip != "" {
+								d.IP = ip
+							}
+						}
 						err = s.waitAgent(ctx, d)
 					}
 					return err
@@ -1258,10 +1270,21 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 					ev.Unfinished = append(ev.Unfinished, "too many questions")
 					return problems
 				}
-				if !o.Secret && confirm == "" {
+				// A worded approval may also ask for a value the person holds (the code the press sends): it is
+				// classified like any question, so the reply can carry that fact too (approvalWithFact).
+				if !o.Secret && (confirm == "" || confirmKind == "approval") {
 					problems = append(problems, s.classify(ctx, desktopID, taskID, c, expert, &asked)...)
 				}
-				if !arm.Expert || o.Secret {
+				given := false
+				if o.Secret && arm.Expert {
+					// A secret the case itself gives - one fact its own refers_to words name (the OTP the client read
+					// out) - is answered with that fact, and the reply goes marked secret as a person's would. Any
+					// other secret (a password) is answered by nobody.
+					if f, ok := secretFact(c, o.Text); ok {
+						asked.Named, asked.Fact, asked.Required, given = []string{f.ID}, f.ID, f.IsRequired(), true
+					}
+				}
+				if !arm.Expert || o.Secret && !given {
 					// No expert, or a secret nobody may answer with a value: the question ends the case.
 					ev.Questions = append(ev.Questions, asked)
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text
@@ -1270,6 +1293,9 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				asked.Reply = Reply(c, asked.Fact)
 				if confirm != "" {
 					asked.Reply, asked.Confirm = confirm, confirmKind
+				}
+				if confirmKind == "approval" {
+					asked.Reply = approvalWithFact(c, asked.Fact)
 				}
 				ev.Questions = append(ev.Questions, asked)
 				// The expert's words are the person's on this desktop: kept where its control plane (the broker) serves

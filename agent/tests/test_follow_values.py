@@ -69,6 +69,26 @@ class FollowValues(unittest.TestCase):
         self.assertEqual(steps[4]["target"]["name"], "Type a message to Koustubh OG")
         self.assertNotIn("contains", steps[4]["target"])
 
+    def test_a_result_whose_name_only_held_what_was_typed_is_found_by_this_runs_value(self):
+        # Found in the learning curves (2026-11-16): "Sahyadri" typed, "Sahyadri Lift Services" clicked; for another
+        # client the replay looked for "<client> Lift Services" and stopped.
+        steps = [{"n": 1, "kind": "type", "param": "client", "target": target("textbox", "Search"), "expect": []},
+                 {"n": 2, "kind": "click", "target": target("link", "Sahyadri Lift Services"), "expect": []}]
+        (_, step) = replay.follow_values(steps, [{"name": "client", "example": "Sahyadri", "step": 1}],
+                                         {"client": "Konkan Coast Interiors"})
+        self.assertEqual(step["target"]["name"], "Konkan Coast Interiors")
+        screen = {"elements": [element("link", "Sahyadri Lift Services", "e1"),
+                               element("link", "Konkan Coast Interiors", "e2")], "windows": [], "active_title": ""}
+        found, _, _ = replay.resolve(step, screen)
+        self.assertEqual(found["ref"], "e2")
+
+    def test_a_value_chosen_from_a_list_is_put_in_its_place_in_fixed_wording(self):
+        steps = [{"n": 1, "kind": "select", "param": "month", "target": target("combobox", "Period"), "expect": []},
+                 {"n": 2, "kind": "click", "target": target("link", "Export GSTR-1 for October 2026"), "expect": []}]
+        (_, step) = replay.follow_values(steps, [{"name": "month", "example": "October 2026", "step": 1}],
+                                         {"month": "December 2026"})
+        self.assertEqual(step["target"]["name"], "Export GSTR-1 for December 2026")
+
     def test_typing_is_not_held_to_what_else_appeared(self):
         self.assertEqual(replay._typing_checks(STEPS[4])["expect"], [])
 

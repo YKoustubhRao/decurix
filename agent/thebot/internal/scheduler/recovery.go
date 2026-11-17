@@ -19,7 +19,7 @@ import (
 //   - Only a POSITIVE reclassification counts. The failure-reasoning model often drops the phrasing a classifier needs
 //     ("run the command: X" becomes "X"), and "general" then downgraded a real retry into a chat reply that ran nothing.
 //   - An operator step's retry stays the operator's: it has the shell, the screen and the web, so any other kind only
-//     takes tools away. Found live (2026-11-15, core-v2): the retry was a shell line that read a page by its URL,
+//     takes tools away. Found live (2026-11-15, an eval run): the retry was a shell line that read a page by its URL,
 //     Classify called it web, and the whole command line went to a search engine.
 func retryKind(original, retryStep string) string {
 	if original == "operator" {

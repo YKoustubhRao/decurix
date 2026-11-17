@@ -51,6 +51,46 @@ MAX_ATTEMPTS = 8
 RETRY_BUDGET_SECONDS = float(os.environ.get("DECURIX_LLM_RETRY_SECONDS", "240"))
 # The budget an empty answer cut off by its limit is asked again with (a reasoning model's thinking counts in it).
 EMPTY_RETRY_TOKENS = 16000
+# The models (provider and the name asked for) seen to spend a short budget thinking and answer nothing: their later
+# calls start with EMPTY_RETRY_TOKENS. A budget is a cap, not a cost, so the room is free; the call it saves was a
+# whole prompt sent for nothing and up to a minute (found in the learning curves, 2026-11-15: every run's request
+# reading, value fill and check did it again). Kept on disk so a restarted agent - between a series' tasks - knows.
+ROOMY_FILE = None  # (None: config.DECURIX_DIR / "llm-roomy-models.json", read when used)
+
+
+def _roomy_file():
+    return ROOMY_FILE or (config.DECURIX_DIR / "llm-roomy-models.json")
+
+
+def _roomy_key(model):
+    return f"{PROVIDER or 'azure'}:{model or 'default'}"
+
+
+def _roomy():
+    try:
+        with open(_roomy_file(), encoding="utf-8") as f:
+            return set(json.loads(f.read()))
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def _remember_roomy(model):
+    from pathlib import Path
+    from decurix_agent.computer import privacy
+    try:
+        Path(_roomy_file()).parent.mkdir(parents=True, exist_ok=True)
+        privacy.write_scrubbed(Path(_roomy_file()), sorted(_roomy() | {_roomy_key(model)}), atomic=True, shapes=False)
+    except OSError as exc:
+        log(f"llm: could not keep that {_roomy_key(model)} needs room to answer: {exc}")
+
+
+def forget_roomy():
+    """Forget which models needed room to answer (a test's clean slate)."""
+
+    try:
+        os.remove(_roomy_file())
+    except OSError:
+        pass
 
 
 class LLMError(RuntimeError):
@@ -132,6 +172,8 @@ def chat_decided(via_soul, messages, *, max_tokens, purpose):
 
 def _chat(messages, tools, model, max_tokens, temperature, response_format, purpose, via_soul):
 
+    if max_tokens < EMPTY_RETRY_TOKENS and _roomy_key(model) in _roomy():
+        max_tokens = EMPTY_RETRY_TOKENS
     body = {
         "model": model,
         "messages": messages,
@@ -239,6 +281,7 @@ def _chat(messages, tools, model, max_tokens, temperature, response_format, purp
         # second bill. An answer cut off at the limit is no answer: once more, with room to answer.
         cut = "answered nothing" if not (message.get("content") or "").strip() else "was cut off"
         log(f"llm: the model used all {max_tokens} tokens and {cut} - asking again with {EMPTY_RETRY_TOKENS}")
+        _remember_roomy(model)
         return _chat(messages, tools, model, EMPTY_RETRY_TOKENS, temperature, response_format, purpose, via_soul)
     return message, spent
 

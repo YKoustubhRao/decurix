@@ -521,8 +521,41 @@ def _earlier_said():
     except Exception as exc:  # noqa: BLE001 - what cannot be confirmed is not sent
         log(f"TheBot: could not read the person's replies on this task: {exc}")
         return []
-    return [{"asked": str(r.get("asked") or ""), "said": str(r.get("text") or "")}
+    said = [{"asked": str(r.get("asked") or ""), "said": str(r.get("text") or "")}
             for r in rows[-MAX_EARLIER_SAID:] if str(r.get("text") or "").strip()]
+    return (said + _taught_said())[:MAX_EARLIER_SAID]
+
+
+def _taught_said():
+    """What the person said when they taught the task this job is guided by - their notes while demonstrating, each
+    lesson question with their answer, their corrections since, and the rules the lesson settled - as their words for
+    soul: a value the person taught ("UQC NA for services") is theirs, not invented, and the review and the verifier
+    weigh the work against the rules they gave. Found in the learning curves (2026-11-16): the filler guard refused the
+    taught "NA" on every month, and the verifier, shown no rule, called a correct B2C Large entry wrong. [] when no
+    taught task guides this job."""
+
+    try:
+        skill = ((guidance.get() or {}).get("run") or {}).get("skill") or {}
+    except Exception:  # noqa: BLE001 - nothing taught is sent when it cannot be read
+        return []
+    if not skill.get("steps"):
+        return []
+    title = skill.get("title") or skill.get("name") or "this task"
+    out = []
+    notes = [str(n.get("text") or "") for n in skill.get("notes") or [] if isinstance(n, dict)]
+    if notes:
+        out.append({"asked": f"What did you say while you showed me \"{title}\"?", "said": " / ".join(notes)})
+    understanding = skill.get("understanding") or {}
+    for d in understanding.get("dialogue") or []:
+        if isinstance(d, dict) and str(d.get("a") or "").strip():
+            out.append({"asked": f"(When you taught \"{title}\") " + str(d.get("q") or ""), "said": str(d.get("a"))})
+    for c in skill.get("corrections") or []:
+        if isinstance(c, dict) and str(c.get("text") or "").strip():
+            out.append({"asked": f"(A correction to \"{title}\")", "said": str(c["text"])})
+    rules = [str(r) for r in understanding.get("rules") or [] if str(r).strip()]
+    if rules:
+        out.append({"asked": f"What are the rules of \"{title}\", as you taught them?", "said": "\n".join(rules)})
+    return out
 
 
 # The picked fields a job is sent at most (soul's skills.MaxPickedFields bounds it too).
@@ -1211,6 +1244,98 @@ def resume_waiting(record):
     return True
 
 
+def _steers(reply):
+    """Whether the person's reply to the question asked last steers the task away from its request (playbooks.answered):
+    not a yes to an approval, and not an answer the rules require on every run (engine_questions._required_every_run)."""
+
+    from decurix_agent import engine_questions
+    earlier = getattr(state, "answer_from_earlier", False)
+    state.answer_from_earlier = False  # (one reply's, never the next one's)
+    if getattr(state, "last_query_kind", "") == "approval":
+        return False
+    if earlier:
+        # The harness answered from what the person said on an earlier task: nothing new steered this run. Found in the
+        # learning curves (2026-11-16): every run's plan question was answered so, and no correct run was ever kept.
+        return False
+    from decurix_agent.computer import approval
+    if approval.plain_yes(reply):
+        # A yes and nothing more to what the worker proposed: the way stays the worker's own. Found in the learning
+        # curves (2026-11-16): a correct filing asked "the review found a discrepancy - go on?", was told "Yes, go
+        # ahead.", and was not kept as steered by a person - so no case ever reused a kept way.
+        return False
+    # Secret from structure either way: soul raised the question for one, or the control plane withheld the reply.
+    # Found in the learning curves (2026-11-16): the model asked for the filing's one-time code in its own words, the
+    # control plane withheld the reply as a secret, and the correct filing was still not kept - "steered by a person".
+    secret = getattr(state, "last_query_secret", False) or getattr(state, "reply_secret", False)
+    return not engine_questions._required_every_run(getattr(state, "last_query_text", ""), reply, secret)
+
+
+# A question that itself offers "yes" (a plan's "Reply `yes` to go ahead, or say what to change"): a yes answers it.
+_OFFERS_YES = re.compile(r"\byes\b", re.IGNORECASE)
+_reasked = {"question": None}
+
+
+def _either_or(question):
+    """The question's last sentence when it asks which of two things (", or ...?") and does not itself offer a yes; ""
+    otherwise."""
+
+    if _OFFERS_YES.search(str(question or "")):
+        return ""
+    # The last sentence that asks, on the last line that does: a dot inside an address ("mail.example.test") is no
+    # sentence's end, and the plan's own lines before the question are not the question.
+    asking = [line.strip() for line in str(question or "").splitlines() if "?" in line]
+    if not asking:
+        return ""
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", " ".join(asking[-1].split())) if s.endswith("?")]
+    if not sentences:
+        return ""
+    last = sentences[-1].strip()
+    sides = re.split(r",?\s+or\s+", last, maxsplit=1)
+    return last if len(sides) == 2 and all(len(side.split()) >= 2 for side in sides) else ""
+
+
+def _yes_to_either_or(reply):
+    """
+    A plain yes to a question that asked which of two things: no answer at all. Found in the learning curves
+    (2026-11-16): "1060 is missing from the folder. Is there a missing bill, or should I proceed with these three?" was
+    answered "Yes, go ahead.", the run took it for "proceed", and a bill the person had was never entered. Returns the
+    question to put again (once per question), or "".
+    """
+
+    if getattr(state, "last_query_kind", "") == "approval" or not approval.plain_yes(reply):
+        return ""
+    question = _either_or(getattr(state, "last_query_text", ""))
+    if not question or _reasked["question"] == question or _yes_settles(question, reply):
+        return ""
+    _reasked["question"] = question
+    return question
+
+
+EITHER_OR_SYSTEM = (
+    "A worker asked a person a question and the person replied. Say whether the reply settles what the question asks. "
+    "A question that asks WHICH of two courses or options to take (\"Is there a missing bill, or should I proceed with "
+    "these three?\", \"Only the 18% vouchers, or also the 12% ones?\") is not settled by a bare yes. A question whose "
+    "yes means go ahead or nothing more (\"Is there anything else I should read, or anything I should do "
+    "differently?\") is settled by it. Answer JSON only: {\"settled\": true or false}."
+)
+
+
+def _yes_settles(question, reply):
+    """Whether a plain yes settles the question (a model's reading: words cannot tell "anything A, or anything B?" from
+    "A, or B?"). Found live (2026-11-16): the plan's own closing question was asked again on every run. No model, or
+    no reading: settled - the reply goes on as it always did."""
+
+    try:
+        from decurix_agent import llm_client, study
+        if not llm_client.available():
+            return True
+        data = study._call(EITHER_OR_SYSTEM, f"Question: {question}\nReply: {reply}", max_tokens=200)
+        return data.get("settled") is not False
+    except Exception as exc:  # noqa: BLE001 - a reading that failed changes nothing
+        log(f"Could not read whether a yes settles the question: {exc}")
+        return True
+
+
 def continue_after_query(query_response):
     if not state.current_task:
         log(
@@ -1220,10 +1345,21 @@ def continue_after_query(query_response):
         return
 
     state.waiting_for_query = False
+    which = _yes_to_either_or(query_response)
+    if which:
+        # The job stays paused (and a written pause stays written): the answer to this question resumes it.
+        log(f"A plain yes to an either-or question - asking which: {which}")
+        ask_for_query(f"Your reply \"{' '.join(str(query_response).split())[:80]}\" does not say which. {which} "
+                      "Say which one you mean, with anything it needs.", kind="query")
+        return
     note_reply(query_response)
 
-    # What a person answers steers the rest of the task: its way is not the request's (playbooks.py).
-    if getattr(state, "last_query_kind", "") != "approval":
+    # What a person answers steers the rest of the task: its way is not the request's (playbooks.py). An answer the
+    # rules require on every run - the plan's yes as it was put, a secret given and nothing more - steers nothing, as
+    # it is no help (owner's ruling 2026-11-10, engine_questions._required_every_run). Found in the learning curves
+    # (2026-11-15): every filing asks for its one-time code, so no correct filing was ever kept as the way, and each
+    # month's run worked the whole return out again (85, then 142 model turns).
+    if _steers(query_response):
         playbooks.answered()
 
     log_banner("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)", withheld(query_response))

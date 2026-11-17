@@ -34,5 +34,26 @@ class AListsOwnEntry(unittest.TestCase):
         self.assertEqual(core._not_picked([("Notes", "Test")], picks=[took]), [("Notes", "Test")])
 
 
+class APagesOwnDropDown(unittest.TestCase):
+    """A page's own <select> records "taken" only when the entry differs from the words asked (core._entry_taken).
+    Found in the learning curves (2026-11-16): the portal's "NA" chosen with gui select was refused at every save."""
+
+    def test_the_option_a_native_select_took_is_the_entry(self):
+        native = {"label": "UQC", "option": "NA", "taken": "", "native": True, "offered": None}
+        self.assertEqual(core._not_picked([("UQC", "NA"), ("Description", "n/a")], picks=[native]),
+                         [("Description", "n/a")])
+
+    def test_a_custom_lists_option_asked_is_still_not_the_entry(self):
+        custom = {"label": "UQC", "option": "NA", "taken": "", "native": False, "offered": None}
+        self.assertEqual(core._not_picked([("UQC", "NA")], picks=[custom]), [("UQC", "NA")])
+
+    def test_the_select_event_says_native_from_its_backend(self):
+        from decurix_agent.computer import records
+        event = {"kind": "select", "outcome": "done", "option": "NA", "backend": "cdp",
+                 "element": {"name": "UQC"}, "url": "http://portal.test/x"}
+        self.assertTrue(records._pick_of(event)["native"])
+        self.assertFalse(records._pick_of(dict(event, backend="cdp:custom"))["native"])
+
+
 if __name__ == "__main__":
     unittest.main()

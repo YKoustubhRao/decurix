@@ -1337,6 +1337,11 @@ def keep(request, skill=None):
             return book["name"]
 
         if not clean or not worth or len(all_books()) >= MAX_PLAYBOOKS:
+            # Why a checked run's way was not kept, in the trace: found in the learning curves (2026-11-16), a correct
+            # filing kept its method and no playbook, and nothing said why.
+            log(f"Playbooks: this run's way is not kept - {len(segments)} engine part(s)"
+                f"{', steered by a person' if steered else ''}, {len(commands)} command(s) kept of it, "
+                f"{run.get('turns', 0)} turn(s)" + (", the store is full" if len(all_books()) >= MAX_PLAYBOOKS else ""))
             return None
 
         words = shape(request)

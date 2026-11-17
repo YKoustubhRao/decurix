@@ -580,14 +580,19 @@ def _settle_topics(understanding, topics, question, answer):
     called the topic unknown and the save question said it would be "asked next".
     """
 
-    for item in understanding.get("brief") or []:
+    said = " ".join(str(answer).split())[:400]
+    pasted = ""  # the rule this answer already became for an earlier topic: one answer is one rule, never a copy per topic
+    for item in sorted(understanding.get("brief") or [], key=lambda b: b["topic"]):
         if item["topic"] not in topics or item.get("basis") not in ("unknown", "assumed"):
             continue
         tagged = [r for r in understanding.get("rules") or [] if r.startswith(f"[{item['topic']}]")]
-        if not tagged:
-            rule = f"[{item['topic']}] {' '.join(str(answer).split())[:400]}"
-            understanding.setdefault("rules", []).append(rule)
-            tagged = [rule]
-        item["rule"] = tagged[0][len(item["topic"]) + 3:].replace(" (my assumption)", "")
+        if tagged:
+            item["rule"] = tagged[0][len(item["topic"]) + 3:].replace(" (my assumption)", "")
+        elif pasted:
+            item["rule"] = said
+        else:
+            pasted = f"[{item['topic']}] {said}"
+            understanding.setdefault("rules", []).append(pasted)
+            item["rule"] = said
         item["basis"] = "answered"
         item["evidence"] = f"the person's answer to: {' '.join(str(question).split())[:120]}"

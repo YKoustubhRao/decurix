@@ -426,7 +426,13 @@ def substitute(text, spans):
         if not span["placed"]:
             continue
         pattern = _phrase(span["find"])
-        out = pattern.sub(lambda _m, new=span["new"]: new, out)
+        # Where this run's whole value already stands, the text is this run's already: "Sharavati" typed in the
+        # demonstration and "Sharavati Builders" this run, a name "Ravi Kamath (Sharavati Builders)" is left as it is.
+        # Found in the learning curves (2026-11-16): it became "... (Sharavati Builders Builders)" and every run stopped.
+        new_words = [w for w, _, _ in _words(span["new"])]
+        held = [(m.start(), m.end()) for m in _phrase(new_words).finditer(out)] if new_words else []
+        out = pattern.sub(lambda m, new=span["new"]: m.group(0) if any(a <= m.start() and m.end() <= b for a, b in held)
+                          else new, out)
         if "://" in out:
             for encode in (urllib.parse.quote_plus, urllib.parse.quote):
                 old_encoded = encode(" ".join(span["find"]))
@@ -593,6 +599,14 @@ def value_spans(skill, values):
     spans = []
     for param in skill.get("params") or []:
         old, new = param.get("example"), (values or {}).get(param["name"])
+        if param.get("list") and new is not None:
+            # A list's value is one entry per item ("a; b"): only one value for every item is carried into a recorded
+            # name - the joined list names nothing on any screen (found in the learning curves, 2026-11-16: a link
+            # "Ledger vouchers: Sales@18%; Sales@18%; ..." stopped every month's closing check).
+            entries = {entry.strip() for entry in skills.split_items(str(new))}
+            if len(entries) != 1:
+                continue
+            new = entries.pop()
         if old is None or new is None or str(new) == str(old):
             continue
         find = [w for w, _, _ in _words(str(old))]
@@ -626,9 +640,13 @@ def _party_entry(recorded, spans, target=None):
             return None  # the change is the whole name: the new name is the entry's name
         if re.search(r"\d", str(span.get("old") or "")):
             return None  # an identifier changed ("Invoice 1042" -> "Invoice 1043"): the spliced name is exact
+        # The words before the value stay ("Open TaxNet as Sahyadri Lift Services" -> "Open TaxNet as <this run's
+        # client>"): with the value alone, the breadcrumb "<client>" and the link "Open TaxNet as <client>" both held
+        # it, and the replay could tell neither (found in the learning curves, 2026-11-16).
+        prefix = name[:_phrase(span["find"]).search(name).start()]
         # Built from the target as substituted (its window title follows the change too, review round 2).
-        return dict(target or recorded, name=span["new"], contains=True, value=span["new"], path=None,
-                    avoid=list(recorded.get("avoid") or []) + [name])
+        return dict(target or recorded, name=(prefix + span["new"]).strip(), contains=True, value=span["new"],
+                    path=None, avoid=list(recorded.get("avoid") or []) + [name])
     return None
 
 

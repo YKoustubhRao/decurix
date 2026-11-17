@@ -54,6 +54,9 @@ PURPOSES = {
     "py.study",               # study: what a demonstration teaches
     "py.lesson.gates",        # learning: which steps a lesson reply says need the person's OK
     "py.tool.args",           # tool_task: a learned tool's arguments
+    "py.replay.choose",       # choices: which listed entry a taught pick takes this run
+    "py.parts.extras",
+    "py.binding.derive",      # binding: a value the documents give by arithmetic, proven by code        # skill_task: the case's items a driven run must look at before it commits
 }
 
 

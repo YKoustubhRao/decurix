@@ -1411,9 +1411,16 @@ def _phase_refusal(control):
     from decurix_agent import task_context
     from decurix_agent.computer import phase
     noted = phase.read()
+    label = " ".join(str(control.get("name") or "").split())[:60]
+    if noted.get("phase") == "repair" and noted.get("task") == task_context.current():
+        # A repair makes ONE stopped step possible; what the taught steps save, they save after it. Found in the
+        # learning curves (2026-11-17): told to pick one bill's customer, the model entered and saved two whole
+        # vouchers and a new ledger, and the next repair two more - the run then held records nobody declared.
+        return (f'this repair makes one step possible - "{label or "this press"}" would save a record, which the taught '
+                "steps do after you. Report DONE if the step can go on now, or HELP with what stops it (a record "
+                "that is missing).")
     if noted.get("phase") != "gather" or noted.get("task") != task_context.current():
         return None
-    label = " ".join(str(control.get("name") or "").split())[:60]
     taught = [c for c in noted.get("commits") or [] if c]
     if label and any(approval.names_control(c, control) or approval.names_control(label, {"name": c}) for c in taught):
         return None
@@ -2219,6 +2226,12 @@ def _not_the_apps(fields):
             if not (label in shown and values.same_value(value, shown[label]) is True)]
 
 
+def _entry_taken(pick):
+    """The application's list entry a pick took: its "taken", or - for a page's own <select> - the option asked."""
+
+    return pick.get("taken") or (pick.get("option") if pick.get("native") else "")
+
+
 def _not_picked(fields, picks=None):
     """
     The form's fields the filler check judges, less a value a pick took from the application's own list for that
@@ -2227,6 +2240,10 @@ def _not_picked(fields, picks=None):
     person chose in the demonstration) was refused as an invented filler at every save. Only the entry TAKEN backs the
     value: an entry the list merely offered does not (review of freeze 2, A11: a typed filler that matched one of the
     offered entries passed). Whether it was the right entry is the pick checks' to say (records.pick_backed).
+    A page's own drop-down (a native <select>) records "taken" only when the entry differs from the words asked; when
+    they are the same, the option asked is the entry taken. Found in the learning curves (2026-11-16): the portal's
+    "NA", chosen with gui select from its UQC list as the person's rule says, was refused as invented at every save,
+    the person was asked, and the return was never filed.
     """
 
     from decurix_agent import values
@@ -2235,8 +2252,8 @@ def _not_picked(fields, picks=None):
         picks = records.picks(open_form=True)
 
     def listed(label, value):
-        return any(records.label_matches(p.get("label"), label) and p.get("taken")
-                   and values.same_value(value, p["taken"]) is True for p in picks)
+        return any(records.label_matches(p.get("label"), label) and (entry := _entry_taken(p))
+                   and values.same_value(value, entry) is True for p in picks)
 
     return [(label, value) for label, value in fields if not listed(label, value)]
 
@@ -3834,6 +3851,13 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if text is not None and ("[withheld" in str(text) or "[held back" in str(text)):
         raise ComputerError("Not typed: the text holds a withheld mark ([withheld]), not the value it stands for. "
                             "Ask the person for this value (HELP:), and type what they give.")
+
+    # A one-step repair of a taught run's replay has a budget of actions (repairs.budget_refusal, decided from the
+    # recording's own count): past it nothing more is done, and the model reports so the replay can go on.
+    from decurix_agent import repairs
+    spent = repairs.budget_refusal()
+    if spent:
+        raise ComputerError(f"Not done: {spent}")
 
     # The turn this action belongs to (control.py): refused while a person holds the screen, and discarded - never
     # recorded, never shown - when control changes hands before it is done.

@@ -1,5 +1,7 @@
 import io
 import json
+import os
+import tempfile
 import unittest
 import urllib.error
 from email.message import Message
@@ -77,6 +79,14 @@ class AnEmptyAnswerCutOffByItsLimit(unittest.TestCase):
     """Found live (2026-11-01): a reasoning model spent an 800-token budget thinking and answered nothing; reading a
     request against the taught tasks failed, and a taught task went to the engine as if it had never been taught."""
 
+    def setUp(self):
+        # What a model needed is remembered in a file: each test starts with none remembered, never the host's own.
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        patcher = mock.patch.object(llm_client, "ROOMY_FILE", os.path.join(home.name, "roomy.json"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_is_asked_again_with_room_to_answer(self):
         empty = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": {"prompt_tokens": 3}}
         sent = []
@@ -88,6 +98,23 @@ class AnEmptyAnswerCutOffByItsLimit(unittest.TestCase):
             message, _ = llm_client.chat([{"role": "user", "content": "x"}], max_tokens=800, purpose="py.study")
         self.assertEqual(message["content"], "hi")
         self.assertEqual(sent, [800, llm_client.EMPTY_RETRY_TOKENS])
+
+    def test_a_model_that_needed_room_once_gets_it_from_the_start(self):
+        # Found in the learning curves (2026-11-15): every run's request reading, value fill and check spent a whole
+        # call on an 800- or 3000-token budget a reasoning model used up thinking, then asked again - each time.
+        empty = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": {"prompt_tokens": 3}}
+        sent = []
+
+        def answer(request, timeout=None):
+            sent.append(json.loads(request.data)["max_completion_tokens"])
+            return Ok(empty if len(sent) == 1 else ANSWER)
+        with tempfile.TemporaryDirectory() as home, \
+                mock.patch.object(llm_client, "ROOMY_FILE", os.path.join(home, "roomy.json")), \
+                mock.patch.object(llm_client.urllib.request, "urlopen", side_effect=answer):
+            llm_client.chat([{"role": "user", "content": "x"}], max_tokens=800, purpose="py.study")
+            llm_client.chat([{"role": "user", "content": "y"}], max_tokens=800, purpose="py.study")
+            llm_client.chat([{"role": "user", "content": "z"}], model="fast", max_tokens=800, purpose="py.study")
+        self.assertEqual(sent, [800, llm_client.EMPTY_RETRY_TOKENS, llm_client.EMPTY_RETRY_TOKENS, 800])
 
     def test_an_answer_or_a_finished_empty_one_is_left_as_it_is(self):
         stopped = {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}

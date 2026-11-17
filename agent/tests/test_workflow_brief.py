@@ -73,6 +73,20 @@ class AnAnswerSettlesItsTopic(unittest.TestCase):
         self.assertNotIn("asked next: exceptions", shown)
         self.assertIn("Still not settled - tell me if you can: sources", shown)
 
+    def test_one_answer_that_settles_two_topics_is_kept_once(self):
+        # Found live (books lesson, 2026-11-15): one long reply settled "changes" and "filing", neither tagged in the
+        # model's merged rules, and the whole reply was pasted in twice as rules 10 and 11 - read by every later run.
+        brief = study._brief([{"topic": "filing", "rule": "", "basis": "unknown"},
+                              {"topic": "changes", "rule": "", "basis": "unknown"}])
+        u = {"summary": "s", "brief": brief, "rules": ["[sources] Read the mail."], "questions": []}
+        answer = "A bill sent twice is entered once. Nothing to file: read the bills from the mail."
+        study._settle_topics(u, {"filing", "changes"}, "Is that right?", answer)
+        pasted = [r for r in u["rules"] if answer in r]
+        self.assertEqual(len(pasted), 1, u["rules"])
+        by = {b["topic"]: b for b in u["brief"]}
+        self.assertEqual((by["filing"]["basis"], by["changes"]["basis"]), ("answered", "answered"))
+        self.assertEqual(by["filing"]["rule"], answer)
+
 
 if __name__ == "__main__":
     unittest.main()

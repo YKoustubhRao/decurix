@@ -29,7 +29,7 @@ class AReplayAsksAboutItsPicks(ts.TeachingBase):
         sent, asked = [], []
         run = run if run is not None else {"skill": {"name": "enter-bills", "steps": []}, "values": {}}
         with mock.patch.object(skill_task, "_read_back", lambda run, text: ([], [])), \
-                mock.patch.object(skill_task, "_ledger_faults", lambda reply="": list(faults)), \
+                mock.patch.object(skill_task, "_ledger_faults", lambda reply="", run=None: list(faults)), \
                 mock.patch.object(skill_task, "_own_run"), mock.patch.object(skill_task, "_record_verdict"), \
                 mock.patch.object(final_gate, "_ask_about_picks",
                                   lambda run, reply, engine, guided: asked.append(reply) or True), \

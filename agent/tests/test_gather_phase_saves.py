@@ -44,6 +44,14 @@ class GatherPhase(unittest.TestCase):
         self.assertIsNone(core._phase_refusal({"role": "button", "name": "Save voucher"}))
         self.assertIsNone(core._phase_refusal(None))
 
+    def test_a_repair_saves_nothing(self):
+        # Found in the learning curves (2026-11-17): told to pick one bill's customer, a repair saved two whole vouchers.
+        phase.write(TASK, "repair", [])
+        why = core._phase_refusal({"role": "button", "name": "Save voucher"})
+        self.assertIn("makes one step possible", why)
+        self.assertIsNone(core._phase_refusal(None))
+        phase.write(TASK, None)
+
     def test_the_gather_commits_are_the_taught_steps_before_the_per_document_block(self):
         skill = {"steps": [{"n": 1, "id": "a", "kind": "click", "target": {"role": "link", "name": "Sales tax bills"}},
                            {"n": 2, "id": "b", "kind": "click", "target": {"role": "button", "name": "Save attachments"},

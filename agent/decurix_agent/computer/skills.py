@@ -326,17 +326,249 @@ def initial_values(skill, given=None):
     return values
 
 
-def needed_from(skill, start):
+def needed_from(skill, start, end=None):
     """
-    What a run starting at step `start` must be given. Steps before it are not
-    run, so what only they typed is not needed to carry on - except with a
-    loop, whose steps are numbered again for each item, where everything is.
+    What a run starting at step `start` (and ending at step `end`, when given) must be given. Steps outside it are
+    not run, so what only they typed is not needed - except with a loop, whose steps are numbered again for each item,
+    where everything is.
     """
 
     if list_params(skill):
         return required(skill)
 
-    return [p for p in required(skill) if p["step"] >= start]
+    return [p for p in required(skill) if p["step"] >= start and (end is None or p["step"] <= end)]
+
+
+# ============================================================
+# The parts of a taught task
+#
+# A taught task is reused part by part, not as one tool for the whole workflow
+# (owner, 2026-11-16: "dont keep entire workflow as a tool. reuse parts of
+# it"). Found in the learning curves: a filing taught as 70 steps across three
+# applications was offered to the model as one `gui do` that needed every value
+# up front - among them the name of a file the run itself exports half way - so
+# it was refused at once and the model did all 70 steps by hand, case after case
+# (~90 turns each). Cut where the work moves to another application and after
+# each step that commits something, each part replays on its own with only its
+# own values; the model replays the parts that fit this request and does by hand
+# the parts that differ, and still judges the result.
+# ============================================================
+
+# A part shorter than this is joined to the one before it (or after it, when it is the first): two steps are not worth
+# a command of their own.
+PART_MIN_STEPS = 3
+# Pieces cut only where a button led to another page are joined up to this many steps: a command per form sent would
+# be a turn per form, which is what the parts are to save.
+PART_MAX_STEPS = 16
+# A control named by a literal of the demonstration's own - a code that mixes digits and letters (a tax number, an
+# invoice reference) - that no value of the skill stands for: a step that presses it is the demonstration's case, not
+# every request's, and its part is one the model does by hand.
+_CASE_LITERAL = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{8,}(?![A-Za-z0-9])")
+
+
+def _step_host(step):
+    from urllib.parse import urlsplit
+    try:
+        return urlsplit(str(step.get("url") or "")).netloc.lower()
+    except ValueError:
+        return ""
+
+
+def _ends_part(step, next_step=None):
+    """A press that commits something (a save, an export, a filing) ends the part it is in - and so does a button the
+    application answered with another page (the next step was made there): a form sent, whatever its label ("Add" a
+    row of a table, "Search"). Found in the chat curve: three tables entered one after another were one part of 55
+    steps, so a request that needed one of them done differently could replay none."""
+
+    if step.get("kind") not in ("click", "double_click"):
+        return False
+    if step.get("consequential") or replay._step_commits(step):
+        return True
+    return ((step.get("target") or {}).get("role") == "button" and next_step is not None
+            and bool(step.get("url")) and bool(next_step.get("url")) and next_step["url"] != step["url"])
+
+
+def _case_literals(skill, steps):
+    """The demonstration's own codes the steps press by name that no parameter's value stands for."""
+
+    known = " ".join(" ".join(str(p.get(k) or "") for k in ("example", "default")) for p in skill.get("params") or [])
+    found = []
+    for step in steps:
+        if step.get("param"):
+            continue  # (its value is this run's)
+        for literal in _CASE_LITERAL.findall(str((step.get("target") or {}).get("name") or "")):
+            if literal not in known and literal not in found:
+                found.append(literal)
+    return found
+
+
+TEXT_FIELD_ROLES = {"textbox", "text box", "searchbox", "text field", "entry", "spinbutton"}
+
+
+def asks_value(step):
+    """Whether a step the person did by hand is a private value typed into a text field (a password, a one-time code):
+    the person can give the value when the replay gets there, and it is typed for them."""
+
+    return step.get("kind") == "manual" and (step.get("target") or {}).get("role") in TEXT_FIELD_ROLES
+
+
+def entry_end(steps, n):
+    """The number of the last step of the entry that step n begins into its field: the clicks, keys and further pieces
+    of the same field that follow it (the person typed one code in three pieces, with a click and a select-all
+    before each). A replay that typed the whole value carries on after it."""
+
+    by_n = {s.get("n"): s for s in steps}
+    first = by_n.get(n) or {}
+    field = ((first.get("target") or {}).get("role"), (first.get("target") or {}).get("name"))
+    last = n
+    for m in sorted(k for k in by_n if k and k > n):
+        s = by_n[m]
+        same = ((s.get("target") or {}).get("role"), (s.get("target") or {}).get("name")) == field
+        if not same or s.get("kind") not in ("click", "key", "manual", "type"):
+            break
+        last = m
+    return last
+
+
+def _page(url):
+    """A step's page: its address without the query (a list filtered by month is the same page)."""
+
+    return str(url or "").split("?", 1)[0].split("#", 1)[0].rstrip("/")
+
+
+def maker_blocks(skill, before, known):
+    """
+    The blocks of the steps before step `before` that make a record from values the request does not give: [{"first",
+    "last", "params"}]. A block is the page the person filled with such values - entered from the press that opened it
+    - up to the press that saved it. In the demonstration it ran once, for the one record the case needed (a new
+    customer before their bill); in another run it is needed only for a record the run finds missing, so it is not part
+    of the steps that only lead to the work.
+
+    `known`: the values this run has before it reads its documents. [] when there is none, or one that does not end
+    in a save (it is then not a record made, and the run is left as it was).
+    """
+
+    steps = [s for s in skill.get("steps") or [] if 0 < (s.get("n") or 0) < before]
+    by_n = {s["n"]: s for s in steps}
+    unknown = [s["n"] for s in steps if s.get("param") and not str(known.get(s["param"]) or "")]
+    blocks, inside = [], set()
+    for u in unknown:
+        if u in inside:
+            continue
+        page = _page(by_n[u].get("url"))
+        if not page:
+            return []
+        first = u
+        while first - 1 in by_n and _page(by_n[first - 1].get("url")) == page:
+            first -= 1
+        opener = by_n.get(first - 1)
+        if opener and opener.get("kind") in ("click", "double_click") and any(
+                c.get("type") == "url" and _page(c.get("value")) == page for c in opener.get("expect") or []):
+            first -= 1
+        last = next((n for n in sorted(by_n) if n > u and _page(by_n[n].get("url")) == page
+                     and (by_n[n].get("consequential") or replay._step_commits(by_n[n]))
+                     and by_n[n].get("kind") in ("click", "double_click")), None)
+        if last is None:
+            return []
+        span = range(first, last + 1)
+        blocks.append({"first": first, "last": last,
+                       "params": list(dict.fromkeys(by_n[n]["param"] for n in span if n in by_n and by_n[n].get("param")))})
+        inside.update(span)
+    return blocks
+
+
+def parts(skill):
+    """
+    The taught task cut into parts a run reuses one by one: [{"k", "first", "last", "where", "does", "params",
+    "commits", "by_hand"}], in order. A part begins where the work moves to another application (the steps that only
+    get there - an address typed, a key - go with the part they lead to) and ends after a step that commits. `params`:
+    the values its steps type or choose. `by_hand`: why a replay will not fit every request ("" when it may) - a step a
+    person did by hand (a one-time code), or a control named by the demonstration's own code. [] for a skill with a
+    per-item loop or list values: its steps are numbered again per item (expand), and its per-item part is run by
+    skill_task's own per-document replay.
+    """
+
+    steps = skill.get("steps") or []
+    if list_params(skill) or any(loop.get("enabled") for loop in skill.get("loops") or []) or len(steps) < 2 * PART_MIN_STEPS:
+        return []
+    # Cut first at every boundary, each kept with how firm it is: "hard" - another application, a commit, the
+    # demonstration's own case beginning - or "soft" - a button the application answered with another page.
+    groups, current, host = [], [], ""
+    for i, step in enumerate(steps):
+        here = _step_host(step)
+        if current and _case_literals(skill, [step]) and not _case_literals(skill, current):
+            # The demonstration's own case begins here: a part of its own, so the parts around it still replay.
+            groups.append((current, "hard"))
+            current = []
+        elif current and here and host and here != host:
+            # The steps that only led here (no named control: an address typed, Enter) belong to this part.
+            k = len(current)
+            while k and not ((current[k - 1].get("target") or {}).get("name")):
+                k -= 1
+            groups.append((current[:k], "hard"))
+            current = current[k:]
+        current.append(step)
+        host = here or host
+        following = steps[i + 1] if i + 1 < len(steps) else None
+        if _ends_part(step, following):
+            committed = step.get("consequential") or replay._step_commits(step)
+            groups.append((current, "hard" if committed else "soft"))
+            current = []
+    if current:
+        groups.append((current, "hard"))
+    groups = [(g, end) for g, end in groups if g]
+
+    def odd(group):
+        # (a part a replay will not fit every request: the demonstration's own case, or a step done by hand)
+        return bool(_case_literals(skill, group)) or any((s.get("kind") == "manual" or s.get("secret"))
+                                                         and not asks_value(s) for s in group)
+
+    # Then join: a piece too short for a command of its own goes with the one before it, and pieces cut only softly
+    # are joined up to PART_MAX_STEPS - but never a part a replay fits with one it does not.
+    merged = []
+    for group, end in groups:
+        if merged:
+            before, cut = merged[-1]
+            if odd(before) == odd(group) and (len(group) < PART_MIN_STEPS or len(before) < PART_MIN_STEPS
+                                              or (cut == "soft" and len(before) + len(group) <= PART_MAX_STEPS)):
+                merged[-1] = (before + group, end)
+                continue
+        merged.append((group, end))
+    merged = [g for g, _ in merged]
+    if len(merged) < 2:
+        return []
+
+    out = []
+    for k, group in enumerate(merged, 1):
+        first, last = group[0]["n"], group[-1]["n"]
+        # Where it works: the application of its first named control (the steps that only lead there are typed on
+        # the page before).
+        hosts = [h for h in (_step_host(s) for s in group if (s.get("target") or {}).get("name")) if h] \
+            or [h for h in (_step_host(s) for s in group) if h]
+        names = []
+        for step in group:
+            target = step.get("target") or {}
+            name = " ".join(str(target.get("name") or "").split())
+            if step.get("kind") in ("click", "double_click") and target.get("role") in ("button", "link", "menuitem", "tab") \
+                    and name and name not in names:
+                names.append(name[:40])
+        # (A private value the person typed into a field - a one-time code - is asked of them when the replay gets
+        # there and typed for them: no reason to give the model the part. A step they did by hand otherwise is.)
+        manual = [s["n"] for s in group if (s.get("kind") == "manual" or s.get("secret")) and not asks_value(s)]
+        literals = _case_literals(skill, group)
+        why = ""
+        if manual:
+            why = f"step(s) {', '.join(map(str, manual))} were done by hand by the person (a code or a secret)"
+        elif literals:
+            why = f"it presses controls named by the demonstration's own {', '.join(literals[:3])}"
+        out.append({
+            "k": k, "first": first, "last": last, "where": hosts[0] if hosts else "",
+            "does": " > ".join(names[:5]) + (" > ..." if len(names) > 5 else ""),
+            "params": [p["name"] for p in skill.get("params") or [] if first <= (p.get("step") or 0) <= last],
+            "commits": any(s.get("kind") in ("click", "double_click")
+                           and (s.get("consequential") or replay._step_commits(s)) for s in group), "by_hand": why,
+        })
+    return out
 
 
 # Roles of an entry picked from a list an application shows.
@@ -668,6 +900,7 @@ def expand(skill, values):
                             check[key] = check[key].replace("{" + name + "}", "{" + f"{name}__{n + 1}" + "}")
 
                 each["summary"] = f"{replay._summary(each)} (item {n + 1} of {count})"
+                each["item"] = n + 1  # (which item this written-out step is of: a step with no value of its own too)
                 steps.append(each)
 
     return fit(skill, _program(skill, steps, _numbered(steps, params)), flat), flat

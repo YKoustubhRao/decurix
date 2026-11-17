@@ -31,6 +31,9 @@ last_query_kind = ""
 # Whether that question was raised for a secret (a password or code field, a step the recorder kept private): its reply
 # may be the secret itself, so it is withheld whole wherever it is kept (messaging "secret", watchers.answer_waiting).
 last_query_secret = False
+# The reply being handed to the engine was made by the harness from the person's answers on earlier tasks
+# (engine_questions._answer_engine), not given by them on this one: it steers nothing new (thebot_harness._steers).
+answer_from_earlier = False
 # The id of the query the agent is waiting on (messaging.ask_for_query): a reply answers that one only - the date
 # question is answered by the reply to its own query (task_context.take_date_answer, review round 3, R3).
 asked_query_id = ""

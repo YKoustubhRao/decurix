@@ -498,6 +498,71 @@ def _titles_follow_values(steps, params, values):
     return out
 
 
+def _word_changes(params, values):
+    """
+    {old word: new word} for the words of a value that changed one for one: "October 2026" recorded, "November 2026"
+    this run - October becomes November wherever a name holds it as a word ("Sales tax bills October"). Words only (no numbers: a year inside "2025-26" is another thing), of three letters or
+    more, and only a word every changed value maps the same way. Matched as written ("May" the month, never "may").
+    """
+
+    changes, clash = {}, set()
+    for param in params or []:
+        recorded, value = _recorded_value(param), (values or {}).get(param["name"])
+        if recorded is None or value is None or isinstance(value, list):
+            continue
+        old_words, new_words = str(recorded).split(), str(value).split()
+        if len(old_words) != len(new_words) or old_words == new_words:
+            continue
+        for old, new in zip(old_words, new_words):
+            # (whole words only: a month's three-letter form also stands in a quarter's "(Oct - Dec)", which does not
+            # change with the month)
+            for a, b in [(old, new)]:
+                if a.lower() == b.lower() or not a.isalpha() or not b.isalpha() or len(a) < 3:
+                    continue
+                if changes.get(a, b) != b:
+                    clash.add(a)
+                changes[a] = b
+    return {a: b for a, b in changes.items() if a not in clash}
+
+
+def _words_follow_values(steps, params, values):
+    """
+    The steps with each changed word of a run value (_word_changes) put into the names, titles and checks that hold
+    it as a whole word - before the step that enters the value too: a value the request gives is known from the start.
+    Found in the learning curves (2026-11-17): a month's bills replayed from the inbox looked for the demonstration's
+    "Sales tax bills October" in November's mail and stopped.
+    """
+
+    changes = _word_changes(params, values)
+    if not changes:
+        return steps
+    pattern = re.compile(r"(?<![\w{-])(" + "|".join(re.escape(w) for w in sorted(changes, key=len, reverse=True))
+                         + r")(?![\w}-])")
+
+    def follow(text):
+        if not isinstance(text, str) or not pattern.search(text):
+            return text
+        return pattern.sub(lambda m: changes[m.group(1)], text)
+
+    out = []
+    for step in steps:
+        target = step.get("target") or {}
+        new_target = {k: follow(v) if k in ("name", "window_title") else v for k, v in target.items()}
+        new_expect = [{k: follow(v) if k in ("name", "value") and not c.get("param") else v for k, v in c.items()}
+                      for c in step.get("expect") or []]
+        changed = new_target != target or new_expect != (step.get("expect") or [])
+        if changed or follow(step.get("window")) != step.get("window"):
+            step = dict(step, target=new_target, expect=new_expect)
+            if step.get("window"):
+                step["window"] = follow(step["window"])
+            if new_target.get("name") != target.get("name"):
+                step.pop("look", None)
+                step["target"]["path"] = None
+                step["summary"] = _summary(step)
+        out.append(step)
+    return out
+
+
 def mine_checks(expect, reference=None):
     """
     What a step's recorded result lets a replay check: only what will read
@@ -659,7 +724,22 @@ def url_matches(shape, url):
     wanted = want.path.rstrip("/").split("/")
     actual = have.path.rstrip("/").split("/")
 
-    return len(wanted) == len(actual) and all(w == "*" or w == a for w, a in zip(wanted, actual))
+    # A number in the path is a record's id or a period: another client's company is /company/2/... where the
+    # demonstration's was /company/1/..., another month's return /gstr1/2026-11 where it was /gstr1/2026-10, and it is
+    # the same page. Found in the learning curves (2026-11-16): a part replayed for another client stopped at its first
+    # click, on the right page, because "1" was not "2". Only digits and their separators, in the same shape.
+    return len(wanted) == len(actual) and all(w == "*" or w == a or _same_number_shape(w, a)
+                                              for w, a in zip(wanted, actual))
+
+
+_NUMBER_SEGMENT = re.compile(r"\d+(?:[-_.]\d+)*")
+
+
+def _same_number_shape(want, have):
+    """Whether two path segments are both numbers - an id, a date, a period - written the same way."""
+
+    return bool(_NUMBER_SEGMENT.fullmatch(want) and _NUMBER_SEGMENT.fullmatch(have)
+                and re.sub(r"\d+", "9", want) == re.sub(r"\d+", "9", have))
 
 
 def _summary(step):
@@ -732,6 +812,35 @@ def title_matches(wanted, title):
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
 
+def _sound_checks(steps, names):
+    """
+    The steps without a result check whose placeholders are broken - a brace inside a placeholder, or one naming no
+    parameter of the program: no screen ever shows such a text, so the check could only stop the run. Found in the
+    learning curves (2026-11-16): a skill learned with a unit "NA" inside "{client_name}" expected "{client_{uqc}me}"
+    at its first click, and stopped every run there. The step is then one the replay could not verify (the final check
+    still looks).
+    """
+
+    def sound(check):
+        text = str(check.get("name") or check.get("value") or "")
+        if "{" not in text and "}" not in text:
+            return True
+        bare = PLACEHOLDER.sub("", text)
+        # (A placeholder glued to a word - "User {uqc}me" from "User name" - was put inside a word: never whole.)
+        glued = any((m.start() > 0 and (text[m.start() - 1].isalnum() or text[m.start() - 1] == "_"))
+                    or (m.end() < len(text) and (text[m.end()].isalnum() or text[m.end()] == "_"))
+                    for m in PLACEHOLDER.finditer(text))
+        return "{" not in bare and "}" not in bare and not glued \
+            and all(m.group(1) in names for m in PLACEHOLDER.finditer(text))
+
+    out = []
+    for step in steps:
+        checks = step.get("expect") or []
+        kept = [c for c in checks if sound(c)]
+        out.append(step if len(kept) == len(checks) else dict(step, expect=kept))
+    return out
+
+
 def fill_name(name, values):
     """
     A check's element name with its `{param}` placeholders filled in from the
@@ -801,6 +910,7 @@ def follow_values(steps, params, values):
     if not by_step:
         return steps
 
+    typed = {s.get("n"): s.get("kind") == "type" for s in steps}
     followed = []
     for step in steps:
         target = step.get("target") or {}
@@ -813,8 +923,20 @@ def follow_values(steps, params, values):
             if value != recorded and _holds_words(recorded, name):
                 pattern = re.compile(r"\s+".join(re.escape(w) for w in recorded.split()), re.IGNORECASE)
                 renamed = pattern.sub(value, name) if pattern.search(name) else f"{name} {value}"
+                if step.get("kind") in ("click", "double_click") and target.get("role") in RESULT_ROLES \
+                        and _norm(name) != _norm(recorded) and typed.get(at):
+                    # Only for a value TYPED (a search): a value chosen from a list stands inside wording that does not
+                    # change ("Export GSTR-1 for October 2026"), and is put in its place.
+                    # A result picked whose name only held what was typed ("Sahyadri" typed, "Sahyadri Lift Services"
+                    # clicked): the rest of its name was that client's, not every client's. Found in the learning
+                    # curves (2026-11-16): for another client the replay looked for "Konkan Coast Interiors Lift
+                    # Services" and stopped. It is the result holding this run's value.
+                    # (The words before the value stay: "Open TaxNet as <value>", never the value alone.)
+                    renamed = (name[:pattern.search(name).start()] + value).strip() if pattern.search(name) else value
+                # The demonstration's value is avoided - unless this run's value holds it ("Sharavati" then,
+                # "Sharavati Builders" now): avoiding it would refuse the very entry wanted.
                 new = dict(target, name=renamed, contains=True, value=value, path=None,
-                           avoid=list(target.get("avoid") or []) + [recorded])
+                           avoid=list(target.get("avoid") or []) + ([] if _holds_words(recorded, value) else [recorded]))
                 break
             if (step["n"] == at + 1 and step.get("kind") in ("click", "double_click") and name
                     and target.get("role") in RESULT_ROLES and volatility.only_a_moment(name)):
@@ -849,12 +971,73 @@ def _typing_checks(step):
     return step if len(kept) == len(step["expect"]) else dict(step, expect=kept)
 
 
+def _holds_value_text(shape, values, seen):
+    """
+    Whether a screen text `seen` meets a recorded text whose placeholder stood for part of a name: the words before the
+    placeholder, then this run's whole value. The words the demonstration's name had after its value ("Sahyadri" typed,
+    "Sahyadri Lift Services" shown) were that client's, not every client's. Found in the learning curves (2026-11-16):
+    "GST returns dashboard: {client_name} Lift Services" stopped a run for "Konkan Coast Interiors" on the right page.
+    Only a text with one placeholder whose value this run has; the value must stand in it, whole.
+    """
+
+    shape, seen = str(shape or ""), _norm(seen)
+    found = list(PLACEHOLDER.finditer(shape))
+    if len(found) != 1 or not seen:
+        return False
+    value = (values or {}).get(found[0].group(1))
+    if value in (None, "") or isinstance(value, list):
+        return False
+    before, wanted = _norm(shape[:found[0].start()]), _norm(str(value))
+    at = seen.find(wanted)
+    return bool(wanted) and at >= 0 and seen[:at].strip() == before.strip()
+
+
+def _mark_opened(steps):
+    """
+    The steps with the window checks of each press that opens a typed address marked "opened": what that page shows
+    of a record (the company open in the application) is the application's state, not the run's choice - the next steps
+    choose it. A click's page is the run's choice, so its title stays held whole: a click that reached another client's
+    page is a stop, never passed (unmet, _one_part_differs).
+    """
+
+    out, previous = [], None
+    for step in steps:
+        target = step.get("target") or {}
+        if step.get("kind") == "key" and not target.get("name") and previous is not None                 and previous.get("kind") == "type" and not (previous.get("target") or {}).get("name")                 and any(c.get("type") == "active_window" for c in step.get("expect") or []):
+            step = dict(step, expect=[dict(c, opened=True) if c.get("type") == "active_window" else c
+                                      for c in step.get("expect") or []])
+        out.append(step)
+        previous = step
+    return out
+
+
+def _bare(url):
+    """An address without its query and fragment."""
+
+    return str(url or "").split("#", 1)[0].split("?", 1)[0].rstrip("/")
+
+
+def _one_part_differs(want, have):
+    """Whether two window titles differ in one " - " part only, the same parts around it ("Gateway - Bookwell - <a
+    company> - Chromium"): the same page of another record. Found in the learning curves (2026-11-17): Bookwell's
+    address opened on whichever company was open - the demonstration's next step changes it - and the replay stopped
+    because the title named another company than the one the demonstration had open."""
+
+    a, b = [p.strip() for p in str(want or "").split(" - ")], [p.strip() for p in str(have or "").split(" - ")]
+    return len(a) == len(b) >= 3 and sum(x.casefold() != y.casefold() for x, y in zip(a, b)) == 1 \
+        and a[0].casefold() == b[0].casefold() and a[-1].casefold() == b[-1].casefold()
+
+
 def unmet(checks, observation, values=None):
     """The checks an observation does not satisfy. `values` are the run's parameters."""
 
     titles = [w.get("title") or "" for w in observation.get("windows") or []]
     active = observation.get("active_title") or ""
     missing = []
+    # The page of another record (a url check met by another id: company/3 for company/2): its title names that record.
+    page = observation.get("page_url") or ""
+    other = any(c["type"] == "url" and url_matches(c["value"], page) and _bare(c["value"]) != _bare(page)
+                for c in checks)
 
     for check in checks:
         kind = check["type"]
@@ -863,12 +1046,16 @@ def unmet(checks, observation, values=None):
             ok = url_matches(check["value"], observation.get("page_url") or "")
         elif kind == "window":
             want = fill_name(check["value"], values)
-            ok = any(title_matches(want, t) for t in titles + [active])
+            ok = any(title_matches(want, t) for t in titles + [active]) \
+                or any(_holds_value_text(check["value"], values, t) for t in titles + [active])
         elif kind == "active_window":
-            ok = title_matches(fill_name(check["value"], values), active)
+            ok = title_matches(fill_name(check["value"], values), active) \
+                or _holds_value_text(check["value"], values, active) \
+                or other and check.get("opened") and _one_part_differs(fill_name(check["value"], values), active)
         elif kind == "element":
             want = _norm(fill_name(check["name"], values))
-            ok = any(e.get("role") == check["role"] and _norm(e.get("name")) == want
+            ok = any(e.get("role") == check["role"] and (_norm(e.get("name")) == want
+                                                         or _holds_value_text(check["name"], values, e.get("name")))
                      for e in observation.get("elements") or [])
         elif kind == "value":
             want = " ".join(((values or {}).get(check["param"]) or "").split())
@@ -1185,6 +1372,15 @@ def _on_desktop(step):
     return bool(step.get("point")) and not step.get("target") and not _stable_title(step.get("window"))
 
 
+def _on_panel(step):
+    """Whether a step pressed a launcher on the desktop's own panel (the bar at the screen's edge), with no app window
+    in front: the press opens an app, as a desktop icon does."""
+
+    target = step.get("target") or {}
+    holder = str(target.get("path") or "").split(">")[0].lower()
+    return bool(target) and "panel" in holder and not _stable_title(step.get("window"))
+
+
 def _desktop_nudge(step):
     point, end = step.get("point"), step.get("end")
     return (step["kind"] == "drag" and _on_desktop(step) and end is not None
@@ -1209,7 +1405,10 @@ def _open_desktop_icon(step, next_step=None):
     replayed as recorded).
     """
 
-    if step["kind"] not in ("click", "double_click") or not _on_desktop(step) or step.get("consequential"):
+    # A launcher on the panel too: found in the learning curves (2026-11-16), the panel's "Web Browser" opened no window
+    # on a practice desktop, and every part that began with it stopped at its first step - while the browser's own
+    # launcher opened it at once.
+    if step["kind"] not in ("click", "double_click") or not (_on_desktop(step) or _on_panel(step))             or step.get("consequential"):
         return None
 
     window = _opened_window(step)
@@ -1229,11 +1428,97 @@ def _open_desktop_icon(step, next_step=None):
     return done, already
 
 
+def _refreshes_lists(step, next_step):
+    """Whether the person's next step is a press of a button on the same page as this choice, which commits nothing to
+    the person (a form's Search, Show, Go): pressing it sends the choices made so far and fills the lists that follow
+    them."""
+
+    if not next_step or next_step.get("kind") not in ("click", "double_click"):
+        return False
+    target = next_step.get("target") or {}
+    return (target.get("role") == "button" and not next_step.get("consequential") and not _step_commits(next_step)
+            and _page_of_step(step) == _page_of_step(next_step))
+
+
+def _page_of_step(step):
+    try:
+        parts = urllib.parse.urlsplit(str(step.get("url") or ""))
+    except ValueError:
+        return ""
+    return parts.netloc + parts.path
+
+
+def _choose_at_step(step, values, report=None):
+    """
+    A step that picks an entry this run has no value for: the entry chosen now, from what the screen lists
+    (choices.choose) - the step with this run's entry, `values` holding it - or the step as it was (it then stops as
+    before). An option the demonstration pressed by its own name (a radio named for their file) is chosen among the
+    screen's entries of its kind that share words with it; a drop-down, among its own options.
+    """
+
+    from decurix_agent import task_context
+    from decurix_agent.computer import choices, skills as skill_store
+    param, target = step["param"], step.get("target") or {}
+    try:
+        observation = core.observe()
+    except Exception:  # noqa: BLE001 - a screen not read chooses nothing: the step stops as before
+        return step
+    example = str(target.get("name") or "")
+    role = target.get("role") or ""
+    if role in RESULT_ROLES | {"radio", "checkbox"}:
+        mine = set(choices.tokens(example))
+        entries = [e.get("name") or "" for e in observation.get("elements") or []
+                   if e.get("role") == role and set(choices.tokens(e.get("name"))) & mine]
+        label = role
+    else:
+        found, _, _ = resolve(step, observation)
+        if found is None:
+            return step
+        try:
+            from decurix_agent.computer import cdp
+            entries = cdp.native_options(found)
+        except Exception:  # noqa: BLE001 - a list the page drew itself: not chosen here
+            return step
+        label = str(target.get("name") or role)
+        example = str(step.get("option") or "")
+    skill_name = (values.get("__skill__") or "")
+    skill = skill_store.load(skill_name) if skill_name else None
+    demo_context = " ".join([str((skill or {}).get("goal") or "")]
+                            + [str(p.get("example") or "") for p in (skill or {}).get("params") or []])
+    context = (task_context.current_request() or "") + " " + " ".join(
+        str(v) for k, v in values.items() if not k.startswith("__") and v)
+    # (a block made for one item - skill_task._spliced, "<param>__made<k>" - remembers under the step's own name)
+    kept_as = re.sub(r"__made\d+$", "", param)
+    # (a step made for one item's own record - skill_task._spliced - carries that item's document: it is read first)
+    chosen, how = choices.choose(skill_name, kept_as, label, example, demo_context, entries, context,
+                                 documents=[step["document"]] if step.get("document") else None)
+    if not chosen:
+        log(f"replay: step {step['n']}: no value for {param}, and {how}")
+        (report or progress.emit)(f"Step {step['n']}: no value for {param}, and {how}")
+        return step
+    values[param] = chosen
+    choices.note(task_context.current(), skill_name, kept_as, chosen, context)
+    log(f"replay: step {step['n']}: chose {el._quote(chosen, 80)} for {param} - {how}")
+    (report or progress.emit)(f"Step {step['n']}: chose {el._quote(chosen, 80)} for {param} - {how}")
+    if role in RESULT_ROLES | {"radio", "checkbox"}:
+        step = dict(step, target={k: v for k, v in dict(target, name=chosen).items() if k != "path"})
+        step.pop("look", None)
+        step["summary"] = _summary(step)
+    return step
+
+
 def _run_step(step, values, ladder=None, report=None, next_step=None):
     kind = step["kind"]
 
     if kind not in REPLAYABLE:
         raise _Halt(f"a replay cannot {kind.replace('_', ' ')}")
+
+    if kind == "select" and step.get("param") and not values.get(step["param"]):
+        # A pick this run has no value for is chosen now, from what the screen lists (choices.py).
+        try:
+            step = _choose_at_step(step, values, report)
+        except Exception as exc:  # noqa: BLE001 - choosing is a shortcut; failing it stops the step as before
+            log(f"replay: step {step['n']} not chosen ({exc})")
 
     if step.get("unresolved"):
         raise _Halt(f"the recording names a control it cannot identify: {step['unresolved']}")
@@ -1333,18 +1618,42 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             done = core.act(kind, **act_args)
         except ActedError:
             raise
-        except ComputerError:
+        except ComputerError as exc:
+            # The person's Enter here submitted nothing - their next step is on the same page - so an Enter held back
+            # because it would submit the form now would do what they never did: it is skipped and the replay goes on.
+            # Found in the learning curves (2026-11-15): their Enter picked an entry in an open list; the list was chosen
+            # another way this time, and the Enter, now a submit, stopped every bill.
+            from decurix_agent.computer import cdp
+            if kind == "key" and isinstance(exc, cdp.EnterWouldSubmit) and _stayed_on_the_page(step, next_step):
+                (report or progress.emit)(f"Step {step['n']}: the person's Enter submitted nothing, and now it would "
+                                          "submit the form - skipped")
+                return {"status": "done", "observation": None}
             # A choice of this item's record that its list has no entry for, by name: the identifier the item's
             # document gives that record (step["ids"], set by the run - skill_task._lookup_ids) is searched for next,
             # as `gui select REF NAME --id ID` does, and what it resolved to is kept as the task's fact (resolve.py).
             # An entry holding it is the record whatever its name; none is a fact the save of a new one then rests on.
             # Found live (2026-11-10): the next month's new customer stopped the replay, the model made its ledger,
             # and the save was refused because nothing had resolved the customer's tax number.
-            if kind != "select" or not step.get("ids"):
+            if kind == "select" and "has no option" in str(exc) and _refreshes_lists(step, next_step):
+                # A list whose entries follow a choice made before it on this form fills only when the form is sent
+                # (the period list follows the quarter, on the server): the person's own next press - the form's button
+                # - is made now, once, and the choice tried again. Found in the learning curves (2026-11-17): a month in
+                # another quarter than the demonstration's stopped at its period on every case, and once looped on a
+                # question until the case timed out. The person's press is made again after, as recorded: it only sends
+                # the same form.
+                (report or progress.emit)(f"Step {step['n']}: the list has no {el._quote(str(act_args.get('option')), 40)} "
+                                          f"yet - pressing {el._quote((next_step.get('target') or {}).get('name'), 40)} "
+                                          "to fill it from the choices made, then choosing again")
+                found, point, _, _ = _find(next_step, report=report)
+                core.act("click", check_form="replay",
+                         **({"path": found["path"]} if found is not None else {"point": tuple(point)}))
+                done = core.act(kind, **act_args)
+            elif kind != "select" or not step.get("ids"):
                 raise
-            (report or progress.emit)(f"Step {step['n']}: no entry by that name - looking for it by the identifier "
-                                      f"its document gives ({', '.join(step['ids'])})")
-            done = core.act(kind, ids=list(step["ids"]), **act_args)
+            else:
+                (report or progress.emit)(f"Step {step['n']}: no entry by that name - looking for it by the identifier "
+                                          f"its document gives ({', '.join(step['ids'])})")
+                done = core.act(kind, ids=list(step["ids"]), **act_args)
         if pressed_cell and not _field_appeared(step):
             raise _Halt(f"pressed where {_summary(step).split(' ', 1)[-1]} was when this was recorded, and no such field "
                         "appeared there - the page is laid out differently now", acted=True)
@@ -1362,6 +1671,16 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
         raise _Halt(_error_reason(step, exc), _screen_now(), acted=True)
     except ComputerError as exc:
         raise _Halt(_error_reason(step, exc), _screen_now())
+
+
+def _stayed_on_the_page(step, next_step):
+    """Whether the recording shows the person still on the same page after this step: their next step was made on the
+    same address in the same window (what pressing it then changed was not where they were)."""
+
+    if not next_step:
+        return False
+    same_window = (step.get("window") or "") == (next_step.get("window") or "")
+    return bool(step.get("url")) and step.get("url") == next_step.get("url") and same_window
 
 
 def _error_reason(step, exc):
@@ -1763,6 +2082,9 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
         else:
             values[param["name"]] = param.get("default") or ""
 
+    # Which skill this is, for a pick chosen at its step (_choose_at_step, choices.py): never a parameter's name.
+    values["__skill__"] = str(program.get("session") or "").removeprefix("skill-")
+
     counts = {"done": 0, "verified": 0, "unverified": 0, "skipped": 0, "detoured": 0}
     # What the steps that ran typed or chose, from this run's values (not secret ones): the run's own record of what it
     # entered, given back however it ends (entered_values), so a halted run's earlier entries are credited.
@@ -1854,6 +2176,9 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
     known = _known_documents(steps)
     steps = [_typing_checks(s) for s in follow_values(steps, program.get("params"), values)]
     steps = _titles_follow_values(steps, program.get("params"), values)
+    steps = _words_follow_values(steps, program.get("params"), values)
+    steps = _mark_opened(steps)
+    steps = _sound_checks(steps, {p.get("name") for p in program.get("params") or []})
     recorded_values = [str(_recorded_value(p)) for p in program.get("params") or []
                        if _recorded_value(p) not in (None, "")]
     steps = [_window_ids(s, recorded_values, known) for s in steps]

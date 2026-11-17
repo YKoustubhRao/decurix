@@ -150,6 +150,26 @@ def _question_gate(problem, kind, engine):
     if long_task.active() or task_context.current_stage()[0]:
         return False
 
+    # A repair whose actions are spent is over: its question is no question for the person - the engine reports, and the
+    # run hands the rest to the model (repairs.after_repair). Found in the learning curves (2026-11-17): a repair that
+    # spent its actions asked the person for "a new session or removal of the action limit", each answer started it
+    # again, and the case ended on questions with no voucher entered.
+    from decurix_agent import repairs
+    if repairs.budget_refusal():
+        log("Engine questions: a repair past its action budget asked a question - told to report instead")
+        _answer_engine_spent()
+        return True
+
+    # The same question asked again, after it was answered twice in this task, is not put to the person a third time:
+    # the engine is given their answer and told to finish or say what is missing. Found in the learning curves
+    # (2026-11-17): a repair asked one question again and again, each time answered "I don't know that", until the case
+    # ran out of time with the return never filed.
+    repeats = [reply for asked, reply in guidance.exchanges() if _same_question(asked, problem)]
+    if len(repeats) >= REPEAT_ASKS:
+        log(f"Engine questions: asked {len(repeats)} times already - not asked again")
+        _answer_engine_repeat(len(repeats), repeats[-1])
+        return True
+
     # A check of this run's own work (the review's points, a report the final check refused) is never answered from
     # lessons: a rule kept from another run cannot vouch for this run's figures. Found live (2026-10-25): "an
     # independent check still questions these" - a bill left out - was answered from a lesson about which files to
@@ -259,10 +279,57 @@ def _carry_on():
                       engine=SKILL_ENGINE)
 
 
+# How many times one question is put to the person in a task before the engine is given their answer instead.
+REPEAT_ASKS = 2
+
+
+def _same_question(asked, problem):
+    """Whether two questions are the same one: the same words, in the opening the exchange keeps (400 characters)."""
+
+    a = " ".join(str(asked or "").lower().split())[:300]
+    b = " ".join(str(problem or "").lower().split())[:300]
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    wa, wb = set(a.split()), set(b.split())
+    return len(wa & wb) >= 0.85 * max(len(wa), len(wb))
+
+
+def _answer_engine_spent():
+    """Tell an engine whose repair spent its actions to end it with its report, instead of asking a person."""
+
+    from decurix_agent.harness import continue_after_query
+    try:
+        continue_after_query("This repair has used all its actions, so it is over and nobody is asked: end it now with "
+                             "your report as your final answer - what you did, whether the stopped step can go on, and "
+                             "what stops it if not. The rest of the task is taken up after your report.")
+    except Exception as exc:  # noqa: BLE001
+        log(traceback.format_exc())
+        ask_for_query(f"I could not end a repair that used its actions ({exc}). Tell me what to do next.",
+                      engine=SKILL_ENGINE)
+
+
+def _answer_engine_repeat(times, reply):
+    """Give the engine, instead of asking a person again, what they already answered, and tell it to finish."""
+
+    from decurix_agent.harness import continue_after_query
+    try:
+        state.answer_from_earlier = True
+        continue_after_query(f"You have asked the person this {times} times in this task, and they answered: {reply} - "
+                             "they were not asked again. Do not ask it again: finish what you can with what you have, "
+                             "or report plainly that it cannot be done and exactly what is missing.")
+    except Exception as exc:  # noqa: BLE001
+        log(traceback.format_exc())
+        ask_for_query(f"I could not carry on after a question asked {times} times ({exc}). Tell me what to do next.",
+                      engine=SKILL_ENGINE)
+
+
 def _answer_engine(answer):
     from decurix_agent.harness import continue_after_query
 
     try:
+        state.answer_from_earlier = True
         continue_after_query(f"The person already answered this earlier, so they were not asked again: {answer}")
     except Exception as exc:
         log(traceback.format_exc())

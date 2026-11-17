@@ -217,5 +217,13 @@ class BoundedRepair(unittest.TestCase):
             self.assertIsNone(repairs.budget_refusal("another task"))
 
 
+    def test_a_review_before_a_commit_has_its_own_budget(self):
+        noted = {"task": "t-1", "phase": repairs.REVIEW_PHASE, "events_from": 0, "budget": 40, "step": 7}
+        with mock.patch.object(phase, "read", return_value=noted),                 mock.patch("decurix_agent.computer.recording.meta", return_value={"event_count": 39}):
+            self.assertIsNone(repairs.budget_refusal("t-1"))
+        with mock.patch.object(phase, "read", return_value=noted),                 mock.patch("decurix_agent.computer.recording.meta", return_value={"event_count": 40}):
+            self.assertIn("check before the commit has used its 40 actions", repairs.budget_refusal("t-1"))
+
+
 if __name__ == "__main__":
     unittest.main()

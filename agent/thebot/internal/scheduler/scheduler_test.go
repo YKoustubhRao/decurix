@@ -664,7 +664,7 @@ func TestSchedulerDoesNotRetryAFailureMarkedFatal(t *testing.T) {
 	}
 }
 
-// Found live (2026-11-15, core-v2): an operator step failed, its retry was a shell line that read a page by URL, and
+// Found live (2026-11-15, an eval run): an operator step failed, its retry was a shell line that read a page by URL, and
 // Classify called that web - the whole command line went to a search engine. An operator step's retry stays the
 // operator's; another kind's retry is still reclassified from what it says.
 func TestAnOperatorStepsRetryStaysTheOperators(t *testing.T) {

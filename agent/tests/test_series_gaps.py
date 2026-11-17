@@ -48,7 +48,7 @@ class SeriesGaps(unittest.TestCase):
 
 
 def said(text=""):
-    return mock.patch.multiple(records, _answers_text=lambda task_id=None: text,
+    return mock.patch.multiple(records, _answers_text=lambda task_id=None, approved=True: text,
                                _worker_words_text=lambda task_id=None: "")
 
 
