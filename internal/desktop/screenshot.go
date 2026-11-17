@@ -225,6 +225,14 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 	cached := entry.byWidth[maxWidth]
 	frame, version := sess.snapshot(cached.version, cached.data != nil && cached.session == sess)
 	now := time.Now()
+	if frame == nil && cached.data == nil {
+		// Nothing for this width yet, and the screen is being repainted after a resize: the last picture of any width,
+		// or none (the card keeps what it shows), never a blank one.
+		if entry.data == nil {
+			return entry.fail(errors.New("the desktop's screen is being resized"))
+		}
+		return entry.data, nil
+	}
 	if frame == nil {
 		// The screen did not change since this width was encoded: the same thumbnail, no encode.
 		cached.at = now

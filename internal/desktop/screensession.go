@@ -55,6 +55,10 @@ type shotSession struct {
 	version  uint64    // bumped by every update painted into frame
 	wanted   time.Time // when a thumbnail last asked
 	needFull bool      // the next request asks for the whole screen (after a resize)
+	// blank is set from a resize until the whole screen has been painted again at its new size: the frame is empty
+	// meanwhile, and a thumbnail taken of it would be black (a window being fitted to a desktop's screen resizes it
+	// again and again).
+	blank bool
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -128,6 +132,13 @@ func (s *shotSession) run() {
 			s.close(err)
 			return
 		}
+		if full {
+			// The answer to a request for the whole screen: it is painted again.
+			s.mu.Lock()
+			s.blank = false
+			s.version++
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -184,7 +195,9 @@ func (s *shotSession) snapshot(have uint64, haveOK bool) (*image.RGBA, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.wanted = time.Now()
-	if haveOK && have == s.version {
+	if s.blank || (haveOK && have == s.version) {
+		// Nothing to encode: the picture a thumbnail already has stands (and while the screen is being repainted after a
+		// resize there is no picture to take).
 		return nil, s.version
 	}
 	frame := image.NewRGBA(s.frame.Rect)
@@ -261,6 +274,7 @@ func (s *shotSession) paint() error {
 			s.mu.Lock()
 			s.frame = image.NewRGBA(image.Rect(0, 0, w, h))
 			s.needFull = true
+				s.blank = true
 			s.mu.Unlock()
 			continue
 		}

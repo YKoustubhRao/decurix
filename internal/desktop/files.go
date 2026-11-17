@@ -115,7 +115,7 @@ func (m *Manager) UsesLocalModel(ctx context.Context) bool {
 	}
 
 	for _, d := range list {
-		if !(Brain{Kind: d.Brain}).Hosted() {
+		if b := (Brain{Kind: d.Brain}); !b.Hosted() && !b.VMOnly() {
 			return true
 		}
 	}

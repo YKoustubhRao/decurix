@@ -195,6 +195,15 @@ if os.path.isdir(old) and not os.path.islink(old):
 PY
 fi
 
+# A desktop made as only a VM (DECURIX_VM_ONLY=1, brain "none"): nothing below it runs - not the agent, not TheBot's
+# soul, not the launch helper. The tokens the entrypoint staged for the two holders are deleted at once, as the wait
+# below would after 30 s, since nobody will take them.
+if [ "${DECURIX_VM_ONLY:-}" = "1" ]; then
+    rm -f "$AGENT_TOKEN_DIR/agent.token" "$AGENT_TOKEN_DIR/soul.token"
+    echo "[$(date)] VM only: no agent started" >> "$LOG"
+    exit 0
+fi
+
 # Run background agent daemon with nice -n 10 so interactive GUI (Xvnc, Xorg,
 # xfce4, terminal) always has scheduling priority over background agent reasoning.
 # python3 -I, as the gate is (decurix-entrypoint.sh): no PYTHON* variable, no user site-packages, no .pth or

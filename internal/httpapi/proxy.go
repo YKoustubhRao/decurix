@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -130,6 +131,19 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isWebSocket {
+		if len(parts) == 2 && isScreenStream(parts[1], true) {
+			// One window at a time (screenholders.go), as on the bridge: cancelling the request's context is what
+			// closes the proxied stream when the same window reconnects.
+			ctx, kick := context.WithCancel(r.Context())
+			defer kick()
+			release, ok := s.screens.take(desktopID, screenHolderToken(r), kick)
+			if !ok {
+				refuseScreenInUse(w)
+				return
+			}
+			defer release()
+			r = r.WithContext(ctx)
+		}
 		done := make(chan struct{})
 		defer close(done)
 		go s.keepScreenViewed(desktopID, done)

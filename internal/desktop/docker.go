@@ -66,6 +66,9 @@ const (
 	// BrainOpenAI is any OpenAI-compatible server the control plane was given (OpenAI itself, OpenRouter, a Brainiac
 	// box on the network): the same proxy route, the same env for the desktop.
 	BrainOpenAI = "openai"
+	// BrainNone is a desktop that is only a VM: no agent, no TheBot, no model. The container starts the desktop and
+	// nothing else (DECURIX_VM_ONLY=1, agent/start_agent_terminal.sh); a person drives it at its screen.
+	BrainNone = "none"
 )
 
 // Brain is a desktop's model choice as the control plane resolved it at
@@ -89,12 +92,20 @@ func (b Brain) kind() string {
 
 // Hosted reports whether the brain is a hosted model rather than Ollama.
 func (b Brain) Hosted() bool {
-	return b.kind() != BrainOllama
+	return b.kind() != BrainOllama && b.kind() != BrainNone
+}
+
+// VMOnly reports whether the desktop runs no agent and no model: only the VM.
+func (b Brain) VMOnly() bool {
+	return b.kind() == BrainNone
 }
 
 // desktopModel is the model a desktop reasons with, as its env says: the
 // hosted brain's when it has one, else the Ollama model.
 func desktopModel(env []string) string {
+	if envValue(env, "DECURIX_BRAIN") == BrainNone {
+		return "" // a VM with no model: the card names none
+	}
 	if m := envValue(env, "DECURIX_BRAIN_MODEL"); m != "" {
 		return m
 	}
@@ -275,6 +286,11 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	env = append(env, "OLLAMA_NUM_PARALLEL="+envOr("OLLAMA_NUM_PARALLEL", "1"))
 
 	env = append(env, "DECURIX_BRAIN="+brain.kind())
+
+	// Only the VM: the launcher starts neither the agent nor TheBot's soul.
+	if brain.VMOnly() {
+		env = append(env, "DECURIX_VM_ONLY=1")
+	}
 
 	// Every desktop the control plane makes must have an approval gate: its agent and TheBot allow nothing gated
 	// rather than fall back to a store the worker can write (agenttoken.go's GateRequiredEnv).

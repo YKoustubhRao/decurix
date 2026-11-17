@@ -59,6 +59,8 @@ type Server struct {
 	finished finishedFeed
 	// events tells the dashboard's open event streams which desktops changed (events.go).
 	events eventHub
+	// screens is which window holds each desktop's screen: one at a time (screenholders.go).
+	screens screenHolders
 
 	Desktops   *desktop.Manager
 	QueryNotes *querynotes.Store
@@ -355,6 +357,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
 	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)
 	mux.HandleFunc("/api/desktops/activity", s.activityHandler)
+	// Whether a desktop's screen is open in another window; the screen page waits while it is (screenholders.go).
+	mux.HandleFunc("/api/desktops/screen-holder", s.screenHolderHandler)
 	mux.HandleFunc("/api/desktops/overview", s.overviewHandler)
 	// Which desktops changed, as they change (events.go): the overview is fetched then, not only on its poll.
 	mux.HandleFunc("/api/events", s.eventsHandler)
