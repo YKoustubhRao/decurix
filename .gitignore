@@ -22,6 +22,4 @@ agent/tests/fixtures/*
 !agent/tests/fixtures/detour/
 # Claude Code's per-person settings (permissions, local paths): each person's own, never shared.
 .claude/settings.local.json
-# The investor deck is business material, not product documentation; it stays on disk, out of the repository.
-docs/antler-deck.pdf
 evals/results/
